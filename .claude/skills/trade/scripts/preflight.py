@@ -11,6 +11,36 @@ def bash(cmd, timeout=15):
     except Exception as e:
         return f"ERR:{e}"
 
+# /tmp/lb.sh：长桥 CLI 包装器，屏蔽 LONGPORT_* 环境变量强制走 OAuth。
+# /tmp 重启即清，这里在调用前自检，不在则自动重建，避免脚本静默报 'No such file'。
+LB_WRAPPER = "/tmp/lb.sh"
+LB_WRAPPER_CONTENT = (
+    "#!/bin/bash\n"
+    'exec env -u LONGPORT_APP_KEY -u LONGPORT_APP_SECRET '
+    '-u LONGPORT_ACCESS_TOKEN ~/.local/bin/longbridge "$@"\n'
+)
+
+
+def ensure_lb_wrapper():
+    """确保 /tmp/lb.sh 存在且内容正确；被清则重建。幂等。"""
+    need_rebuild = True
+    try:
+        with open(LB_WRAPPER) as f:
+            if "env -u LONGPORT_APP_KEY" in f.read():
+                need_rebuild = False
+    except OSError:
+        pass
+    if not need_rebuild:
+        return
+    try:
+        with open(LB_WRAPPER, "w") as f:
+            f.write(LB_WRAPPER_CONTENT)
+        os.chmod(LB_WRAPPER, 0o755)
+        print(f"🔧 已重建 {LB_WRAPPER}（/tmp 被清过，长桥命令现在可用）")
+    except OSError as e:
+        print(f"⚠️ 重建 {LB_WRAPPER} 失败：{e}——长桥命令将报 'No such file'")
+
+
 now = datetime.datetime.now()
 today = now.strftime("%Y-%m-%d")
 hhmm = now.hour * 60 + now.minute
@@ -35,7 +65,8 @@ else:
     us = "盘外"
 print(f"📈 港股:{hk} | 美股:{us}")
 
-# 长桥 token
+# 长桥 token（先确保 /tmp/lb.sh 存在，/tmp 被清会自动重建）
+ensure_lb_wrapper()
 auth = bash("bash /tmp/lb.sh auth status 2>&1 | grep -iE 'Status|Account' | head -2")
 ok = "valid" in auth.lower()
 print(f"🔑 长桥token: {'✅' if ok else '❌'} {auth.replace(chr(10),' | ')[:80]}")
