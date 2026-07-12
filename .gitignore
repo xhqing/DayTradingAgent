@@ -1,0 +1,8 @@
+# 实盘配置含账户号/资金等敏感信息，只入库 config.example.json 模板
+.claude/skills/trade/config.json
+
+# 账户敏感信息（账户号/净资产/买力/凭证），只入库 accounts.example.json 模板
+.claude/skills/trade/accounts.json
+
+# 归档目录（历史 memory 快照 + 历史信号日志），含账户号/tiger_id/凭证路径等敏感信息，仅本地保留
+archive/
