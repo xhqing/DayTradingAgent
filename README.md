@@ -145,6 +145,18 @@ Day trading involves substantial risk of loss. Victor emits analysis and signals
 
 ---
 
+## Attribution
+
+This project is released under the MIT License, and you are additionally asked to **credit the author and cite the source** whenever you use, redistribute, or build upon it:
+
+- **Author:** Huaqing Xu
+- **Project:** Victor — Day-Trading Agent (HK / US Equities)
+- **Source:** https://github.com/xhqing/DayTradingAgent
+
+If you fork, reference, or derive from this repository, please retain this attribution — the author name, the project name, and the repository URL — in your documentation, README, or acknowledgements.
+
+---
+
 ## License
 
 [MIT](LICENSE.md) © 2026 Huaqing Xu and contributors.
