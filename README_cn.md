@@ -145,6 +145,18 @@ Victor 在发出任何信号前逐条自检（完整清单见 `SKILL.md`）：
 
 ---
 
+## 引用与署名
+
+本项目以 MIT 许可证开源，额外请求使用者在**使用、二次分发或基于本项目构建衍生作品**时，注明作者并引用项目地址：
+
+- **作者：** Huaqing Xu
+- **项目：** Victor —— 港股 / 美股日内交易 Agent
+- **地址：** https://github.com/xhqing/DayTradingAgent
+
+若你 Fork、引用代码或基于本仓库二次开发，请在文档 / README / 致谢中保留以上出处（作者、项目名、仓库地址）。
+
+---
+
 ## 许可证
 
 [MIT](LICENSE.md) © 2026 Huaqing Xu 及贡献者。
