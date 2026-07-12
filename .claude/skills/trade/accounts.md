@@ -23,6 +23,8 @@ exec env -u LONGPORT_APP_KEY -u LONGPORT_APP_SECRET -u LONGPORT_ACCESS_TOKEN \
      ~/.local/bin/longbridge "$@"
 ```
 
+> `/tmp` 重启即清——**该文件由 `scripts/preflight.py` 的 `ensure_lb_wrapper()` 自检重建**（盯盘第一步 preflight 跑时，若文件不存在或内容缺失则自动写回 + `chmod 755`），重启无需手动建。
+
 ## 三账户切换链路（cli-auth 是单一文件，登录即覆盖）
 
 CLI 是单账户会话模型（`auth status` 只返回一个 account，无多账户/切换命令）。三账户 token 备份齐全，切换用 `cp` 还原 + `auth status` 验证 `account_no`：
