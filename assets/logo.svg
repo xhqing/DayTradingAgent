@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" width="240" height="240" role="img" aria-label="Victor logo">
+  <defs>
+    <linearGradient id="vGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3B82F6"/>
+      <stop offset="55%" stop-color="#22D3A6"/>
+      <stop offset="100%" stop-color="#16C784"/>
+    </linearGradient>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#0F1E36"/>
+      <stop offset="100%" stop-color="#0A1628"/>
+    </linearGradient>
+  </defs>
+
+  <!-- rounded-square avatar background -->
+  <rect x="0" y="0" width="240" height="240" rx="52" ry="52" fill="url(#bgGrad)"/>
+
+  <!-- geometric V mark (left arm blue → right arm green) -->
+  <path d="M 40 62 L 120 200 L 200 62 L 170 62 L 120 138 L 70 62 Z" fill="url(#vGrad)"/>
+
+  <!-- rising arrow above the V (profit / uptrend) -->
+  <path d="M 120 18 L 138 44 L 128 44 L 128 58 L 112 58 L 112 44 L 102 44 Z" fill="#16C784"/>
+</svg>

@@ -1,4 +1,15 @@
-# Victor —— 港股 / 美股日内交易 Agent
+<p align="center">
+  <img src="assets/logo.svg" width="160" alt="Victor logo" />
+</p>
+
+<h1 align="center">Victor —— 港股 / 美股日内交易 Agent</h1>
+
+<p align="center">
+  <a href="LICENSE.md"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT" /></a>
+  <a href="https://claude.com/claude-code"><img src="https://img.shields.io/badge/built%20with-Claude%20Code-7C3AED.svg" alt="Built with Claude Code" /></a>
+  <img src="https://img.shields.io/badge/markets-HK%20%2F%20US-16C784.svg" alt="Markets: HK / US" />
+  <img src="https://img.shields.io/badge/mode-signal-FF8C00.svg" alt="Mode: Signal" />
+</p>
 
 **Victor** 是一个港股 / 美股日内交易的 AI 执行 agent，基于 [Claude Code](https://claude.com/claude-code) 构建。它负责盯盘、分析标的、计算仓位与止损位、输出结构化交易信号——而每一笔订单都由人在券商 App 里手动执行。
 
