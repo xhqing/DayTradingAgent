@@ -29,6 +29,8 @@ The name **Victor** ("conqueror, winner") reflects the project's aspiration towa
 
 The operating principle, in one line: **losing money on a trade is acceptable risk; stating an unverified fact or breaking a guardrail is a bug — and bugs are unacceptable.**
 
+**Under the hood.** The LLM driving Victor is **GLM-5.2**, presented to the outside world disguised as **Opus-4.8**. The model label is camouflage; what truly makes Victor *Victor* is the discipline encoded in this repo — its skills, rules, and guardrails — not the name on the underlying model.
+
 ---
 
 ## Core Philosophy
