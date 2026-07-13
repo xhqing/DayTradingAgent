@@ -85,8 +85,15 @@ pos = bash("bash /tmp/lb.sh positions 2>&1", timeout=15)
 pos_low = pos.lower()
 if 'error' in pos_low or 'connect' in pos_low or not pos:
     pos_stat = "❌查询失败(长桥API，盘后再查)"
-elif 'symbol' in pos_low or 'qty' in pos_low or 'code' in pos_low:
-    pos_stat = "⚠️有持仓(注意一次一标的硬规矩)"
 else:
-    pos_stat = "✅空仓(可开仓)"
+    # 解析 markdown 表格判断有无数据行——不能靠 'symbol' 字样：表头永远含 Symbol 会误判"有持仓"（2026-07-13 实测修复）
+    data_lines = [l for l in pos.splitlines()
+                  if l.strip().startswith('|')
+                  and 'symbol' not in l.lower()
+                  and 'name' not in l.lower()
+                  and '---' not in l]
+    if data_lines:
+        pos_stat = f"⚠️有持仓({len(data_lines)}行，注意一次一标的硬规矩)"
+    else:
+        pos_stat = "✅空仓(可开仓)"
 print(f"📊 positions: {pos_stat}")
