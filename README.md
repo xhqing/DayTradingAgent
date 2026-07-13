@@ -1,4 +1,15 @@
-# Victor — Day-Trading Agent (HK / US Equities)
+<p align="center">
+  <img src="assets/logo.svg" width="160" alt="Victor logo" />
+</p>
+
+<h1 align="center">Victor — Day-Trading Agent (HK / US Equities)</h1>
+
+<p align="center">
+  <a href="LICENSE.md"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT" /></a>
+  <a href="https://claude.com/claude-code"><img src="https://img.shields.io/badge/built%20with-Claude%20Code-7C3AED.svg" alt="Built with Claude Code" /></a>
+  <img src="https://img.shields.io/badge/markets-HK%20%2F%20US-16C784.svg" alt="Markets: HK / US" />
+  <img src="https://img.shields.io/badge/mode-signal-FF8C00.svg" alt="Mode: Signal" />
+</p>
 
 **Victor** is a personified AI day-trading execution agent for Hong Kong and US equities, built on [Claude Code](https://claude.com/claude-code). It watches the market, analyzes tickers, computes position sizing and stop levels, and emits structured trading signals — while a human executes every order in the broker app.
 
