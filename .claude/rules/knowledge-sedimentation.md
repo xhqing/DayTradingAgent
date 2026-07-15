@@ -1,22 +1,20 @@
-# 知识沉淀：本项目以 rules / skills 为归宿
+# 知识沉淀：AutoMemory 持久存 + rules/skills 规范归宿
 
-本项目沉淀经验的核心位置是 `.claude/rules/`（通用工作规范）和 `.claude/skills/`（领域执行规范，当前为 trade），**不是 AutoMemory**。AutoMemory（`~/.claude/memory`）只作临时缓冲；有复用价值的内容要主动提炼到 rules / skills，别让它长期停在 memory 或只存在于对话。
+本项目的跨会话内容分两类归宿，各司其职（2026-07-15 修订：撤销 sediment hook，AutoMemory 升为项目级持久存储）。
 
-## 何时提炼、落到哪
+## AutoMemory（.claude/memory/）—— 持久记忆归宿
 
-本项目工作过程中产生的、跨会话有用的内容，主动判断落点并写入：
+AutoMemory 存项目级 `.claude/memory/`（配置见 `.claude/settings.local.json` 的 `autoMemoryDirectory`），**不再只是临时缓冲**，而是本项目跨会话记忆的持久归宿：用户偏好、反馈、项目上下文等。**不加入 .gitignore**，memory 内容随仓库公开、跨会话复用。
+
+## rules / skills —— 强约束规范归宿
+
+需要「强约束、可执行」的规范仍沉淀到：
 
 - **通用工作规范**（怎么验证事实、怎么输出、怎么操作文件等，不限于某个领域）→ `.claude/rules/`
-- **领域执行知识**（交易规则、CLI / SDK 实测结论、踩坑、市场结构等）→ `.claude/skills/trade/`（主文件 `SKILL.md` 写简明结论 + 触发规则，详细数据 / 代码骨架放参考文件）
+- **领域执行规范**（交易规则、CLI / SDK 实测结论、踩坑、市场结构等）→ `.claude/skills/trade/`（主文件 `SKILL.md` 写简明结论 + 触发规则，详细数据 / 代码骨架放参考文件）
 
-该记的典型：用户立的规则、API / CLI 实测结论、踩坑（字段不存在 / 编码 / 乱码 / 僵尸进程）、领域结构知识。
+rules/skills 与 memory 的区别：rules/skills 是「必须遵守的规范 / 执行步骤」（纪律），memory 是「背景记忆 / 偏好」（上下文）。
 
-## 落盘原则
+## 关于「提炼」（2026-07-15 撤销 hook）
 
-- 主文件写简明结论 + 触发规则，详细数据 / 代码骨架放参考文件，两处保持一致。
-- 改完顺带检查内部一致性（术语、数据、流程是否自洽）。
-- 对话里的结论会随上下文丢失，rules / skills 里的不会——落盘才能跨会话复用，避免重复验证、重复踩坑、重复问用户。
-
-## 关于"自动"
-
-提炼需要语义判断（归类到 rules 还是 skills、是否含敏感信息要脱敏、并入哪个已有文件），无法由 hook 脚本确定性完成。本条是 Claude 在本项目主动遵守的工作规则：产生新知识时即时提炼落盘；遇到仍停在 memory 的旧知识，也顺手归位到 rules / skills。
+2026-07-10 曾用 `sediment-check.sh` Stop hook 提醒把 memory 内容提炼到 rules/skills。**2026-07-15 用户撤销该 hook**：memory 自己持久存即可，不再强制提炼。遇到确实属于「强约束规范」的内容（不是个人偏好 / 上下文，而是可执行的纪律），仍主动写 rules/skills；否则留在 memory。

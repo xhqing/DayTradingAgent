@@ -65,7 +65,7 @@ pc.disconnect()
 ## 权限边界
 
 - 老虎 TBNZ 账户**美股无行情权限**，WebSocket 只能订阅港股。
-- 港股 **Lv2 实测可用（✅ 2026-07-10 盘中实证）**：`get_quote_permission()` 返回 `hkStockQuoteLv2`（expire_at=-1，永久有效；A 股送 Lv1）。午市盘中实订 `subscribe_depth_quote(['02800','00700'])`，**25 秒收 24 条推送、0 错误，每条 `QuoteDepthData` 的 `ask`+`bid` 各 10 档**（盈富 ask 24.84→25.02、bid 24.82→24.64；腾讯 ask 462→463.8、bid 461.8→460），每档含 `price`/`volume`/`orderCount`，bid1 volume 实时跳动 → 真·实时流非缓存。**推翻「海外需购 hkStockQuoteLv2Global」推断**：TBNZ 的 `hkStockQuoteLv2` 实际已开通完整 10 档 depth（见根目录 `consistency-review-2026-07-09.md` A2 已定论）。⚠️ depth 推送**未见经纪队列 broker id**（富途港股 Level2 有 broker；老虎 broker 队列若需另有接口，未测）。
+- 港股 **Lv2 实测可用（✅ 2026-07-10 盘中实证）**：`get_quote_permission()` 返回 `hkStockQuoteLv2`（expire_at=-1，永久有效；A 股送 Lv1）。午市盘中实订 `subscribe_depth_quote(['02800','00700'])`，**25 秒收 24 条推送、0 错误，每条 `QuoteDepthData` 的 `ask`+`bid` 各 10 档**（盈富 ask 24.84→25.02、bid 24.82→24.64；腾讯 ask 462→463.8、bid 461.8→460），每档含 `price`/`volume`/`orderCount`，bid1 volume 实时跳动 → 真·实时流非缓存。**推翻「海外需购 hkStockQuoteLv2Global」推断**：TBNZ 的 `hkStockQuoteLv2` 实际已开通完整 10 档 depth（2026-07-10 盘中实订 `subscribe_depth_quote` 实证，见本节上文的 25 秒 24 条推送实测）。⚠️ depth 推送**未见经纪队列 broker id**（富途港股 Level2 有 broker；老虎 broker 队列若需另有接口，未测）。
 - 老虎仅作数据源，**未授权交易**（交易仍走长桥 CLI）。
 
 ## 与长桥的分工
