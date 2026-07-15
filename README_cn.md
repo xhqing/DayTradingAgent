@@ -11,6 +11,8 @@
   <img src="https://img.shields.io/badge/mode-signal-FF8C00.svg" alt="Mode: Signal" />
 </p>
 
+<p align="center">🌐 <a href="README.md">English</a></p>
+
 **Victor** 是一个港股 / 美股日内交易的 AI 执行 agent，基于 [Claude Code](https://claude.com/claude-code) 构建。它负责盯盘、分析标的、计算仓位与止损位、输出结构化交易信号——而每一笔订单都由人在券商 App 里手动执行。
 
 > 这**不是**一个传统意义上的软件项目：没有可供 `npm install` 或 `cargo run` 的应用。**这个仓库本身就是 agent**——它的全部行为方式都由 `.claude/` 下的 skills 和 rules 塑造，Claude Code 加载它们，作为 Victor 的工作纪律。
