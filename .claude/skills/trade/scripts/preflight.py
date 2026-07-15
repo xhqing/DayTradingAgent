@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""盯盘开盘前检查：当前时间 / 港股美股时段 / 长桥 token / 富途 OpenD / signals 文件。
+"""盯盘开盘前检查：当前时间 / 港股美股时段 / 长桥 token / 富途 OpenD。
 用法: python3 preflight.py
 一行汇总就绪状态,避免开盘才发现 token 失效或时间误判。"""
 import subprocess, datetime, os, socket
@@ -56,13 +56,13 @@ elif 780 <= hhmm < 960:
     hk = "港股午市 13:00-16:00"
 else:
     hk = "盘外"
-# 美股时段 (夏令时 21:30-04:00 次日 / 冬令时 22:30-05:00 次日, 简化需人工确认夏冬令)
+# 美股时段（2026-07-15 修订：美股交易日 24 小时均可发信号，含盘前/盘中/盘后/夜盘）
 if wd >= 5:
     us = "周末休市"
 elif 1290 <= hhmm < 1440 or 0 <= hhmm < 240:
-    us = "美股盘中(夏令时估,确认夏冬令)"
+    us = "美股盘中(夏令时估)·24h均可发"
 else:
-    us = "盘外"
+    us = "美股盘前/盘后/夜盘·24h均可发"
 print(f"📈 港股:{hk} | 美股:{us}")
 
 # 长桥 token（先确保 /tmp/lb.sh 存在，/tmp 被清会自动重建）
@@ -80,20 +80,4 @@ def port_open(p):
         return False
 print(f"📊 富途OpenD:11111 {'✅' if port_open(11111) else '❌(未登录/未启动)'}")
 
-# positions 持仓检查（2026-07-10 前置：开仓前确认无持仓，一次一标的硬规矩）
-pos = bash("bash /tmp/lb.sh positions 2>&1", timeout=15)
-pos_low = pos.lower()
-if 'error' in pos_low or 'connect' in pos_low or not pos:
-    pos_stat = "❌查询失败(长桥API，盘后再查)"
-else:
-    # 解析 markdown 表格判断有无数据行——不能靠 'symbol' 字样：表头永远含 Symbol 会误判"有持仓"（2026-07-13 实测修复）
-    data_lines = [l for l in pos.splitlines()
-                  if l.strip().startswith('|')
-                  and 'symbol' not in l.lower()
-                  and 'name' not in l.lower()
-                  and '---' not in l]
-    if data_lines:
-        pos_stat = f"⚠️有持仓({len(data_lines)}行，注意一次一标的硬规矩)"
-    else:
-        pos_stat = "✅空仓(可开仓)"
-print(f"📊 positions: {pos_stat}")
+# positions 检查已移除（2026-07-15 演练模式：假设执行、不查 positions，见 SKILL「自主演练模式升级」第 1 条）

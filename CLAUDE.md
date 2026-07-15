@@ -6,4 +6,4 @@
 
 - @.claude/rules/verify-facts-before-stating.md — 陈述事实性 / 数值性结论前必须先验证，禁止把推测当事实
 - @.claude/rules/output-and-writing-style.md — 对话输出高信息密度，写文件语义清晰优先
-- @.claude/rules/knowledge-sedimentation.md — 知识沉淀以 rules / skills 为归宿，AutoMemory 只作临时缓冲
+- @.claude/rules/knowledge-sedimentation.md — 知识沉淀：AutoMemory 持久存（项目级 .claude/memory/）+ rules / skills 强约束规范归宿

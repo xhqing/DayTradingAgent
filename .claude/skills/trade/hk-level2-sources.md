@@ -25,11 +25,13 @@
 - ✅ **已实测（2026-07-06）**：海外账户(moomoo)免费，港股 10 档盘口 + 经纪队列齐全，`subscribe ORDER_BOOK/BROKER` ret=0 即有权限。详见 `futu-opend-level2.md`。
 - 行动：注册 moomoo 账号 → 装 OpenD → 实测 depth 订阅。零成本试。
 
-### 老虎证券 OpenAPI（已接入）—— TBNZ 需购买
+### 老虎证券 OpenAPI（已接入）—— TBNZ 实测免费可用 ✅
+> **2026-07-10 盘中实测更新**：下方「非大陆需购买」的旧调研结论**已作废**。实测 TBNZ 的 `hkStockQuoteLv2` 已开通完整 10 档 depth（`subscribe_depth_quote` 返回 ask/bid 各 10 档、expire=-1 永久免费，详见 `tiger-websocket.md`、`accounts.md`）。
+
 - `hkStockQuoteLv2Global` = 10 档买卖盘 + 逐笔成交 + 经纪队列（符合定义）。
-- 地域限制：大陆用户免费（`hkStockQuoteLv2`），**非大陆用户需购买**（`hkStockQuoteLv2Global`），价格未公开。
-- 实情：TBNZ = 新西兰 = 非大陆 = 需购买。与美股 permission denied 一致。
-- 行动：联系老虎客服问 Global 版价格，便宜则在已通的老虎 SDK 上激活（subscribe_depth_quote 链路已验证）。
+- ~~地域限制：大陆用户免费（`hkStockQuoteLv2`），非大陆用户需购买（`hkStockQuoteLv2Global`），价格未公开。~~（2026-07-10 实测推翻：TBNZ 非大陆账户 `hkStockQuoteLv2` 实际免费可用）
+- ~~实情：TBNZ = 新西兰 = 非大陆 = 需购买。与美股 permission denied 一致。~~（已作废，实测免费）
+- ~~行动：联系老虎客服问 Global 版价格。~~（无需购买，直接用 `subscribe_depth_quote`。）
 
 ### CTradeExchange/free-quote（alltick.co）—— 合规红旗 ⚠️
 - 标榜免费实时 10 档港股盘口，126 stars，需申请 token。

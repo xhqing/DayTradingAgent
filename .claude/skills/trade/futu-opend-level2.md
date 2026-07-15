@@ -96,7 +96,7 @@ ctx.subscribe(['HK.00700'], [SubType.ORDER_BOOK])
 | 经纪队列 broker id | ✅ 港交所特有 | ❌ 无（美股多交易所结构没有） |
 | 完整深度 | HKEX 单一源 | 各交易所簿（NASDAQ TotalView/ARCA Book 等），富途给聚合 10 档 |
 
-→ 美股没有 `get_broker_queue`（港股特有）；美股深度靠 `get_order_book` 的 10 档价格+挂单量。美股盘前是静态盘口（`svr_recv_time` 空），盘中（21:30-04:00）实时推送。
+→ 美股没有 `get_broker_queue`（港股特有）；美股深度靠 `get_order_book` 的 10 档价格+挂单量。美股盘前是静态盘口（`svr_recv_time` 空），盘中（夏令时 21:30-04:00 / 冬令时 22:30-05:00）实时推送。2026-07-15 起美股 24 小时均可发信号（盘前 / 盘中 / 盘后 / 夜盘），富途推送覆盖盘中实时段，盘前 / 盘后为静态盘口。
 
 ## 三源对比与选用
 

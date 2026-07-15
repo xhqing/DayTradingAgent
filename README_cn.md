@@ -39,9 +39,9 @@
 |---|---|
 | **事实先验证** | 实体归属、算术、交易日历、API 字段、手续费——先验证再断言，禁止把推测当事实。 |
 | **信号模式** | 自 2026-07-07 起，Victor 只发信号（🟢 开仓 / 🔴 平仓 / 🟡 移动止损 / 🟠 移动止盈），绝不调用任何下单命令。 |
-| **EV 驱动** | 每笔开仓都要求胜率 > 50% **且** 赔率 > 2，否则不发信号。 |
+| **EV 驱动** | 每笔开仓都要求胜率 > 50% **且** 赔率 > 1，否则不发信号。 |
 | **全成本盈亏** | 净盈亏 = 毛盈亏 − 手续费 − 融资利息，三项分别从对账单取数，绝不估算。 |
-| **知识沉淀** | 实战中沉淀下来的经验，提炼进 `rules/` 和 `skills/`——它们是跨会话复用的归宿，不是转瞬即逝的对话记忆。 |
+| **知识沉淀** | AutoMemory 持久存于项目级 `.claude/memory/`；强约束规范沉淀进 `rules/` 和 `skills/`。知识沉淀自检 hook 已于 2026-07-15 撤销。 |
 
 ---
 
@@ -57,7 +57,7 @@
 4. `snapshot.py` / `kline.py` —— 快照 + 趋势 / 斐波那契回撤位
 5. `monitor.py` —— 密采样盯盘（默认 6 轮 × 10 秒）
 
-当某个机会达到 EV 门槛，Victor 以表格形式在对话中输出信号（带 emoji 标识），算好止损价、填好账户字段。人在券商 App 执行后反馈，Victor 随即转入盯持仓。
+当某个机会达到 EV 门槛，Victor 以表格形式在对话中输出信号（带 emoji 标识），算好止损价，再把信号追加到当日的信号日志（港股 / 美股分开记）供复盘。账户由用户自决——Victor 不管账户、不核实买力；人在自家券商 App 执行。
 
 ---
 
@@ -71,9 +71,12 @@ DayTradingAgent/
 ├── README_cn.md                   # 本文件（中文）
 │
 ├── .claude/
-│   ├── settings.json              # Hook 配置（知识沉淀自检）
+│   ├── settings.json              # 项目设置（hooks 为空）
+│   ├── settings.local.json        # 本机配置：permissions + autoMemoryDirectory（已 gitignore）
+│   ├── settings.local.example.json # settings.local.json 模板（入库）
+│   ├── memory/                    # AutoMemory 存储（项目级，入库——不 gitignore）
 │   ├── hooks/
-│   │   └── sediment-check.sh      # Stop hook：提醒 Victor 把本次经验提炼落盘
+│   │   └── sediment-check.sh      # （2026-07-15 停用——知识沉淀自检已撤销）
 │   │
 │   ├── rules/                     # 通用工作规范（跨领域）
 │   │   ├── verify-facts-before-stating.md
@@ -90,14 +93,17 @@ DayTradingAgent/
 │           ├── tiger-websocket.md        # 老虎 SDK WebSocket 代码骨架
 │           ├── hk-level2-sources.md      # 港股 Level2 数据源调研
 │           ├── futu-opend-level2.md      # 富途 OpenD Level2 调用骨架
+│           ├── quant/                    # 量化数据层（schema、数据源、README）
+│           ├── signals/                  # 每日信号日志（港股 / 美股分开，HKT/ET 后缀）
 │           └── scripts/                  # 盯盘脚本库
 │               ├── preflight.py
 │               ├── hot_list.py
 │               ├── snapshot.py
 │               ├── kline.py
-│               └── monitor.py
+│               ├── monitor.py
+│               └── alert.sh              # 信号输出时的声音提醒
 │
-└── archive/                       # 仅本地保留的历史归档（已 gitignore）：历史 memory 快照 + 信号日志
+└── archive/                       # 仅本地保留的历史归档（已 gitignore）：重构前的 memory 快照
 ```
 
 > 真实的 `config.json` 和 `accounts.json`（含账户号、资金、凭证）**已被 gitignore**——仓库只随附 `*.example.json` 模板。`archive/` 目录同样仅本地保留。
@@ -114,7 +120,7 @@ Victor 通过三个券商数据源交易与读取行情：
 | **老虎证券 SDK**（`tigeropen`） | 港股备用数据 + WebSocket 推送 | 港股 Lv1/Lv2 已验证可用；**美股无行情权限** |
 | **富途 OpenD**（`futu-api`） | 港股免费 Level2（10 档盘口 + 经纪队列）+ 美股 10 档 | 本地网关 `127.0.0.1:11111`；港股早盘盯盘的主力免费源 |
 
-三个长桥账户：一个**模拟盘**（训练用）+ 两个**实盘**（主账户 + 日内融，资金可随时互划）。某个交易日**用哪个实盘账户由 Victor 决定**，写入信号的"账户"字段；但订单仍由人执行。
+三个长桥账户：一个**模拟盘**（训练用）+ 两个**实盘**（主账户 + 日内融，资金可随时互划）。**用哪个账户由用户自决**——2026-07-15 起 Victor 不管账户、不核实买力；人在自家券商 App 执行。
 
 ---
 
@@ -126,7 +132,7 @@ Victor 在发出任何信号前逐条自检（完整清单见 `SKILL.md`）：
 - **由止损反推仓位**——仓位 = `max_loss_per_trade` ÷ 每股最大损失，按手数取整；单笔损失受配置额度约束，而非净资产比例。
 - **每个开仓信号必须含止损价**——取技术位，由用户在 App 挂止损。
 - **禁衍生品**——只做个股、ETF（含 2×/3× 杠杆）、REIT；不碰期权 / 窝轮 / CBBC / 期货。
-- **只做盘中**——仅正常交易时段，不做盘前 / 盘后 / 夜盘。港股持仓须在 12:00 午休前、15:45 收盘前平掉；日内融美股在北京夏令时约 03:45 被券商强平。
+- **港股限盘中 / 美股 24 小时**——港股仅正常交易时段（09:30-12:00 / 13:00-16:00，不做盘前 / 盘后 / 夜盘），持仓须在 12:00 午休前、15:45 收盘前平掉；美股（2026-07-15 起）24 小时均可发信号（盘前 / 盘中 / 盘后 / 夜盘），日内融美股在北京夏令时约 03:45 被券商强平。
 - **做空默认允许**——先假设全部标的可做空，除非用户反馈某标的不可空（港股模拟盘是账户级例外）。
 - **当日平仓**——从不在任何账户持仓过夜。
 
@@ -140,7 +146,7 @@ Victor 在发出任何信号前逐条自检（完整清单见 `SKILL.md`）：
 - **长桥** Terminal CLI 已安装并通过 OAuth 认证；账户 token 备份在 `~/.longbridge/openapi/`
 - **老虎** SDK（`tigeropen`）已配置在 `~/.tigeropen/`
 - **富途 OpenD** 本地网关在运行（港股 Level2）
-- 从 `*.example.json` 模板填好本地的 `config.json` 和 `accounts.json`
+- 从 `*.example.json` 模板填好本地的 `config.json` 和 `accounts.json`；可选：把 `.claude/settings.local.example.json` 复制为 `.claude/settings.local.json`，把 `autoMemoryDirectory` 改成你本机的绝对路径，让 AutoMemory 存到项目内（不配则存 Claude Code 默认全局路径）
 
 即便没有这些环境，本仓库仍是一份完整的「一个守纪律的交易 agent 应当如何行事」的规范说明。
 

@@ -39,9 +39,9 @@ The operating principle, in one line: **losing money on a trade is acceptable ri
 |---|---|
 | **Facts first** | Verify entity identity, arithmetic, trading calendar, API fields, and fees before asserting. Never pass a guess off as a fact. |
 | **Signal mode** | Since 2026-07-07, Victor only emits signals (🟢 open / 🔴 close / 🟡 trailing stop / 🟠 trailing take-profit). It never calls any order-placement command. |
-| **EV-driven** | Every entry requires win-rate > 50% **and** payoff ratio > 2; otherwise no signal. |
+| **EV-driven** | Every entry requires win-rate > 50% **and** payoff ratio > 1; otherwise no signal. |
 | **Full-cost P&L** | Net P&L = gross − commissions − margin interest, each sourced from the broker statement — never estimated. |
-| **Knowledge sedimentation** | Lessons hard-won in live trading are distilled into `rules/` and `skills/`, the durable home — not transient chat memory. |
+| **Knowledge sedimentation** | AutoMemory persists in project-level `.claude/memory/`; hard rules distill into `rules/` and `skills/`. The sediment self-check hook was removed 2026-07-15. |
 
 ---
 
@@ -57,7 +57,7 @@ Victor is activated by Claude Code whenever the user asks to **watch the market,
 4. `snapshot.py` / `kline.py` — snapshot + trend / Fibonacci retracement
 5. `monitor.py` — dense sampling (default 6 rounds × 10s) during the session
 
-When a setup meets the EV bar, Victor emits a signal as a table in the chat (emoji-marked), with the stop price computed and the account field filled in. The human executes in the broker app and reports back; Victor then switches to watching the open position.
+When a setup meets the EV bar, Victor emits a signal as a table in the chat (emoji-marked), with the stop price computed, then appends it to the day's signal log (HK / US split) for later review. The account is the user's choice — Victor does not manage accounts or verify buying power; the human executes in their own broker app.
 
 ---
 
@@ -71,9 +71,12 @@ DayTradingAgent/
 ├── README_cn.md                   # Chinese README
 │
 ├── .claude/
-│   ├── settings.json              # Hook wiring (knowledge-sedimentation self-check)
+│   ├── settings.json              # Project settings (hooks empty)
+│   ├── settings.local.json        # Local-only: permissions + autoMemoryDirectory (gitignored)
+│   ├── settings.local.example.json # Template for settings.local.json (tracked)
+│   ├── memory/                    # AutoMemory store (project-level, tracked — not gitignored)
 │   ├── hooks/
-│   │   └── sediment-check.sh      # Stop hook: remind Victor to distill learnings to disk
+│   │   └── sediment-check.sh      # (disabled 2026-07-15 — sediment self-check removed)
 │   │
 │   ├── rules/                     # General working discipline (cross-domain)
 │   │   ├── verify-facts-before-stating.md
@@ -90,14 +93,17 @@ DayTradingAgent/
 │           ├── tiger-websocket.md        # Tiger SDK WebSocket skeleton
 │           ├── hk-level2-sources.md      # HK Level-2 data-source survey
 │           ├── futu-opend-level2.md      # Futu OpenD Level-2 skeleton
+│           ├── quant/                    # Quant data layer (schema, sources, README)
+│           ├── signals/                  # Per-day signal logs (HK / US split, HKT/ET suffix)
 │           └── scripts/                  # Watch-market script library
 │               ├── preflight.py
 │               ├── hot_list.py
 │               ├── snapshot.py
 │               ├── kline.py
-│               └── monitor.py
+│               ├── monitor.py
+│               └── alert.sh              # Sound alert on signal output
 │
-└── archive/                       # Local-only history (gitignored): past memory snapshots + signal logs
+└── archive/                       # Local-only history (gitignored): past memory snapshots (pre-refactor)
 ```
 
 > The real `config.json` and `accounts.json` (containing account numbers, balances, credentials) are **gitignored** — only the `*.example.json` templates ship in the repo. The `archive/` directory is likewise local-only.
@@ -114,7 +120,7 @@ Victor trades through and reads from three broker data sources:
 | **Tiger Brokers SDK** (`tigeropen`) | HK backup data + WebSocket push | HK Lv1/Lv2 verified; **no US quote permission** |
 | **Futu OpenD** (`futu-api`) | Free HK Level-2 (10-depth book + broker queue) + US 10-depth | Local gateway `127.0.0.1:11111`; main free source for HK early-session watching |
 
-Three Longbridge accounts: one **paper-trading** (training) + two **live** (main + intraday-margin, funds freely transferable). Which live account to use on a given day is **decided by Victor** and written into the signal's account field; the human still executes.
+Three Longbridge accounts: one **paper-trading** (training) + two **live** (main + intraday-margin, funds freely transferable). Which account to use is **the user's choice** — since 2026-07-15 Victor does not manage accounts or verify buying power; the human executes in their own broker app.
 
 ---
 
@@ -126,7 +132,7 @@ Victor self-checks these before emitting any signal (full list in `SKILL.md`):
 - **Position sizing from stop** — size = `max_loss_per_trade` ÷ per-share max loss, rounded to lot size; loss is capped by config, not by % of equity.
 - **Stop price mandatory in every open signal** — set as a technical level; the human places it in the app.
 - **No derivatives** — stocks, ETFs (incl. 2×/3× leveraged), and REITs only; no options/warrants/CBBCs/futures.
-- **Intraday only** — regular session only; no pre/after/overnight. HK positions are flattened before the 12:00 lunch break and before the 15:45 close; intraday-margin US is auto-flattened by the broker around 03:45 (Beijing summer time).
+- **HK intraday / US 24h** — HK: regular session only (09:30-12:00 / 13:00-16:00, no pre/after/overnight), positions flattened before the 12:00 lunch break and the 15:45 close. US (since 2026-07-15): signals allowed around the clock — pre / regular / after / overnight; intraday-margin US is auto-flattened by the broker around 03:45 (Beijing summer time).
 - **Short allowed by default** — assume shortable unless told otherwise (HK paper-trading is the account-level exception).
 - **Flat by end of day** — never carry a position overnight.
 
@@ -140,7 +146,7 @@ To actually run Victor, you need — outside this repo:
 - **Longbridge** Terminal CLI installed and OAuth-authenticated; account token backups under `~/.longbridge/openapi/`
 - **Tiger** SDK (`tigeropen`) configured at `~/.tigeropen/`
 - **Futu OpenD** local gateway running for HK Level-2
-- A local `config.json` and `accounts.json` filled in from the `*.example.json` templates
+- A local `config.json` and `accounts.json` filled in from the `*.example.json` templates; optionally copy `.claude/settings.local.example.json` → `.claude/settings.local.json` and set `autoMemoryDirectory` to your machine's absolute path to store AutoMemory inside the project (it defaults to Claude Code's global path otherwise)
 
 Without these, the repo still reads as a complete spec of *how* a disciplined trading agent should behave.
 
