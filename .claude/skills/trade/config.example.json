@@ -13,10 +13,6 @@
     "stop_loss_pct": 0.03,
     "_comment_stoploss_pct": "fixed_percent 模式生效,默认 3%(0.03)。"
   },
-  "intraday_margin": {
-    "flat_before_close_mins": 15,
-    "_comment": "日内融收盘前自平分钟数。港股15:45前/美股03:45前(北京夏令时)。可调,如12更保守、18更激进(但不建议超18,留券商强平缓冲)。"
-  },
   "monitoring": {
     "early_session": {
       "sample_interval_sec": 10,
@@ -28,9 +24,5 @@
     "_comment_calm": "平稳期巡检间隔分钟,配合 /loop。"
   },
   "harness_timeout_sec": 120,
-  "_comment_harness": "单条Bash命令硬超时秒。环境约束,一般不改。",
-  "position_sizing": {
-    "prefer_account": "intraday_margin",
-    "_comment": "实盘优先账户。main=主账户; intraday_margin=日内融(当前唯一可实操账户)。账户买力等敏感数值见 accounts.json。"
-  }
+  "_comment_harness": "单条Bash命令硬超时秒。环境约束,一般不改。"
 }

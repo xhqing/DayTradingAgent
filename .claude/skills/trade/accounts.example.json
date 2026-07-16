@@ -1,37 +1,5 @@
 {
   "_comment": "账户敏感信息模板。复制为 accounts.json 后填入真实值(accounts.json 已 gitignore)。⚠️ 资金随时变化,使用前用 longbridge assets / auth status 实时核实。",
-  "longbridge": {
-    "cli_auth_path": "~/.longbridge/openapi/cli-auth",
-    "_comment_auth": "cli-auth 是加密二进制容器(magic 4c 42 01),非 JSON;切换账户用 cp 还原备份 + auth status 验证。",
-    "default_account": "main",
-    "accounts": {
-      "papertrading": {
-        "account_no": "<LBPT模拟盘账号>",
-        "channel": "lb_papertrading",
-        "backup": "~/.longbridge/openapi/cli-auth.papertrading.bak"
-      },
-      "main": {
-        "account_no": "<主账户H开头账号>",
-        "channel": "lb",
-        "backup": "~/.longbridge/openapi/cli-auth.real-main.bak",
-        "net_assets_usd": 0,
-        "buying_power_usd": 0,
-        "available_hkd": 0,
-        "available_usd": 0,
-        "max_finance_usd": 0
-      },
-      "intraday_margin": {
-        "account_no": "<日内融H开头账号>",
-        "channel": "lb",
-        "backup": "~/.longbridge/openapi/cli-auth.intraday-margin.bak",
-        "net_assets_usd": 0,
-        "buying_power_usd": 0,
-        "available_hkd": 0,
-        "available_usd": 0,
-        "max_finance_usd": 0
-      }
-    }
-  },
   "tiger": {
     "config_path": "~/.tigeropen/",
     "tiger_id": "<tiger_id>",

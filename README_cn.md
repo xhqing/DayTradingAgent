@@ -42,24 +42,24 @@
 | **事实先验证** | 实体归属、算术、交易日历、API 字段、手续费——先验证再断言，禁止把推测当事实。 |
 | **信号模式** | 自 2026-07-07 起，Victor 只发信号（🟢 开仓 / 🔴 平仓 / 🟡 移动止损 / 🟠 移动止盈），绝不调用任何下单命令。 |
 | **EV 驱动** | 每笔开仓都要求胜率 > 50% **且** 赔率 > 1，否则不发信号。 |
-| **全成本盈亏** | 净盈亏 = 毛盈亏 − 手续费 − 融资利息，三项分别从对账单取数，绝不估算。 |
+| **信号层面复盘** | 统计胜率 / 赔率 / EV（信号层面，不依赖账户）；实际账户盈亏由用户自算。 |
 | **知识沉淀** | AutoMemory 持久存于项目级 `.claude/memory/`；强约束规范沉淀进 `rules/` 和 `skills/`。知识沉淀自检 hook 已于 2026-07-15 撤销。 |
 
 ---
 
 ## Victor 如何工作
 
-当用户提出**盯盘、下单、交易复盘、分析标的，或任何涉及实盘账户的操作**时，Claude Code 激活 Victor，加载 `trade` skill 并运行其护栏。
+当用户提出**盯盘、发信号、交易复盘、分析标的**时，Claude Code 激活 Victor，加载 `trade` skill 并运行其护栏。
 
 **盯盘标准启动序列**（脚本在 `.claude/skills/trade/scripts/`）：
 
-1. `preflight.py` —— 核实时间、港股 / 美股时段、长桥 token、富途 OpenD 端口
+1. `preflight.py` —— 核实时间、港股 / 美股时段、富途 OpenD 端口
 2. `hot_list.py` —— 拉热度榜（选标的的铁律第一步）
-3. `static` + `classify_hk_security.py` —— 核实标的真实身份与证券类型
+3. `classify_hk_security.py`（富途快照）—— 核实标的真实身份与证券类型
 4. `snapshot.py` / `kline.py` —— 快照 + 趋势 / 斐波那契回撤位
 5. `monitor.py` —— 密采样盯盘（默认 6 轮 × 10 秒）
 
-当某个机会达到 EV 门槛，Victor 以表格形式在对话中输出信号（带 emoji 标识），算好止损价，再把信号追加到当日的信号日志（港股 / 美股分开记）供复盘。账户由用户自决——Victor 不管账户、不核实买力；人在自家券商 App 执行。
+当某个机会达到 EV 门槛，Victor 以表格形式在对话中输出信号（带 emoji 标识），算好止损价，再把信号追加到当日的信号日志（港股 / 美股分开记）供复盘。Victor 只发信号、不管账户、不下单；人在自家券商 App 执行。
 
 ---
 
@@ -90,8 +90,8 @@ DayTradingAgent/
 │           ├── SKILL.md           # 主文件：执行规范 + 硬性护栏
 │           ├── classify_hk_security.py   # 港股证券类型判定（个股/ETF/REIT/衍生品）
 │           ├── config.example.json       # 风控 / 盯盘配置模板
-│           ├── accounts.example.json     # 账户信息模板
-│           ├── accounts.md               # 账户切换链路、额度基线、CLI 接口坑
+│           ├── accounts.example.json     # 老虎凭证模板
+│           ├── accounts.md               # 老虎 SDK 配置 + 港股代码格式
 │           ├── tiger-websocket.md        # 老虎 SDK WebSocket 代码骨架
 │           ├── hk-level2-sources.md      # 港股 Level2 数据源调研
 │           ├── futu-opend-level2.md      # 富途 OpenD Level2 调用骨架
@@ -108,7 +108,7 @@ DayTradingAgent/
 └── archive/                       # 仅本地保留的历史归档（已 gitignore）：重构前的 memory 快照
 ```
 
-> 真实的 `config.json` 和 `accounts.json`（含账户号、资金、凭证）**已被 gitignore**——仓库只随附 `*.example.json` 模板。`archive/` 目录同样仅本地保留。
+> 真实的 `config.json` 和 `accounts.json`（含老虎凭证）**已被 gitignore**——仓库只随附 `*.example.json` 模板。`archive/` 目录同样仅本地保留。
 
 ---
 
@@ -118,11 +118,10 @@ Victor 通过三个券商数据源交易与读取行情：
 
 | 数据源 | 角色 | 说明 |
 |---|---|---|
-| **长桥 Terminal CLI** | 主交易 + 全行情 | 用 `/tmp/lb.sh` 包装，强制走 OAuth 避开环境变量覆盖；单账户会话模型 |
+| **富途 OpenD**（`futu-api`） | 盯盘行情主力（港股 + 美股） | 港股免费 Level2（10 档盘口 + 经纪队列 + 资金流）+ 美股 10 档 + 美股资金流；本地网关 `127.0.0.1:11111` |
 | **老虎证券 SDK**（`tigeropen`） | 港股备用数据 + WebSocket 推送 | 港股 Lv1/Lv2 已验证可用；**美股无行情权限** |
-| **富途 OpenD**（`futu-api`） | 港股免费 Level2（10 档盘口 + 经纪队列）+ 美股 10 档 | 本地网关 `127.0.0.1:11111`；港股早盘盯盘的主力免费源 |
 
-三个长桥账户：一个**模拟盘**（训练用）+ 两个**实盘**（主账户 + 日内融，资金可随时互划）。**用哪个账户由用户自决**——2026-07-15 起 Victor 不管账户、不核实买力；人在自家券商 App 执行。
+Victor 只发信号、不下单。**用哪个券商 / 账户由用户自决**；人在自家券商 App 执行。行情数据来自上表的富途 + 老虎。
 
 ---
 
@@ -134,8 +133,8 @@ Victor 在发出任何信号前逐条自检（完整清单见 `SKILL.md`）：
 - **由止损反推仓位**——仓位 = `max_loss_per_trade` ÷ 每股最大损失，按手数取整；单笔损失受配置额度约束，而非净资产比例。
 - **每个开仓信号必须含止损价**——取技术位，由用户在 App 挂止损。
 - **禁衍生品**——只做个股、ETF（含 2×/3× 杠杆）、REIT；不碰期权 / 窝轮 / CBBC / 期货。
-- **港股限盘中 / 美股 24 小时**——港股仅正常交易时段（09:30-12:00 / 13:00-16:00，不做盘前 / 盘后 / 夜盘），持仓须在 12:00 午休前、15:45 收盘前平掉；美股（2026-07-15 起）24 小时均可发信号（盘前 / 盘中 / 盘后 / 夜盘），日内融美股在北京夏令时约 03:45 被券商强平。
-- **做空默认允许**——先假设全部标的可做空，除非用户反馈某标的不可空（港股模拟盘是账户级例外）。
+- **港股限盘中 / 美股 24 小时**——港股仅正常交易时段（09:30-12:00 / 13:00-16:00），持仓须在 12:00 午休前、15:45 收盘前平掉；美股（2026-07-15 起）24 小时均可发信号（盘前 / 盘中 / 盘后 / 夜盘）。
+- **做空默认允许**——先假设全部标的可做空，除非用户反馈某标的不可空。
 - **当日平仓**——从不在任何账户持仓过夜。
 
 ---
@@ -145,10 +144,9 @@ Victor 在发出任何信号前逐条自检（完整清单见 `SKILL.md`）：
 要让 Victor 真正跑起来，仓库之外还需要：
 
 - [Claude Code](https://claude.com/claude-code)
-- **长桥** Terminal CLI 已安装并通过 OAuth 认证；账户 token 备份在 `~/.longbridge/openapi/`
 - **老虎** SDK（`tigeropen`）已配置在 `~/.tigeropen/`
-- **富途 OpenD** 本地网关在运行（港股 Level2）
-- 从 `*.example.json` 模板填好本地的 `config.json` 和 `accounts.json`；可选：把 `.claude/settings.local.example.json` 复制为 `.claude/settings.local.json`，把 `autoMemoryDirectory` 改成你本机的绝对路径，让 AutoMemory 存到项目内（不配则存 Claude Code 默认全局路径）
+- **富途 OpenD** 本地网关在运行（港股 Level2 + 美股深度）
+- 从 `*.example.json` 模板填好本地的 `config.json` 和 `accounts.json`（accounts.json 只需 tiger 段）；可选：把 `.claude/settings.local.example.json` 复制为 `.claude/settings.local.json`，把 `autoMemoryDirectory` 改成你本机的绝对路径，让 AutoMemory 存到项目内（不配则存 Claude Code 默认全局路径）
 
 即便没有这些环境，本仓库仍是一份完整的「一个守纪律的交易 agent 应当如何行事」的规范说明。
 
@@ -156,7 +154,7 @@ Victor 在发出任何信号前逐条自检（完整清单见 `SKILL.md`）：
 
 ## 当前阶段
 
-**模拟盘训练 → 半自动实盘 → 自主实盘。** Victor 当前处于**信号模式**：AI 发信号、人执行——这套自 2026-07-07 起的安排，根治了此前 AI 直接下单导致的订单失效 / 反向开仓 / 止损失效问题。要进阶到让 AI 重新获得直接下单权限，需要信号胜率、赔率、挣钱速率稳定 + 持续正收益，并经用户明确授权。
+Victor 当前处于**信号模式**：AI 发信号、人执行——这套自 2026-07-07 起的安排，根治了此前 AI 直接下单导致的订单失效 / 反向开仓 / 止损失效问题。要进阶到让 AI 重新获得直接下单权限，需要信号胜率、赔率、EV 稳定为正 + 持续进步，并经用户明确授权。
 
 ---
 

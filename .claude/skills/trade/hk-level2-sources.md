@@ -49,7 +49,7 @@
 |---|---|---|
 | 早盘盯盘（实时 10 档推送） | 富途 OpenD（免费 WebSocket） | 老虎 Lv2 Global（若购买） |
 | 多源交叉验证 | 富途 + 长桥 + 老虎三源对比盘口 | free-quote（仅测试不实盘） |
-| 盘后复盘（历史逐笔） | AKShare 历史 + 富途逐笔 / 长桥 statement | futu_tick_downloader 存盘 |
+| 盘后复盘（历史逐笔） | AKShare 历史 + 富途逐笔 | futu_tick_downloader 存盘 |
 
 ## 优先行动序列
 
