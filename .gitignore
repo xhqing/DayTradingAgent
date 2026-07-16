@@ -12,3 +12,7 @@ tmp/
 
 # Python 字节码缓存（本地生成，不入库）
 __pycache__/
+
+# Claude Code 本机本地配置（permissions + autoMemoryDirectory 绝对路径），仅本机、不入库；
+# clone 者复制 .claude/settings.local.example.json → settings.local.json 后按本机路径填
+.claude/settings.local.json

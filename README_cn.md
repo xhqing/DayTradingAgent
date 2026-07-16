@@ -73,12 +73,9 @@ DayTradingAgent/
 ├── README_cn.md                   # 本文件（中文）
 │
 ├── .claude/
-│   ├── settings.json              # 项目设置（hooks 为空）
 │   ├── settings.local.json        # 本机配置：permissions + autoMemoryDirectory（已 gitignore）
 │   ├── settings.local.example.json # settings.local.json 模板（入库）
 │   ├── memory/                    # AutoMemory 存储（项目级，入库——不 gitignore）
-│   ├── hooks/
-│   │   └── sediment-check.sh      # （2026-07-15 停用——知识沉淀自检已撤销）
 │   │
 │   ├── rules/                     # 通用工作规范（跨领域）
 │   │   ├── verify-facts-before-stating.md

@@ -73,12 +73,9 @@ DayTradingAgent/
 ├── README_cn.md                   # Chinese README
 │
 ├── .claude/
-│   ├── settings.json              # Project settings (hooks empty)
 │   ├── settings.local.json        # Local-only: permissions + autoMemoryDirectory (gitignored)
 │   ├── settings.local.example.json # Template for settings.local.json (tracked)
 │   ├── memory/                    # AutoMemory store (project-level, tracked — not gitignored)
-│   ├── hooks/
-│   │   └── sediment-check.sh      # (disabled 2026-07-15 — sediment self-check removed)
 │   │
 │   ├── rules/                     # General working discipline (cross-domain)
 │   │   ├── verify-facts-before-stating.md
