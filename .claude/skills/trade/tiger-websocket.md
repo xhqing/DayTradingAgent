@@ -68,15 +68,14 @@ pc.disconnect()
 - 港股 **Lv2 实测可用（✅ 2026-07-10 盘中实证）**：`get_quote_permission()` 返回 `hkStockQuoteLv2`（expire_at=-1，永久有效；A 股送 Lv1）。午市盘中实订 `subscribe_depth_quote(['02800','00700'])`，**25 秒收 24 条推送、0 错误，每条 `QuoteDepthData` 的 `ask`+`bid` 各 10 档**（盈富 ask 24.84→25.02、bid 24.82→24.64；腾讯 ask 462→463.8、bid 461.8→460），每档含 `price`/`volume`/`orderCount`，bid1 volume 实时跳动 → 真·实时流非缓存。**推翻「海外需购 hkStockQuoteLv2Global」推断**：TBNZ 的 `hkStockQuoteLv2` 实际已开通完整 10 档 depth（2026-07-10 盘中实订 `subscribe_depth_quote` 实证，见本节上文的 25 秒 24 条推送实测）。⚠️ depth 推送**未见经纪队列 broker id**（富途港股 Level2 有 broker；老虎 broker 队列若需另有接口，未测）。
 - 老虎仅作数据源，**未授权交易**（交易仍走长桥 CLI）。
 
-## 与长桥的分工
+## 老虎 SDK 能力（长桥 CLI 2026-07-15 已撤销，盯盘走富途 + 老虎）
 
-| 维度 | 长桥 CLI | 老虎 SDK |
-|---|---|---|
-| 实时性 | sleep 轮询 10 秒 | WebSocket 毫秒级推送 |
-| 港股 | ✅ LV2 | ✅ Lv2 实测可用（2026-07-10 盘中：10 档 ask/bid，无经纪队列） |
-| 美股 | ✅ | ❌ 无权限 |
-| 交易 | ✅ 主+日内融 | ❌ 仅数据 |
-| 定位 | 主交易 + 全行情 | 港股 WebSocket 推送 + 交叉验证 |
+| 维度 | 老虎 SDK |
+|---|---|
+| 实时性 | WebSocket 毫秒级推送 |
+| 港股 | ✅ Lv2 实测可用（2026-07-10 盘中：10 档 ask/bid，无经纪队列） |
+| 美股 | ❌ 无权限（走富途） |
+| 定位 | 港股 WebSocket 推送 + 富途的备份 |
 
 ## 同步行情查询速查（非 WebSocket，轮询式）
 

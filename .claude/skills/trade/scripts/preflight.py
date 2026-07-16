@@ -1,48 +1,10 @@
 #!/usr/bin/env python3
-"""盯盘开盘前检查：当前时间 / 港股美股时段 / 长桥 token / 富途 OpenD。
+"""盯盘开盘前检查：当前时间 / 港股美股时段 / 富途 OpenD。
 用法: python3 preflight.py
-一行汇总就绪状态,避免开盘才发现 token 失效或时间误判。"""
-import subprocess, datetime, os, socket
-
-def bash(cmd, timeout=15):
-    try:
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
-        return (r.stdout or "").strip()
-    except Exception as e:
-        return f"ERR:{e}"
-
-# /tmp/lb.sh：长桥 CLI 包装器，屏蔽 LONGPORT_* 环境变量强制走 OAuth。
-# /tmp 重启即清，这里在调用前自检，不在则自动重建，避免脚本静默报 'No such file'。
-LB_WRAPPER = "/tmp/lb.sh"
-LB_WRAPPER_CONTENT = (
-    "#!/bin/bash\n"
-    'exec env -u LONGPORT_APP_KEY -u LONGPORT_APP_SECRET '
-    '-u LONGPORT_ACCESS_TOKEN ~/.local/bin/longbridge "$@"\n'
-)
-
-
-def ensure_lb_wrapper():
-    """确保 /tmp/lb.sh 存在且内容正确；被清则重建。幂等。"""
-    need_rebuild = True
-    try:
-        with open(LB_WRAPPER) as f:
-            if "env -u LONGPORT_APP_KEY" in f.read():
-                need_rebuild = False
-    except OSError:
-        pass
-    if not need_rebuild:
-        return
-    try:
-        with open(LB_WRAPPER, "w") as f:
-            f.write(LB_WRAPPER_CONTENT)
-        os.chmod(LB_WRAPPER, 0o755)
-        print(f"🔧 已重建 {LB_WRAPPER}（/tmp 被清过，长桥命令现在可用）")
-    except OSError as e:
-        print(f"⚠️ 重建 {LB_WRAPPER} 失败：{e}——长桥命令将报 'No such file'")
-
+一行汇总就绪状态,避免开盘才发现数据源掉线或时间误判。"""
+import datetime, socket
 
 now = datetime.datetime.now()
-today = now.strftime("%Y-%m-%d")
 hhmm = now.hour * 60 + now.minute
 wd = now.weekday()  # 0=Mon..6=Sun
 print(f"⏰ {now.strftime('%Y-%m-%d %H:%M:%S %A')}")
@@ -65,13 +27,7 @@ else:
     us = "美股盘前/盘后/夜盘·24h均可发"
 print(f"📈 港股:{hk} | 美股:{us}")
 
-# 长桥 token（先确保 /tmp/lb.sh 存在，/tmp 被清会自动重建）
-ensure_lb_wrapper()
-auth = bash("bash /tmp/lb.sh auth status 2>&1 | grep -iE 'Status|Account' | head -2")
-ok = "valid" in auth.lower()
-print(f"🔑 长桥token: {'✅' if ok else '❌'} {auth.replace(chr(10),' | ')[:80]}")
-
-# 富途 OpenD 端口
+# 富途 OpenD 端口（盯盘行情主力源，须登录成功才监听 11111）
 def port_open(p):
     s = socket.socket(); s.settimeout(1)
     try:
@@ -81,3 +37,4 @@ def port_open(p):
 print(f"📊 富途OpenD:11111 {'✅' if port_open(11111) else '❌(未登录/未启动)'}")
 
 # positions 检查已移除（2026-07-15 演练模式：假设执行、不查 positions，见 SKILL「自主演练模式升级」第 1 条）
+# 长桥 CLI token 检查已移除（2026-07-15 长桥 CLI 授权撤销、token 删除，盯盘数据走富途 + 老虎）

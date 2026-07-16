@@ -115,19 +115,33 @@ def code_in_ranges(code_str: str, ranges):
 
 
 def get_static_info(symbols: list) -> dict:
-    """用 lb.sh 包装器调长桥 static,返回 {归一化code: static_dict}。"""
-    lb = '/tmp/lb.sh'
-    if not os.path.exists(lb):
-        # 回退到直接 longbridge(可能被 LONGPORT_* 劫持)
-        lb = os.path.expanduser('~/.local/bin/longbridge')
-    sym_args = [s if s.endswith('.HK') else f'{s}.HK' for s in symbols]
+    """用富途 OpenD get_market_snapshot 拉静态信息,返回 {归一化code: static_dict}。
+    富途符号 市场.代码 前缀（HK.02800）。长桥 CLI 2026-07-15 撤销后改用富途。"""
+    from futu import OpenQuoteContext
+    # 统一转富途 HK. 前缀格式
+    codes = []
+    for s in symbols:
+        c = str(s).replace('.HK', '').replace('.hk', '')
+        if c.startswith('HK.'):
+            c = c[3:]
+        codes.append(f'HK.{c}')
     try:
-        out = subprocess.check_output(
-            [lb, 'static'] + sym_args + ['--format', 'json'],
-            stderr=subprocess.STDOUT, text=True, timeout=15
-        )
-        data = json.loads(out)
-        return {normalize_symbol(d.get('symbol', '')): d for d in data}
+        ctx = OpenQuoteContext('127.0.0.1', 11111)
+        ret, df = ctx.get_market_snapshot(codes)
+        ctx.close()
+        if ret != 0:
+            print(f'[warn] futu snapshot 失败 ret={ret}', file=sys.stderr)
+            return {}
+        result = {}
+        for _, row in df.iterrows():
+            code = normalize_symbol(str(row.get('code', '')).replace('HK.', ''))
+            result[code] = {
+                'symbol': f'{code}.HK',
+                'name': row.get('name'),
+                'lot_size': row.get('lot_size'),
+                'eps': row.get('earning_per_share'),  # 富途 eps 字段名 = earning_per_share
+            }
+        return result
     except Exception as e:
         print(f'[warn] static 拉取失败: {e}', file=sys.stderr)
         return {}
