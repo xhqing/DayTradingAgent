@@ -27,3 +27,6 @@
 
 <!-- commit-skill: automemory = ok -->
 - AutoMemory 目录：已配置到 .claude/memory/（2026-07-15 确认）
+
+<!-- commit-skill: attribution-name = ok -->
+- 版权人/署名引用名字：已归一为 All Contributors（2026-07-17 确认）
