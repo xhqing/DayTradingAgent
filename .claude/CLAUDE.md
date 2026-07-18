@@ -34,3 +34,6 @@
 
 <!-- commit-skill: attribution-name = ok -->
 - 版权人/署名引用名字：已归一为 All Contributors（2026-07-17 确认）
+
+<!-- commit-skill: readme-link-text = ok -->
+- 英文版 README 跳转中文版链接文字：已统一为「简体中文」（2026-07-18 确认）
