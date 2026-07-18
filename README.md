@@ -93,7 +93,6 @@ DayTradingAgent/
 │           ├── hk-level2-sources.md      # HK Level-2 data-source survey
 │           ├── futu-opend-level2.md      # Futu OpenD Level-2 skeleton
 │           ├── quant/                    # Quant data layer (schema, sources, README)
-│           ├── signals/                  # Per-day signal logs (HK / US split, HKT/ET suffix)
 │           └── scripts/                  # Watch-market script library
 │               ├── preflight.py
 │               ├── hot_list.py
@@ -102,6 +101,7 @@ DayTradingAgent/
 │               ├── monitor.py
 │               └── alert.sh              # Sound alert on signal output
 │
+├── signals/                      # Per-day signal logs at project root (HK / US split, HKT/ET suffix) + ring-log.csv
 └── archive/                       # Local-only history (gitignored): past memory snapshots (pre-refactor)
 ```
 

@@ -10,3 +10,8 @@
 - [open-position-thresholds](open-position-thresholds.md) — 开仓门槛(2026-07-16修订)：仅🟢高置信才发开仓信号(中/低不发)，赔率门槛降至≥1.5（原≥2）
 - [signal-is-real-trading](signal-is-real-trading.md) — 信号=真实交易(用户真实下单)非演练；质量优先，不为积累样本发不完美信号(2026-07-16立)
 - [verify-signal-price-after-send](verify-signal-price-after-send.md) — 发完开仓/加仓信号立即重新采样验证参考价是否仍可成交(发信号过程中价格在变、限价单可能已不撮合)，偏离大就告知用户并按实际可成交价重算(2026-07-17立)
+- [range-market-avoid-infinite-loop](range-market-avoid-infinite-loop.md) — 区间震荡市禁密采样(会死循环)，改触发条件+cron间歇检查；判市况(趋势vs震荡)是密采样前提(2026-07-17教训)
+- [position-size-leave-buffer](position-size-leave-buffer.md) — 开仓算仓位留buffer(20-30%)或按范围下沿算，覆盖成交价偏离参考价，避免事后减仓补救(2026-07-17立)
+- [direction-bias-dynamic-revise](direction-bias-dynamic-revise.md) — 开盘前用位置(≥4个月日线通道)预判盘中方向(下沿超跌做多/上沿超买做空/中段顺势)+盘中动态修正兜底，不执念开盘方向(7-17教训,7-18深化)
+- [us-stop-watch-take-profit](us-stop-watch-take-profit.md) — 美股12:00停盯前浮盈大+加速赶极端(做多赶顶破前高远离VWAP上方/做空赶底破前低远离VWAP下方=动能将竭)→主动平仓锁利,不赌不可盯的午盘(7-17 MU留单回吐~$2000教训)
+- [head-shoulder-reversal-pattern](head-shoulder-reversal-pattern.md) — 转势形态:头肩(有头)/双底双顶(无头)，打破"高更低+低更低"(跌)或"高更高+低更高"(涨)=转势信号，close持平+破颈线确认，比连破阻力更早(7-17 MU 09:48确认 vs 11+点)

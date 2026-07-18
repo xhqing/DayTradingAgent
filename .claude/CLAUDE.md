@@ -8,6 +8,10 @@
 - @.claude/rules/output-and-writing-style.md — 对话输出高信息密度，写文件语义清晰优先
 - @.claude/rules/knowledge-sedimentation.md — 知识沉淀：AutoMemory 持久存（项目级 .claude/memory/）+ rules / skills 强约束规范归宿
 
+## signals 目录归属（2026-07-18 立）
+
+所有交易信号记录统一放**项目根 `signals/`**：港美每日信号（`signals/YYYY-MM-DD-HKT-signals.md` 港股 / `signals/YYYY-MM-DD-ET-signals.md` 美股）+ 响铃 log（`signals/ring-log.csv`）。**不在 `.claude/skills/trade/signals/` 下**（2026-07-18 已从该旧路径全量迁出到根 `signals/`，统一存放、便于复盘、避免 skill 目录与信号数据混杂）。发信号记录、响铃 log、复盘读取均走根 `signals/`。
+
 ## commit skill 检测缓存
 
 <!-- commit-skill: readme-standard = ok -->
