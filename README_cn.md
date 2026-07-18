@@ -93,7 +93,6 @@ DayTradingAgent/
 │           ├── hk-level2-sources.md      # 港股 Level2 数据源调研
 │           ├── futu-opend-level2.md      # 富途 OpenD Level2 调用骨架
 │           ├── quant/                    # 量化数据层（schema、数据源、README）
-│           ├── signals/                  # 每日信号日志（港股 / 美股分开，HKT/ET 后缀）
 │           └── scripts/                  # 盯盘脚本库
 │               ├── preflight.py
 │               ├── hot_list.py
@@ -102,6 +101,7 @@ DayTradingAgent/
 │               ├── monitor.py
 │               └── alert.sh              # 信号输出时的声音提醒
 │
+├── signals/                      # 每日信号日志（项目根；港股 / 美股分开，HKT/ET 后缀）+ ring-log.csv
 └── archive/                       # 仅本地保留的历史归档（已 gitignore）：重构前的 memory 快照
 ```
 
