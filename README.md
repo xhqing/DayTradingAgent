@@ -11,7 +11,7 @@
   <img src="https://img.shields.io/badge/mode-signal-FF8C00.svg" alt="Mode: Signal" />
 </p>
 
-<p align="center">🌐 <a href="README_cn.md">中文</a></p>
+<p align="center">🌐 <a href="README_cn.md">简体中文</a></p>
 
 **Victor** is a personified AI day-trading execution agent for Hong Kong and US equities, built on [Claude Code](https://claude.com/claude-code). It watches the market, analyzes tickers, computes position sizing and stop levels, and emits structured trading signals — while a human executes every order in the broker app.
 
