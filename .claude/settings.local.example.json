@@ -4,18 +4,5 @@
       "Bash(python3 *)"
     ]
   },
-  "autoMemoryDirectory": "/Users/your-name/Projects/DayTradingAgent/.claude/memory",
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash /Users/your-name/Projects/DayTradingAgent/.claude/skills/trade/scripts/us-stop-watch-alert.sh"
-          }
-        ]
-      }
-    ]
-  },
-  "_comment_hooks": "Stop hook — 美股 12:00 ET 停盯前强制提醒过 trade skill「临近强平/停盯硬截止的分情况策略」检查（浮盈大 + 加速赶极端 = 动能将竭 → 主动平仓🔴锁利）。clone 后把两处 /Users/your-name/Projects/DayTradingAgent 改为本机项目根绝对路径（autoMemoryDirectory + hook command 的 bash 路径），再把本文件复制为 settings.local.json（本机不入库）。脚本：.claude/skills/trade/scripts/us-stop-watch-alert.sh。可删除本 _comment_hooks 字段。"
+  "autoMemoryDirectory": "/Users/your-name/Projects/DayTradingAgent/.claude/memory"
 }
