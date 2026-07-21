@@ -1,0 +1,5 @@
+date,symbol,direction,entry_price,exit_price,shares,max_loss
+2026-07-08,US.SOXL,short,162.84,162.84,39,127.5
+2026-07-10,US.SOXL,short,186.8,191,30,126
+2026-07-16,US.SOXL,short,146,152,20,100
+2026-07-17,US.MU,long,855,865,106,1272

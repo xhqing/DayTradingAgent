@@ -3,6 +3,5 @@
     "allow": [
       "Bash(python3 *)"
     ]
-  },
-  "autoMemoryDirectory": "/Users/your-name/Projects/DayTradingAgent/.claude/memory"
+  }
 }
