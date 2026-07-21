@@ -62,5 +62,19 @@ def port_open(p):
         return False
 print(f"📊 富途OpenD:11111 {'✅' if port_open(11111) else '❌(未登录/未启动)'}")
 
+# max_loss 限额（config 权威，盯盘启动即读出、避免盘中凭印象报数；2026-07-20 教训：盘中算仓位必须用 config 实际值）
+import json as _json, os as _os
+try:
+    _cfg_path = _os.path.join(_os.path.dirname(__file__), '..', 'config.json')
+    with open(_cfg_path) as _f:
+        _risk = _json.load(_f).get('risk', {})
+    _ml = _risk.get('max_loss_per_trade', {})
+    if isinstance(_ml, dict):
+        print(f"💰 max_loss: {_ml.get('amount')} {_ml.get('currency')}（config 权威，盘中算仓位用此、勿凭 skill 默认）")
+    else:
+        print(f"💰 max_loss: {_ml}（config）")
+except Exception as _e:
+    print(f"💰 max_loss: ⚠️ 读取 config 失败({_e})，盘中算仓位前务必手动确认 risk.max_loss_per_trade")
+
 # positions 检查已移除（2026-07-15 信号模式：假设执行、不查 positions，见 SKILL「信号模式总则」第 1 条）
 # 长桥 CLI token 检查已移除（2026-07-15 长桥 CLI 授权撤销、token 删除，盯盘数据走富途 + 老虎）

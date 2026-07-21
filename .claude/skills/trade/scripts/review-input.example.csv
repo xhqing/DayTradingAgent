@@ -1,0 +1,11 @@
+# 交易复盘输入示例（本项目 4 笔已平仓信号）
+# 字段: date,symbol,direction,entry_price,exit_price,shares,max_loss,entry_time,exit_time,raw_high,raw_low
+# symbol: 富途格式带市场前缀（HK.03690 / US.SOXL）
+# entry_time/exit_time: 开/平仓时刻 'YYYY-MM-DD HH:MM:SS'，写【交易所当地时区】(港股 HKT、美股 ET)；--fetch-futu 用
+# raw_high/raw_low: 持仓期间最高/最低价；此处为据 signals 文字推测的【示意值】、非精确历史。
+#   带 --fetch-futu 时若把这两列留空，脚本会按 entry_time/exit_time 从富途拉真实 high/low。
+date,symbol,direction,entry_price,exit_price,shares,max_loss,entry_time,exit_time,raw_high,raw_low
+2026-07-07,HK.03690,long,77.70,78.00,3300,990,2026-07-07 14:15:00,2026-07-07 14:28:00,78.35,77.50
+2026-07-07,HK.03690,long,78.30,78.25,2500,1000,2026-07-07 15:15:00,2026-07-07 15:22:00,78.50,78.20
+2026-07-15,HK.07709,long,77.90,79.48,200,880,2026-07-15 10:42:42,2026-07-15 11:37:43,79.54,77.50
+2026-07-15,HK.07709,long,78.90,77.30,200,680,2026-07-15 13:11:37,2026-07-15 13:15:24,79.00,77.24
