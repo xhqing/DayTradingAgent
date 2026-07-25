@@ -78,3 +78,32 @@ except Exception as _e:
 
 # positions 检查已移除（2026-07-15 信号模式：假设执行、不查 positions，见 SKILL「信号模式总则」第 1 条）
 # 长桥 CLI token 检查已移除（2026-07-15 长桥 CLI 授权撤销、token 删除，盯盘数据走富途 + 老虎）
+
+# 电源检测 + 风险提醒（2026-07-25 立）。根因复盘：盯盘期间系统睡眠会暂停所有进程——富途 OpenD 的
+# get_market_snapshot 无 timeout，卡到 TCP 超时 ~15 分钟才返回、整段采样空窗；claude-proxy、xpilot
+# 同断。preflight 不自动启用防睡眠——改由用户在会话里决定是否启用「合盖盯盘」skill（keep-awake）；
+# 这里仅检测电源并提醒：电池供电下合盖是硬件强制睡眠、软件防不住，弹窗警示风险。
+def _check_power_and_warn():
+    import subprocess as _sp
+    try:
+        out = _sp.check_output(["pmset", "-g", "batt"], text=True, timeout=3)
+    except Exception as _e:
+        print(f"⚡ 电源状态未知（{_e}）")
+        return
+    if "AC Power" in out:
+        print("⚡ AC 供电（如需合盖盯盘，会话里说「启用合盖盯盘」）")
+        return
+    # 电池供电：合盖会触发硬件强制睡眠、打断盯盘
+    print("⚠️ 电池供电：合盖会触发系统睡眠、打断盯盘（硬件强制，caffeinate 也防不住）")
+    print("   建议：接电源，或会话里说「启用合盖盯盘」用 keep-awake skill 防护")
+    try:
+        _sp.run([
+            "osascript", "-e",
+            'display notification "电池供电下盯盘，合盖会触发系统睡眠、打断盯盘（软件防不住）。'
+            '建议接电源，或会话里说「启用合盖盯盘」。" '
+            'with title "⚠️ 电池供电·合盖风险" sound name "Basso"'
+        ], timeout=5, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+    except Exception:
+        pass  # 弹窗失败不阻断 preflight
+
+_check_power_and_warn()
