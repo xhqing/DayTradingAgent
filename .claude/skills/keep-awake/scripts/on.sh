@@ -17,9 +17,7 @@ if out=$(pmset -g batt 2>/dev/null); then
   if echo "$out" | grep -q "Battery Power"; then SRC="电池"; fi
 fi
 
-if [ "$SRC" = "电池" ]; then
-  echo "⚠️ 电池供电：caffeinate -s 防不住合盖睡眠（硬件强制），仅防空闲维护睡眠。强烈建议接电源。"
-fi
+# 2026-07-27：去掉电池供电警告（开盖盯盘无所谓电池/电源；电池下合盖是硬件强制软件防不住、但防空闲维护睡眠仍有效，统一启用、不提醒）
 
 # 后台启动 caffeinate -s，脱离当前 shell（nohup + disown：本脚本退出后继续存活）
 nohup caffeinate -s >/dev/null 2>&1 &
