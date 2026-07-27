@@ -1,17 +1,21 @@
 {
   "_comment": "Trading skill 配置模板。复制为 config.json 后按需修改。所有数值字段 Skill 加载时优先读 config.json,缺失时回退到此处默认值。",
   "risk": {
-    "max_loss_per_trade": {
-      "amount": 1000,
-      "currency": "HKD",
-      "_comment": "单笔最大损失。仓位 = 本额度 / 每股最大损失。可调,如 500 保守、2000 激进。"
-    },
+    "mode": "fraction",
+    "_comment_mode": "fraction=固定风险比例(每笔单笔预算 B = risk_fraction × 当前 equity,随权益动态); legacy_fixed_amount=旧固定金额(2026-07-26 弃用)。默认 fraction。",
+    "risk_fraction": 0.02,
+    "_comment_risk_fraction": "每笔单笔预算 B 占当前权益的比例。B = risk_fraction × equity(B=开仓前的下注预算目标;实际 max_loss 围绕 B 选最近、可略超或略低)。随权益动态:权益涨→B 涨、权益跌→B 缩。",
+    "initial_equity": 100000,
+    "equity_currency": "HKD",
+    "_comment_equity": "初始权益。当前 equity = initial_equity + 累积已了结盈亏(港股直接 HKD、美股按当日汇率换算),每笔了结后更新。",
+    "f_max": 0.025,
+    "_comment_fmax": "风险比例硬上限:实际 max_loss 不得超过 equity×f_max(选仓位选最接近 B 的档、但 max_loss 不可超此上限)。当前 2.5% > f 2%,故 max_loss 上限略高于 B、可向上略超 B 但不超 2.5%;edge 确认后可提到 10%,见 risk-sizing-plan。AI 不得自行突破。",
     "loss_limit_scope": "per_trade",
-    "_comment_scope": "per_trade=每笔独立; per_day=日累计上限。默认 per_trade。",
+    "_comment_scope": "损失限额周期: per_trade=每笔独立无日累计上限; per_day=日累计上限。默认 per_trade。",
     "stop_loss_method": "technical",
-    "_comment_stoploss": "technical=技术位AI定; fixed_percent=按开仓价固定百分比(配合 stop_loss_pct)。默认 technical。",
+    "_comment_stoploss": "止损位确定方式: technical=技术位(前低/支撑/跌破关键价,AI据盘面定); fixed_percent=按开仓价固定百分比(配合 stop_loss_pct)。默认 technical。",
     "stop_loss_pct": 0.03,
-    "_comment_stoploss_pct": "fixed_percent 模式生效,默认 3%(0.03)。"
+    "_comment_stoploss_pct": "stop_loss_method=fixed_percent 时生效,默认 3%。technical 模式忽略此字段。"
   },
   "monitoring": {
     "early_session": {

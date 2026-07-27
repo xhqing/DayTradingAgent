@@ -145,6 +145,81 @@ def ppos_empirical(xbar, n, sigma, mu0=0.0, tau0=1.0):
     return _norm_cdf(mu * math.sqrt(pp + pd))  # 后验 sd=1/√(pp+pd)，故 mu/sd = mu·√(pp+pd)
 
 
+def p_g_pos(R, f):
+    """P(g>0)：固定风险比例 f 下，每笔对数增长率 g=E[ln(1+fR)]>0 的后验概率（频率派 t）。
+    Y=ln(1+fR)，P_pos = t_cdf(√N·ȳ_Y/sY, df=N-1)；σ 不确定区间用 ppos_empirical 两端正态。
+    累计收益率 ≈ e^(n·g)-1，故 g>0 才长期复利增长——比 P(EV>0) 更贴合复利判据。
+    注：不用 NIG(b0=1)——该先验假设 σ²~1，对 R（σ²~5）几乎无影响；但小 f 时 Y 被压缩到
+    σ²~1e-4，b0=1 先验会主导后验、严重扭曲 P(g>0)（实测 f=0.5% 把 P 从~94% 压到 52%）。
+    频率派 t 用样本 sY、不受先验尺度扭曲；与 p_sum_y_pos 同框架。"""
+    Y = [math.log(1 + f * r) for r in R]
+    N = len(Y); ybar = mean(Y)
+    if N < 2:
+        return dict(P_pos=float('nan'), lo=None, hi=None, g_hat=ybar, s_Y=0.0)
+    sY = stdev(Y)
+    out = dict(g_hat=ybar, s_Y=sY,
+               P_pos=_t_cdf(math.sqrt(N) * ybar / sY, N - 1))
+    ci = sigma_ci(sY, N)
+    a = ppos_empirical(ybar, N, ci[0]); b = ppos_empirical(ybar, N, ci[1])
+    out['lo'], out['hi'] = min(a, b), max(a, b)
+    return out
+
+
+def p_sum_y_pos(R, f, n=40):
+    """P(∑_{i=1}^n Y_i ≥ 0)：固定 f、未来 n 笔对数收益和 ≥0 的预测概率（有限 n 不亏概率）。
+    频率派 t 预测近似（NIG 后验预测的简化）：t_stat=√(nN/(N+n))·ȳ_Y/sY, df=N-1。
+    σ 不确定区间用正态（固定 σ）两端。N<2 返回 nan。
+    与 p_g_pos 的区别：p_g_pos 回答「长期是否有 edge」(N→∞)，本函数回答「接下来 n 笔不亏」(有限 n)。"""
+    Y = [math.log(1 + f * r) for r in R]
+    N = len(Y); ybar = mean(Y)
+    if N < 2:
+        return dict(P_pos=float('nan'), lo=None, hi=None, g_hat=ybar, s_Y=0.0)
+    sY = stdev(Y)
+    k = math.sqrt(n * N / (N + n))
+    out = dict(g_hat=ybar, s_Y=sY, P_pos=_t_cdf(k * ybar / sY, N - 1))
+    ci = sigma_ci(sY, N)
+    a = _norm_cdf(k * ybar / ci[0]); b = _norm_cdf(k * ybar / ci[1])
+    out['lo'], out['hi'] = min(a, b), max(a, b)
+    return out
+
+
+def p_g_target(R, f, n, target):
+    """P(g ≥ ln(1+target)/n)：每笔对数增长率 g 的后验，「n 笔累计收益率 ≥ target 所需 g」成立的概率。
+    g 后验（频率派 t）~ t(ȳ_Y, s_Y/√N)，P(g≥c)=t_cdf(√N(ȳ-c)/s_Y, N-1)，c=ln(1+target)/n。
+    target=0 时 c=0、退化为 P(g>0)（但本函数绑 n；p_g_pos 不绑 n、语义是「长期不亏」）。"""
+    Y = [math.log(1 + f * r) for r in R]
+    N = len(Y); ybar = mean(Y)
+    c = math.log(1 + target) / n
+    if N < 2:
+        return dict(P_pos=float('nan'), lo=None, hi=None, g_hat=ybar, s_Y=0.0, c=c)
+    sY = stdev(Y)
+    out = dict(g_hat=ybar, s_Y=sY, c=c, target=target, n=n,
+               P_pos=_t_cdf(math.sqrt(N) * (ybar - c) / sY, N - 1))
+    ci = sigma_ci(sY, N)
+    a = _norm_cdf(math.sqrt(N) * (ybar - c) / ci[0]); b = _norm_cdf(math.sqrt(N) * (ybar - c) / ci[1])
+    out['lo'], out['hi'] = min(a, b), max(a, b)
+    return out
+
+
+def p_sum_y_target(R, f, n, target):
+    """P(∑_{i=1}^n Y_i ≥ ln(1+target))：未来 n 笔累计收益率 ≥ target 的预测概率（有限 n）。
+    预测和 ∑Y ~ t(n·ȳ_Y, s_Y·√(n(1+n/N)), df=N-1)。target=0 退化为 p_sum_y_pos。"""
+    Y = [math.log(1 + f * r) for r in R]
+    N = len(Y); ybar = mean(Y)
+    c = math.log(1 + target)
+    if N < 2:
+        return dict(P_pos=float('nan'), lo=None, hi=None, g_hat=ybar, s_Y=0.0, c=c)
+    sY = stdev(Y)
+    scale = sY * math.sqrt(n * (1 + n / N))
+    out = dict(g_hat=ybar, s_Y=sY, c=c, target=target, n=n,
+               P_pos=_t_cdf((n * ybar - c) / scale, N - 1))
+    ci = sigma_ci(sY, N)
+    a = _norm_cdf((n * ybar - c) / (ci[0] * math.sqrt(n * (1 + n / N))))
+    b = _norm_cdf((n * ybar - c) / (ci[1] * math.sqrt(n * (1 + n / N))))
+    out['lo'], out['hi'] = min(a, b), max(a, b)
+    return out
+
+
 def fetch_hl(ctx, code, t_start, t_end):
     """连富途拉 [t_start, t_end]（±1 分钟外扩）的 1 分钟 K，返回 (high, low, err)。"""
     import datetime as _dt

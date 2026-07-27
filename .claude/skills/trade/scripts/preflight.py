@@ -62,48 +62,56 @@ def port_open(p):
         return False
 print(f"📊 富途OpenD:11111 {'✅' if port_open(11111) else '❌(未登录/未启动)'}")
 
-# max_loss 限额（config 权威，盯盘启动即读出、避免盘中凭印象报数；2026-07-20 教训：盘中算仓位必须用 config 实际值）
-import json as _json, os as _os
+# 风险比例 + 权益（config 权威，盯盘启动即读出；2026-07-26 改固定比例动态下注）
+import json as _json, os as _os, csv as _csv
 try:
     _cfg_path = _os.path.join(_os.path.dirname(__file__), '..', 'config.json')
     with open(_cfg_path) as _f:
         _risk = _json.load(_f).get('risk', {})
-    _ml = _risk.get('max_loss_per_trade', {})
-    if isinstance(_ml, dict):
-        print(f"💰 max_loss: {_ml.get('amount')} {_ml.get('currency')}（config 权威，盘中算仓位用此、勿凭 skill 默认）")
+    _frac = _risk.get('risk_fraction'); _eq0 = _risk.get('initial_equity')
+    _cur = _risk.get('equity_currency', 'HKD'); _fmax = _risk.get('f_max', _frac)
+    # 当前 equity = signals/equity-log.csv 最新行 equity_after（无记录则 initial_equity）
+    _eq_now = _eq0
+    _log = _os.path.join(_os.path.dirname(__file__), '..', '..', '..', '..', 'signals', 'equity-log.csv')
+    try:
+        with open(_log) as _f:
+            _rows = [r for r in _csv.DictReader(_f) if not (r.get('date') or '').startswith('#')]
+        if _rows:
+            _eq_now = float(_rows[-1]['equity_after'])
+    except FileNotFoundError:
+        pass  # 无 log → 用 initial_equity
+    if _frac is not None and _eq0 is not None:
+        _M = _frac * _eq_now
+        print(f"💰 风险比例 {_frac*100:.1f}% × 当前 equity {_eq_now:,.0f} {_cur} = 单笔预算 B {_M:,.0f}（f_max 硬上限 {_fmax*100:.1f}%，max_loss 不得突破）")
+        print(f"   当前 equity 来自 signals/equity-log.csv 最新行（无记录则 initial {_eq0}）；每笔了结后 append 更新（含 equity 更新 + 信号文件记总资产）")
     else:
-        print(f"💰 max_loss: {_ml}（config）")
+        print(f"💰 ⚠️ config 缺 risk_fraction/initial_equity，盘中算仓位前务必手动确认")
 except Exception as _e:
-    print(f"💰 max_loss: ⚠️ 读取 config 失败({_e})，盘中算仓位前务必手动确认 risk.max_loss_per_trade")
+    print(f"💰 ⚠️ 读取 config 失败({_e})，盘中算仓位前务必手动确认 risk.risk_fraction / initial_equity")
 
 # positions 检查已移除（2026-07-15 信号模式：假设执行、不查 positions，见 SKILL「信号模式总则」第 1 条）
 # 长桥 CLI token 检查已移除（2026-07-15 长桥 CLI 授权撤销、token 删除，盯盘数据走富途 + 老虎）
 
-# 电源检测 + 风险提醒（2026-07-25 立）。根因复盘：盯盘期间系统睡眠会暂停所有进程——富途 OpenD 的
-# get_market_snapshot 无 timeout，卡到 TCP 超时 ~15 分钟才返回、整段采样空窗；claude-proxy、xpilot
-# 同断。preflight 不自动启用防睡眠——改由用户在会话里决定是否启用「合盖盯盘」skill（keep-awake）；
-# 这里仅检测电源并提醒：电池供电下合盖是硬件强制睡眠、软件防不住，弹窗警示风险。
-def _check_power_and_warn():
-    import subprocess as _sp
+# 防系统睡眠（2026-07-25 立 → 2026-07-27 修订：无条件自动启用，取代旧「检测电源 + 弹窗建议启用 keep-awake」）。
+# 根因：盯盘期间系统睡眠会暂停所有进程——富途 OpenD 的 get_market_snapshot 无 timeout、卡到 TCP 超时
+# ~15 分钟才返回、整段采样空窗；claude-proxy、xpilot 同断。故盯盘预热（preflight）无条件启用
+# caffeinate -s（创建 PreventSystemSleep assertion、防合盖 Clamshell 与维护 Maintenance 两类系统级睡眠），
+# 不再询问开盖/合盖、不再弹窗建议「启用合盖盯盘」（keep-awake skill 已并入本流程、不再独立触发；
+# 开盖盯盘无所谓电池/电源、电池下合盖是硬件强制软件防不住但防空闲维护睡眠仍有效，故统一启用、不提醒）。
+# 停止盯盘时由 trade 停盯流程调 keep-awake/scripts/off.sh 解除。
+def _ensure_awake():
+    import subprocess as _sp, time as _t
+    if _sp.run(["pgrep", "-f", "caffeinate -s"], stdout=_sp.DEVNULL).returncode == 0:
+        print("☕ caffeinate -s 已在跑（盯盘防系统睡眠；停盯时自动解除）")
+        return
     try:
-        out = _sp.check_output(["pmset", "-g", "batt"], text=True, timeout=3)
+        _sp.Popen(["caffeinate", "-s"], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+        _t.sleep(0.5)
+        if _sp.run(["pgrep", "-f", "caffeinate -s"], stdout=_sp.DEVNULL).returncode == 0:
+            print("☕ caffeinate -s 已启动（盯盘防系统睡眠；停盯时自动解除）")
+        else:
+            print("⚠️ caffeinate 启动失败（盯盘期间注意别让系统睡眠）")
     except Exception as _e:
-        print(f"⚡ 电源状态未知（{_e}）")
-        return
-    if "AC Power" in out:
-        print("⚡ AC 供电（如需合盖盯盘，会话里说「启用合盖盯盘」）")
-        return
-    # 电池供电：合盖会触发硬件强制睡眠、打断盯盘
-    print("⚠️ 电池供电：合盖会触发系统睡眠、打断盯盘（硬件强制，caffeinate 也防不住）")
-    print("   建议：接电源，或会话里说「启用合盖盯盘」用 keep-awake skill 防护")
-    try:
-        _sp.run([
-            "osascript", "-e",
-            'display notification "电池供电下盯盘，合盖会触发系统睡眠、打断盯盘（软件防不住）。'
-            '建议接电源，或会话里说「启用合盖盯盘」。" '
-            'with title "⚠️ 电池供电·合盖风险" sound name "Basso"'
-        ], timeout=5, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
-    except Exception:
-        pass  # 弹窗失败不阻断 preflight
+        print(f"⚠️ 启用防睡眠失败（{_e}）（盯盘期间注意别让系统睡眠）")
 
-_check_power_and_warn()
+_ensure_awake()

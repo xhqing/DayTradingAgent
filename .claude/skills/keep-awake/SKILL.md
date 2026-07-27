@@ -1,17 +1,8 @@
-# Keep-Awake（合盖盯盘）
+# Keep-Awake（已并入 trade，不再独立触发）
 
-防系统睡眠，让盯盘期间笔记本合盖也不中断——富途 OpenD / claude-proxy / xpilot 不会被系统睡眠暂停。
+⚠️ **2026-07-27 修订：本 skill 已取消独立触发、防睡眠功能并入 trade 盯盘流程**——盯盘预热（`../trade/scripts/preflight.py`）无条件自动启用 `caffeinate -s`（无论开盖合盖、不询问、不弹电池提醒），停止盯盘时 trade 停盯流程自动调本目录 `scripts/off.sh` 解除。用户不再需要说「启用合盖盯盘」、AI 也不再询问开盖/合盖（默认盯盘即自动防睡眠）。
 
-## 触发条件（只在用户明确要求时启用）
-
-用户在会话里主动要求时才激活，例如：
-
-- 「启用合盖盯盘」
-- 「开 keep-awake」
-- 「防睡眠」
-
-**不自动启用**——防睡眠会改变系统行为（笔记本不合盖也不睡），应由用户自主掌控。
-[preflight.py](../trade/scripts/preflight.py) 检测到电池供电时只弹窗提醒风险、建议启用本 skill，**不代为启用**。
+本目录 `scripts/on.sh`（手动启用防睡眠，备用）、`scripts/off.sh`（停盯解除防睡眠，trade 停盯流程调用）保留。
 
 ## 启用
 
