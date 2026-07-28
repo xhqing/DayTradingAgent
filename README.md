@@ -40,10 +40,10 @@ The operating principle, in one line: **losing money on a trade is acceptable ri
 | Principle | What it means |
 |---|---|
 | **Facts first** | Verify entity identity, arithmetic, trading calendar, API fields, and fees before asserting. Never pass a guess off as a fact. |
-| **Signal mode** | Since 2026-07-07, Victor only emits signals (🟢 open / 🔴 close / 🟡 trailing stop / 🟠 trailing take-profit). It never calls any order-placement command. |
-| **EV-driven** | Every entry requires win-rate > 50% **and** payoff ratio > 1; otherwise no signal. |
+| **Signal mode** | Since 2026-07-07, Victor only emits signals (🟢 open / 🔵 add / 🟠 reduce / 🔴 close / 🟡 trailing stop). It never calls any order-placement command. |
+| **EV-driven** | Every entry requires win-rate > 50% **and** payoff ratio ≥ 1.2; otherwise no signal. |
 | **Signal-level review** | Win-rate / payoff / EV tracked at the signal level (account-independent); actual account P&L is the user's to compute. |
-| **Knowledge sedimentation** | AutoMemory persists in project-level `.claude/memory/`; hard rules distill into `rules/` and `skills/`. The sediment self-check hook was removed 2026-07-15. |
+| **Knowledge sedimentation** | Hard rules distill into `rules/` and `skills/`. AutoMemory was deprecated 2026-07-20 (its content folded into SKILL.md; the `.claude/memory/` directory and `autoMemoryDirectory` config were removed). |
 
 ---
 
@@ -73,14 +73,12 @@ DayTradingAgent/
 ├── README_cn.md                   # Chinese README
 │
 ├── .claude/
-│   ├── settings.local.json        # Local-only: permissions + autoMemoryDirectory (gitignored)
+│   ├── settings.local.json        # Local-only: permissions (gitignored)
 │   ├── settings.local.example.json # Template for settings.local.json (tracked)
-│   ├── memory/                    # AutoMemory store (project-level, tracked — not gitignored)
 │   │
 │   ├── rules/                     # General working discipline (cross-domain)
 │   │   ├── verify-facts-before-stating.md
-│   │   ├── output-and-writing-style.md
-│   │   └── knowledge-sedimentation.md
+│   │   └── output-and-writing-style.md
 │   │
 │   └── skills/
 │       └── trade/                 # Domain execution spec — the heart of Victor
@@ -88,21 +86,27 @@ DayTradingAgent/
 │           ├── classify_hk_security.py   # HK security-type classifier (stock/ETF/REIT/derivative)
 │           ├── config.example.json       # Risk / monitoring config template
 │           ├── accounts.example.json     # Tiger credential template
-│           ├── accounts.md               # Tiger SDK config + HK code format
+│           ├── accounts.md               # Data-source config + HK code format
 │           ├── tiger-websocket.md        # Tiger SDK WebSocket skeleton
 │           ├── hk-level2-sources.md      # HK Level-2 data-source survey
 │           ├── futu-opend-level2.md      # Futu OpenD Level-2 skeleton
-│           ├── quant/                    # Quant data layer (schema, sources, README)
 │           └── scripts/                  # Watch-market script library
-│               ├── preflight.py
-│               ├── hot_list.py
-│               ├── snapshot.py
-│               ├── kline.py
-│               ├── monitor.py
-│               └── alert.sh              # Sound alert on signal output
+│               ├── preflight.py          # Pre-flight: time/session/OpenD + risk config + anti-sleep
+│               ├── hot_list.py           # Heat board (mandatory first step for ticker selection)
+│               ├── snapshot.py           # Market snapshot
+│               ├── kline.py              # K-line + Fibonacci retracement
+│               ├── monitor.py            # Dense sampling (single ticker)
+│               ├── monitor_segment.py    # Background segmented sampling (multi-ticker — the main watch loop)
+│               ├── monitor_summary.py    # Full-day summary + market-regime classification
+│               ├── capital.py            # Capital flow (Futu)
+│               ├── review.py             # Post-trade review stats (R-multiple, Bayesian NIG)
+│               ├── bayes_evolution.py    # Sequential Bayesian evolution charts
+│               └── alert.sh              # Write signal file + sound alert
 │
-├── signals/                      # Per-day signal logs at project root (HK / US split, HKT/ET suffix) + ring-log.csv
-└── archive/                       # Local-only history (gitignored): past memory snapshots (pre-refactor)
+├── signals/                      # Per-day signal logs (HK/US split, HKT/ET suffix) + ring-log.csv + equity-log.csv
+├── reviews/                      # Post-trade review reports + per-review CSV/PNG attachments
+├── notes/                        # Long-form derivations (Kelly sizing plan, cumulative-return math)
+└── archive/                       # Local-only history (gitignored): pre-refactor memory snapshots + old reviews
 ```
 
 > The real `config.json` and `accounts.json` (containing Tiger credentials) are **gitignored** — only the `*.example.json` templates ship in the repo. The `archive/` directory is likewise local-only.
@@ -127,10 +131,10 @@ Victor only emits signals — it never places orders. Which broker / account to 
 Victor self-checks these before emitting any signal (full list in `SKILL.md`):
 
 - **One ticker at a time** — never open a new position while another is held.
-- **Position sizing from stop** — size = `max_loss_per_trade` ÷ per-share max loss, rounded to lot size; loss is capped by config, not by % of equity.
+- **Position sizing from stop (fixed-fraction)** — per-trade budget `B = risk_fraction × equity` (default 2%); size is the lot-rounded position whose actual max_loss lands closest to B. max_loss may slightly exceed B but must stay under `equity × f_max` (default 2.5%); the absolute cap *is* a fraction of equity.
 - **Stop price mandatory in every open signal** — set as a technical level; the human places it in the app.
 - **No derivatives** — stocks, ETFs (incl. 2×/3× leveraged), and REITs only; no options/warrants/CBBCs/futures.
-- **HK intraday / US 24h** — HK: regular session only (09:30-12:00 / 13:00-16:00), positions flattened before the 12:00 lunch break and the 15:45 close. US (since 2026-07-15): signals allowed around the clock — pre / regular / after / overnight.
+- **Session-bound, flat by close** — HK: regular session only (09:30-12:00 / 13:00-16:00), positions flattened before the 12:00 lunch break and the 16:00 close. US: regular session only (09:30-16:00 ET), watched until the user stops or the close — no pre/after/overnight signals, and no positions carried past the close.
 - **Short allowed by default** — assume shortable unless told otherwise.
 - **Flat by end of day** — never carry a position overnight.
 
@@ -143,7 +147,7 @@ To actually run Victor, you need — outside this repo:
 - [Claude Code](https://claude.com/claude-code)
 - **Tiger** SDK (`tigeropen`) configured at `~/.tigeropen/`
 - **Futu OpenD** local gateway running (HK Level-2 + US depth)
-- A local `config.json` and `accounts.json` filled in from the `*.example.json` templates (accounts.json only needs the Tiger section); optionally copy `.claude/settings.local.example.json` → `.claude/settings.local.json` and set `autoMemoryDirectory` to your machine's absolute path to store AutoMemory inside the project (it defaults to Claude Code's global path otherwise)
+- A local `config.json` and `accounts.json` filled in from the `*.example.json` templates (accounts.json only needs the Tiger section); optionally copy `.claude/settings.local.example.json` → `.claude/settings.local.json` to pre-allow `python3` commands
 
 Without these, the repo still reads as a complete spec of *how* a disciplined trading agent should behave.
 
@@ -151,7 +155,7 @@ Without these, the repo still reads as a complete spec of *how* a disciplined tr
 
 ## Current Stage
 
-Victor is currently in **signal mode**: AI signals, human executes — the arrangement that (since 2026-07-07) rooted out the order-failure / reverse-position / stop-failure problems of direct AI ordering. Graduation to direct ordering requires sustained signal win-rate, payoff, and EV plus positive returns, and explicit user authorization.
+Victor is currently in **signal mode**: AI signals, human executes — the arrangement that (since 2026-07-07) rooted out the order-failure / reverse-position / stop-failure problems of direct AI ordering. Graduation to direct ordering requires sustained signal win-rate, payoff, and EV plus continued improvement, and explicit user authorization.
 
 ---
 

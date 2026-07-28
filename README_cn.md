@@ -40,10 +40,10 @@
 | 原则 | 含义 |
 |---|---|
 | **事实先验证** | 实体归属、算术、交易日历、API 字段、手续费——先验证再断言，禁止把推测当事实。 |
-| **信号模式** | 自 2026-07-07 起，Victor 只发信号（🟢 开仓 / 🔴 平仓 / 🟡 移动止损 / 🟠 移动止盈），绝不调用任何下单命令。 |
-| **EV 驱动** | 每笔开仓都要求胜率 > 50% **且** 赔率 > 1，否则不发信号。 |
+| **信号模式** | 自 2026-07-07 起，Victor 只发信号（🟢 开仓 / 🔵 加仓 / 🟠 减仓 / 🔴 平仓 / 🟡 移动止损），绝不调用任何下单命令。 |
+| **EV 驱动** | 每笔开仓都要求胜率 > 50% **且** 赔率 ≥ 1.2，否则不发信号。 |
 | **信号层面复盘** | 统计胜率 / 赔率 / EV（信号层面，不依赖账户）；实际账户盈亏由用户自算。 |
-| **知识沉淀** | AutoMemory 持久存于项目级 `.claude/memory/`；强约束规范沉淀进 `rules/` 和 `skills/`。知识沉淀自检 hook 已于 2026-07-15 撤销。 |
+| **知识沉淀** | 强约束规范沉淀进 `rules/` 和 `skills/`。AutoMemory 已于 2026-07-20 废弃（内容全量提炼进 SKILL.md，`.claude/memory/` 目录与 `autoMemoryDirectory` 配置均已移除）。 |
 
 ---
 
@@ -73,14 +73,12 @@ DayTradingAgent/
 ├── README_cn.md                   # 本文件（中文）
 │
 ├── .claude/
-│   ├── settings.local.json        # 本机配置：permissions + autoMemoryDirectory（已 gitignore）
+│   ├── settings.local.json        # 本机配置：permissions（已 gitignore）
 │   ├── settings.local.example.json # settings.local.json 模板（入库）
-│   ├── memory/                    # AutoMemory 存储（项目级，入库——不 gitignore）
 │   │
 │   ├── rules/                     # 通用工作规范（跨领域）
 │   │   ├── verify-facts-before-stating.md
-│   │   ├── output-and-writing-style.md
-│   │   └── knowledge-sedimentation.md
+│   │   └── output-and-writing-style.md
 │   │
 │   └── skills/
 │       └── trade/                 # 交易领域执行规范——Victor 的核心
@@ -88,21 +86,27 @@ DayTradingAgent/
 │           ├── classify_hk_security.py   # 港股证券类型判定（个股/ETF/REIT/衍生品）
 │           ├── config.example.json       # 风控 / 盯盘配置模板
 │           ├── accounts.example.json     # 老虎凭证模板
-│           ├── accounts.md               # 老虎 SDK 配置 + 港股代码格式
+│           ├── accounts.md               # 数据源配置 + 港股代码格式
 │           ├── tiger-websocket.md        # 老虎 SDK WebSocket 代码骨架
 │           ├── hk-level2-sources.md      # 港股 Level2 数据源调研
 │           ├── futu-opend-level2.md      # 富途 OpenD Level2 调用骨架
-│           ├── quant/                    # 量化数据层（schema、数据源、README）
 │           └── scripts/                  # 盯盘脚本库
-│               ├── preflight.py
-│               ├── hot_list.py
-│               ├── snapshot.py
-│               ├── kline.py
-│               ├── monitor.py
-│               └── alert.sh              # 信号输出时的声音提醒
+│               ├── preflight.py          # 开盘前检查：时间/时段/OpenD + 风控配置 + 防睡眠
+│               ├── hot_list.py           # 热度榜（选标的铁律第一步）
+│               ├── snapshot.py           # 行情快照
+│               ├── kline.py              # K 线 + 斐波那契回撤
+│               ├── monitor.py            # 密采样（单标的）
+│               ├── monitor_segment.py    # 后台分段采样（多标的——盯盘主力机制）
+│               ├── monitor_summary.py    # 全貌摘要 + 行情性质判别
+│               ├── capital.py            # 资金流（富途）
+│               ├── review.py             # 复盘统计（R-multiple、贝叶斯 NIG）
+│               ├── bayes_evolution.py    # 序贯贝叶斯演化图
+│               └── alert.sh              # 写信号文件 + 声音提醒
 │
-├── signals/                      # 每日信号日志（项目根；港股 / 美股分开，HKT/ET 后缀）+ ring-log.csv
-└── archive/                       # 仅本地保留的历史归档（已 gitignore）：重构前的 memory 快照
+├── signals/                      # 每日信号日志（港股 / 美股分开，HKT/ET 后缀）+ ring-log.csv + equity-log.csv
+├── reviews/                      # 复盘报告 + 每次复盘的 CSV/PNG 附件
+├── notes/                        # 长篇推导（凯利下注方案、累计收益率数学）
+└── archive/                       # 仅本地保留的历史归档（已 gitignore）：重构前的 memory 快照 + 旧复盘
 ```
 
 > 真实的 `config.json` 和 `accounts.json`（含老虎凭证）**已被 gitignore**——仓库只随附 `*.example.json` 模板。`archive/` 目录同样仅本地保留。
@@ -127,10 +131,10 @@ Victor 只发信号、不下单。**用哪个券商 / 账户由用户自决**；
 Victor 在发出任何信号前逐条自检（完整清单见 `SKILL.md`）：
 
 - **一次最多持仓一个标的**——已有持仓时不发新标的的开仓信号。
-- **由止损反推仓位**——仓位 = `max_loss_per_trade` ÷ 每股最大损失，按手数取整；单笔损失受配置额度约束，而非净资产比例。
+- **由止损反推仓位（固定比例）**——单笔预算 `B = risk_fraction × equity`（默认 2%）；仓位 = 按手数取整后、实际 max_loss 最接近 B 的那档。max_loss 可略超 B 但不得超过 `equity × f_max`（默认 2.5%）——绝对上限就是权益比例。
 - **每个开仓信号必须含止损价**——取技术位，由用户在 App 挂止损。
 - **禁衍生品**——只做个股、ETF（含 2×/3× 杠杆）、REIT；不碰期权 / 窝轮 / CBBC / 期货。
-- **港股限盘中 / 美股 24 小时**——港股仅正常交易时段（09:30-12:00 / 13:00-16:00），持仓须在 12:00 午休前、15:45 收盘前平掉；美股（2026-07-15 起）24 小时均可发信号（盘前 / 盘中 / 盘后 / 夜盘）。
+- **限盘中、收盘前平仓**——港股仅正常交易时段（09:30-12:00 / 13:00-16:00），持仓须在 12:00 午休前、16:00 收盘前平掉；美股仅盘中（美东 09:30-16:00），盯到用户喊停或收盘——无盘前 / 盘后 / 夜盘信号、不留仓过夜。
 - **做空默认允许**——先假设全部标的可做空，除非用户反馈某标的不可空。
 - **当日平仓**——从不在任何账户持仓过夜。
 
@@ -143,7 +147,7 @@ Victor 在发出任何信号前逐条自检（完整清单见 `SKILL.md`）：
 - [Claude Code](https://claude.com/claude-code)
 - **老虎** SDK（`tigeropen`）已配置在 `~/.tigeropen/`
 - **富途 OpenD** 本地网关在运行（港股 Level2 + 美股深度）
-- 从 `*.example.json` 模板填好本地的 `config.json` 和 `accounts.json`（accounts.json 只需 tiger 段）；可选：把 `.claude/settings.local.example.json` 复制为 `.claude/settings.local.json`，把 `autoMemoryDirectory` 改成你本机的绝对路径，让 AutoMemory 存到项目内（不配则存 Claude Code 默认全局路径）
+- 从 `*.example.json` 模板填好本地的 `config.json` 和 `accounts.json`（accounts.json 只需 tiger 段）；可选：把 `.claude/settings.local.example.json` 复制为 `.claude/settings.local.json`，预授权 `python3` 命令
 
 即便没有这些环境，本仓库仍是一份完整的「一个守纪律的交易 agent 应当如何行事」的规范说明。
 

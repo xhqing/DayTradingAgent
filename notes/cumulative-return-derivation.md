@@ -43,7 +43,7 @@
 
 1. 每笔的风险敞口按**笔前权益**的固定比例 $f$ 确定：$M_i = f\cdot W_{i-1}$。这意味着权益涨了，下一笔的风险敞口跟着涨；权益跌了，跟着缩。
 2. $R_i$ 是独立同分布的（来自同一策略 edge），期望 $EV$、方差 $\sigma^2$。
-3. 盈亏用 R-multiple 体系（项目 [review.py](.claude/skills/trade/scripts/review.py) 的统计口径）。
+3. 盈亏用 R-multiple 体系（项目 [review.py](../.claude/skills/trade/scripts/review.py) 的统计口径）。
 
 ---
 
@@ -286,7 +286,7 @@ $$\frac{W(t)}{W_0} \approx e^{n\cdot g} = e^{(\nu\cdot g)\cdot t}$$
 
 门槛是**信号筛选**用的（筛掉更差的信号、不发），**不是 edge 估计**。筛选后实际落地的交易质量分布高于门槛（选择偏差的反方向——幸存样本优于准入线）。
 
-**正确的 edge 估计来源**：实际落地交易的样本统计（[review.py](.claude/skills/trade/scripts/review.py) 的 EV、胜率、赔率 + 贝叶斯后验下界）。截至 2026-07-23 复盘（[N=19](reviews/2026-07-23-review.md)）：
+**正确的 edge 估计来源**：实际落地交易的样本统计（[review.py](../.claude/skills/trade/scripts/review.py) 的 EV、胜率、赔率 + 贝叶斯后验下界）。截至 2026-07-23 复盘（[N=19](../reviews/2026-07-23-review.md)，**07-23 时点；现累计 N=23 见 [07-27 复盘](../reviews/2026-07-27-review.md)**）：
 
 | 指标 | 开仓门槛（下界） | 实际样本（N=19） |
 |---|---|---|
