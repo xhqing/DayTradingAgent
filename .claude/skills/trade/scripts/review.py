@@ -103,6 +103,7 @@ def load_trades(path):
         t['R'] = t['P'] / t['M']
         compute_process(t)
         trades.append(t)
+    trades.sort(key=lambda t: (t['date'], t['symbol']))  # 与 bayes_evolution.py 同排序：样本明细编号 = 序贯图横轴
     return trades
 
 
@@ -112,7 +113,9 @@ def summarize(trades):
     P = [t['P'] for t in trades]
     N = len(R)
     W = [r for r in R if r > 0]
-    L = [r for r in R if r < 0]
+    L = [r for r in R if r <= 0]  # 平手(R=0)算败：与 SKILL「胜率演化图」R_i≤0 记败同口径，
+    #                              保 N=N_W+N_L、q=1-p 严格成立、EV=pR_W+qR_L=mean(R) 恒等。
+    #                              副作用：R_L 含 R=0 笔会被向 0 拉低（反映「没赢」），日内平手极罕见。
     return dict(N=N, R=R, P=P, W=W, L=L,
                 p=len(W) / N, q=len(L) / N,
                 RW=mean(W) if W else float('nan'),

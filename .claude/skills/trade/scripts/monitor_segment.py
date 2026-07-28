@@ -103,6 +103,33 @@ def main():
                 w.writerow(LOG_FIELDS)
             w.writerow(row)
 
+    # 时间断层哨兵（2026-07-28 立）：启动时读各标的 log 最后采样时间，距现在 ≥ 5 分钟
+    # （正常段间循环 < 1 分钟）= 断网/暂停/故障致断层——警告 AI 先跑恢复协议再继续，别用过时
+    # 数据发信号。2026-07-28 中芯事故根因：断层期未察觉、用过时参考价发信号（13:45 数据 →
+    # 15:34 才响铃）。哨兵让 AI 即便没主动意识到断层，脚本也强制提醒。
+    try:
+        for sym in syms:
+            log_file = state[sym]["log_file"]
+            if not os.path.exists(log_file):
+                continue
+            with open(log_file) as lf:
+                rows = list(csv.reader(lf))
+            if len(rows) <= 1:
+                continue
+            last_t = rows[-1][0]  # "HH:MM:SS"
+            last_dt = datetime.strptime(f"{date_str} {last_t}", "%Y%m%d %H:%M:%S")
+            gap_min = (datetime.now() - last_dt).total_seconds() / 60
+            if gap_min >= 5:
+                print(
+                    f"⚠️ 时间断层哨兵：{sym} 距上次采样 {gap_min:.0f} 分钟（上次 {last_t} → 现在），"
+                    f"疑似断网/暂停/故障致断层！先跑 `python3 scripts/resume.py` 重建上下文、"
+                    f"刷新现价，禁止直接用断层前旧数据发信号（发信号前必过「发信号硬前置」："
+                    f"距上次 date/snapshot >2min 必须刷新）。",
+                    flush=True,
+                )
+    except Exception as e:
+        print(f"[时间断层哨兵 err:{e}]", flush=True)
+
     ctx = OpenQuoteContext(host="127.0.0.1", port=11111)
     start = time.time()
     print(
@@ -181,6 +208,42 @@ def main():
         except Exception as e:
             print(f"[{datetime.now():%H:%M:%S}] err:{e}", flush=True)
         time.sleep(INTERVAL)
+
+    # 每 10 分钟重估方向提醒（2026-07-28 立，原 60 分钟、同日用户要求加密）：每段结束时
+    # 读 log 首条时间算累计盯盘时长，每满 10 分钟输出一次重估提醒（标记文件去重、避免跨段重复）。
+    # 为什么：盘中方向/趋势/行情变化快，1 小时重估太慢、错过转向；10 分钟强制重估一次。
+    # 盯盘容易固守开盘方向、忘记 skill 的「动态修正方向」规定（2026-07-27 MU 午盘守偏空 4 小时
+    # 没重估、错过 ~9700 HKD）。靠工具强制提醒，不靠记忆。
+    try:
+        marker_file = os.path.join(LOG_DIR, f"reassess_marker_{date_str}.txt")
+        reminded = set()
+        if os.path.exists(marker_file):
+            with open(marker_file) as mf:
+                reminded = {int(x) for x in mf.read().split() if x.strip().isdigit()}
+        first_log = state[syms[0]]["log_file"]
+        elapsed_min = None
+        if os.path.exists(first_log):
+            with open(first_log) as lf:
+                rdr = csv.reader(lf)
+                next(rdr, None)  # 跳表头
+                first_row = next(rdr, None)
+                if first_row:
+                    first_dt = datetime.strptime(f"{date_str} {first_row[0]}", "%Y%m%d %H:%M:%S")
+                    elapsed_min = (datetime.now() - first_dt).total_seconds() / 60
+        if elapsed_min is not None and elapsed_min >= 10:
+            ten_mark = int(elapsed_min // 10) * 10  # 对齐到 10 倍数（10/20/30…）
+            if ten_mark not in reminded:
+                reminded.add(ten_mark)
+                with open(marker_file, "w") as mf:
+                    mf.write(" ".join(str(h) for h in sorted(reminded)))
+                print(
+                    f"⏰ 重估方向提醒（已盯盘 {int(elapsed_min)} 分钟、满 {ten_mark} 分钟）："
+                    f"过动态修正方向 5 触发（①破阻力 ②破支撑 ③站上/跌破VWAP ④箱体假突破≥2次 "
+                    f"⑤持续单向运动≥1h）+ 自问「方向/趋势/行情是否仍与开盘一致」，不固守开盘判断。",
+                    flush=True,
+                )
+    except Exception as e:
+        print(f"[重估提醒检查 err:{e}]", flush=True)
 
     print(
         f"=== 分段结束 {datetime.now():%H:%M:%S}"

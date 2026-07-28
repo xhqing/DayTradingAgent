@@ -3,6 +3,8 @@
 > **文档定位**：本文记录对当前 `max_loss` 固定值（10000 HKD）的问题诊断，以及升级到「凯利动态下注 / 固定比例风险」实现收益率加速增长的完整方案。**当前 trade skill 的执行方案先不变**——本文仅作规划与待办，落地需等用户拍板参数后，再统一修改 `SKILL.md` / `config.json` / `review.py`。
 >
 > **写作时间**：2026-07-24。基于当日的两轮方案讨论整理。
+>
+> ⚠️ **状态声明（2026-07-27 补）**：本文的**框架与数学推导仍有效**（问题诊断、凯利公式映射、累计收益率推导），但**具体参数与"落地待办"已被 2026-07-26/27 的落地版本超越**：① `max_loss_per_trade=10000` 的固定金额方案已改为 `risk_fraction=2%` 固定比例（`initial_equity=100000`、B=2000）；② `f_max` 实际取 **2.5%**（非本文建议的 2%）；③ 阶段 1 直接以 2% 起步（非本文建议的 0.5%）；④ 第十一节待办清单里 SKILL.md:525 公式 bug、SKILL.md:42"资金总是够用"等**均已落地**。请以 [SKILL.md](../.claude/skills/trade/SKILL.md)、[config.json](../.claude/skills/trade/config.json)、[cumulative-return-derivation.md](cumulative-return-derivation.md)、[2026-07-27 复盘](../reviews/2026-07-27-review.md) 为准。
 
 ---
 
@@ -25,13 +27,13 @@
 
 ## 一、背景：当前框架回顾
 
-当前 trade skill（[SKILL.md](.claude/skills/trade/SKILL.md) 硬性护栏第 1 条）的风控框架：
+当前 trade skill（[SKILL.md](../.claude/skills/trade/SKILL.md) 硬性护栏第 1 条）的风控框架：
 
-- `risk.max_loss_per_trade` = **固定 10000 HKD**（[config.json](.claude/skills/trade/config.json) 的实际值；模板 [config.example.json](.claude/skills/trade/config.example.json) 默认 1000）。
+- `risk.max_loss_per_trade` = **固定 10000 HKD**（[config.json](../.claude/skills/trade/config.json) 的实际值；模板 [config.example.json](../.claude/skills/trade/config.example.json) 默认 1000）。
 - **先定止损位**（技术位）→ **算每股最大损失**（做多 = 开仓价 − 止损价、做空 = 止损价 − 开仓价）→ **反推仓位**：仓位股数 = max_loss ÷ 每股止损距离。
 - 港股按 `lot_size` 向下取整到整手倍数（不足 1 手不开仓）；美股可零股直接取整。
 - **仓位留 buffer**（20%~30%）吸收成交价偏离。
-- 复盘口径：EV = 胜率 × 赔率 − 败率 × 1（R 单位），由 [review.py](.claude/skills/trade/scripts/review.py) 统计。
+- 复盘口径：EV = 胜率 × 赔率 − 败率 × 1（R 单位），由 [review.py](../.claude/skills/trade/scripts/review.py) 统计。
 
 这个框架用「固定风险敞口 M」做锚——方向是对的（这是专业交易的标配做法，叫 fixed fractional / per-trade risk）。本文讨论的不是推翻它，而是**两个暴露出来的问题**，以及**进一步升级到动态比例下注**的方向。
 
@@ -67,7 +69,7 @@ notional = Mᵢ ÷ 止损百分比
 
 1. **港股 lot 向下取整**（只降不升）：反推 2941 股、lot=500 → 取 2500 股，实际 Mᵢ 只剩额度的 85%。
 2. **buffer（20%~30%）**：开仓主动只用到额度的 70%~80%。
-3. **标的差异**：贵标的（止损距大）取整损失大，便宜标的接近打满。[review-input.example.csv](.claude/skills/trade/scripts/review-input.example.csv) 里 07709 那笔就是活例子——配置 1000，实际只有 680。
+3. **标的差异**：贵标的（止损距大）取整损失大，便宜标的接近打满。[review-input.example.csv](../.claude/skills/trade/scripts/review-input.example.csv) 里 07709 那笔就是活例子——配置 1000，实际只有 680。
 
 ### 2. 实算印证（用户举的反例）
 
@@ -83,8 +85,8 @@ Pbar（金额）  = -550 HKD    ← 实际是亏的！
 
 ### 3. 现状评估：代码已对，缺口在决策层
 
-- ✅ **[review.py:120](.claude/skills/trade/scripts/review.py#L120) 的金额口径 `Pbar=mean(P)` 用的是每笔真实盈亏 $P_i$**，而 $R_i=P_i/M_i$ 每笔用自己的实际 max_loss。也就是说**复盘的金额盈亏没有被 R-EV 掩盖**——复盘时同时能看到「+0.35R」和「-550 HKD」两个口径。
-- ❌ **[SKILL.md:525](.claude/skills/trade/SKILL.md#L525) 的文档公式 $\overline{P}=M\cdot\mathrm{EV}$ 是错的**——它假设了 $M$ 恒定，与代码实现不符。实算这个公式给出 +665 HKD，而真实是 −550 HKD，差了 1215。**这是文档 bug，落地时一并修。**
+- ✅ **[review.py:120](../.claude/skills/trade/scripts/review.py#L120) 的金额口径 `Pbar=mean(P)` 用的是每笔真实盈亏 $P_i$**，而 $R_i=P_i/M_i$ 每笔用自己的实际 max_loss。也就是说**复盘的金额盈亏没有被 R-EV 掩盖**——复盘时同时能看到「+0.35R」和「-550 HKD」两个口径。
+- ❌ **[SKILL.md:525](../.claude/skills/trade/SKILL.md#L525) 的文档公式 $\overline{P}=M\cdot\mathrm{EV}$ 是错的**——它假设了 $M$ 恒定，与代码实现不符。实算这个公式给出 +665 HKD，而真实是 −550 HKD，差了 1215。**这是文档 bug，落地时一并修。**
 - ⚠️ **真正的缺口在开仓决策层**：当前只设了上限（$M_i \le 10000$），没约束 $M_i$ 恒定，所以各笔实际承担的风险不均。
 
 ### 4. 解法：给 Mᵢ 设区间 [M_min, M_max]，不只设上限
@@ -136,7 +138,7 @@ Pbar（金额）  = -550 HKD    ← 实际是亏的！
 
 ### 3. 与「AI 不管账户」原则的张力
 
-项目铁律是「**AI 不管账户、不核实资金/持仓**」（[SKILL.md:42](.claude/skills/trade/SKILL.md#L42) 信号模式总则第 6 条）。但判 notional 能不能下单，**必须知道本金/融资上限**——这跟铁律有张力。
+项目铁律是「**AI 不管账户、不核实资金/持仓**」（[SKILL.md:42](../.claude/skills/trade/SKILL.md#L42) 信号模式总则第 6 条）。但判 notional 能不能下单，**必须知道本金/融资上限**——这跟铁律有张力。
 
 建议的折中：**用户在 config 里配一个静态的 $N_{max}$（最大单笔仓位本金），AI 只拿这个预设额度做硬检查，不查实时账户余额。** 既满足可执行性检查，又不违背「AI 不管账户」（AI 用的是用户预先告知的固定额度，不是实时资金）。
 
@@ -271,7 +273,7 @@ $M_i = \text{risk\_fraction} \times W$，$W$ = 当前权益。
 
 - **启动盯盘时用户告知当前权益 $W$**（一个数，不涉及账户细节），AI 用它算 $M_i$。
 - 边界细化为：「AI 不查账户、不下单、不核实持仓，但接受用户告知的权益数用于风控计算」。
-- 这需要修订 [SKILL.md:42](.claude/skills/trade/SKILL.md#L42) 信号模式总则第 6 条「默认假设资金总是够用」——改成「按用户告知的权益 $W$ 动态算 $M_i$」。
+- 这需要修订 [SKILL.md:42](../.claude/skills/trade/SKILL.md#L42) 信号模式总则第 6 条「默认假设资金总是够用」——改成「按用户告知的权益 $W$ 动态算 $M_i$」。
 
 ### 4. 可执行性兜底（衔接问题二）
 
@@ -313,7 +315,7 @@ $M_i = f\times W$ 算出后，仍要过 notional 检查 $[N_{min}, N_{max}]$。l
 - [ ] **config**：`max_loss_per_trade`（固定金额）→ `risk_fraction`（比例）+ 凯利参数 + 上下限 + `notional_max`。
 - [ ] **SKILL.md 硬性护栏第 1 条**：仓位反推公式从「÷ 每股止损距」改为「$f\times W$ ÷ 每股止损距」；加入「三量检查」（notional / $M_i$ / R）。
 - [ ] **SKILL.md:42 信号模式总则第 6 条**：修订「默认假设资金总是够用」→「按用户告知权益 $W$ 动态算 $M_i$」。
-- [ ] **SKILL.md:525 文档公式 bug**：$\overline{P}=M\cdot\mathrm{EV}$ 修正为 $\overline{P}=\frac{1}{N}\sum M_i R_i$（与 [review.py:120](.claude/skills/trade/scripts/review.py#L120) 代码一致）。
+- [ ] **SKILL.md:525 文档公式 bug**：$\overline{P}=M\cdot\mathrm{EV}$ 修正为 $\overline{P}=\frac{1}{N}\sum M_i R_i$（与 [review.py:120](../.claude/skills/trade/scripts/review.py#L120) 代码一致）。
 - [ ] **review.py**：① 加凯利计算模块（贝叶斯后验估 $p/R_W/|R_L|$ → 分数凯利 $f$）；② 加 $M_i$ 离散度诊断（max/min 比、CV、脱钩量）；③ 加「固定金额 vs 固定比例」权益曲线对比图。
 - [ ] **新增权益输入流程**：盯盘启动时接受用户告知的 $W$，写入当日风控基准。
 

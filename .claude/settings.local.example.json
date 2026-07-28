@@ -1,7 +1,5 @@
 {
   "permissions": {
-    "allow": [
-      "Bash(python3 *)"
-    ]
+    "allow": []
   }
 }

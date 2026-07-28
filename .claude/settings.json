@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 .claude/skills/trade/scripts/preflight.py *)",
+      "Bash(python3 .claude/skills/trade/scripts/hot_list.py *)",
+      "Bash(python3 .claude/skills/trade/scripts/snapshot.py *)",
+      "Bash(python3 .claude/skills/trade/scripts/kline.py *)",
+      "Bash(python3 .claude/skills/trade/scripts/monitor.py *)",
+      "Bash(python3 .claude/skills/trade/scripts/monitor_segment.py *)",
+      "Bash(python3 .claude/skills/trade/scripts/monitor_summary.py *)",
+      "Bash(python3 .claude/skills/trade/scripts/resume.py *)",
+      "Bash(python3 .claude/skills/trade/scripts/capital.py *)",
+      "Bash(python3 .claude/skills/trade/scripts/review.py *)",
+      "Bash(python3 .claude/skills/trade/scripts/bayes_evolution.py *)",
+      "Bash(python3 .claude/skills/trade/classify_hk_security.py *)",
+      "Bash(bash .claude/skills/trade/scripts/alert.sh *)",
+      "Bash(bash .claude/skills/keep-awake/scripts/off.sh *)",
+      "Bash(bash .claude/skills/keep-awake/scripts/on.sh *)"
+    ]
+  }
+}
