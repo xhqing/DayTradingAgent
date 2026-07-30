@@ -29,7 +29,7 @@ def ppos_emp(xbar, n, sigma):
 
 # 读累积 trades CSV（单一数据源，与 review.py 同源；每次复盘更新此 CSV）
 trades = []
-with open('reviews/2026-07-27-trades.csv') as fh:
+with open('reviews/2026-07-29-trades.csv') as fh:
     for r in csv.DictReader(fh):
         sign = 1 if r['direction'].strip().lower() in ('long', '做多') else -1
         P = (float(r['exit_price']) - float(r['entry_price'])) * float(r['shares']) * sign
@@ -97,7 +97,7 @@ ax.set_xticklabels([f'{i}\n{trades[i-1][0][5:]}' for i in xs], fontsize=7.5)
 ax.legend(loc='lower right', fontsize=9)
 ax.grid(alpha=0.3)
 plt.tight_layout()
-out = 'reviews/2026-07-27-bayes-evolution.png'
+out = 'reviews/2026-07-29-bayes-evolution.png'
 plt.savefig(out, dpi=120)
 print(f'\n✅ 图已存 {out}')
 
@@ -116,7 +116,7 @@ ax2.set_xticklabels([f'{i}\n{trades[i-1][0][5:]}' for i in ev_xs], fontsize=7.5)
 ax2.legend(loc='lower right', fontsize=9)
 ax2.grid(alpha=0.3)
 plt.tight_layout()
-out2 = 'reviews/2026-07-27-ev-evolution.png'
+out2 = 'reviews/2026-07-29-ev-evolution.png'
 plt.savefig(out2, dpi=120)
 print(f'✅ 图已存 {out2}')
 
@@ -137,7 +137,7 @@ ax3.set_xticklabels([f'{i}\n{trades[i-1][0][5:]}' for i in wr_xs], fontsize=7.5)
 ax3.legend(loc='lower right', fontsize=9)
 ax3.grid(alpha=0.3)
 plt.tight_layout()
-out3 = 'reviews/2026-07-27-winrate-evolution.png'
+out3 = 'reviews/2026-07-29-winrate-evolution.png'
 plt.savefig(out3, dpi=120)
 print(f'✅ 图已存 {out3}')
 
@@ -167,7 +167,7 @@ ax4.set_xticklabels([f'{i}\n{trades[i-1][0][5:]}' for i in pg_xs], fontsize=7.5)
 ax4.legend(loc='lower right', fontsize=9, ncol=2)
 ax4.grid(alpha=0.3)
 plt.tight_layout()
-out4 = 'reviews/2026-07-27-pg-evolution.png'
+out4 = 'reviews/2026-07-29-pg-evolution.png'
 plt.savefig(out4, dpi=120)
 print(f'\n✅ 图已存 {out4}')
 
@@ -188,7 +188,7 @@ ax5.set_xticklabels([f'{i}\n{trades[i-1][0][5:]}' for i in pg_xs], fontsize=7.5)
 ax5.legend(loc='lower right', fontsize=9, ncol=2)
 ax5.grid(alpha=0.3)
 plt.tight_layout()
-out5 = 'reviews/2026-07-27-psum40-evolution.png'
+out5 = 'reviews/2026-07-29-psum40-evolution.png'
 plt.savefig(out5, dpi=120)
 print(f'✅ 图已存 {out5}')
 
@@ -214,7 +214,7 @@ ax6.set_xticklabels([f'{i}\n{trades[i-1][0][5:]}' for i in pg_xs], fontsize=7.5)
 ax6.legend(loc='lower right', fontsize=9, ncol=2)
 ax6.grid(alpha=0.3)
 plt.tight_layout()
-out6 = f'reviews/2026-07-27-pg{int(TARGET*100):02d}-evolution.png'
+out6 = f'reviews/2026-07-29-pg{int(TARGET*100):02d}-evolution.png'
 plt.savefig(out6, dpi=120)
 print(f'✅ 图已存 {out6}')
 
@@ -234,7 +234,7 @@ ax7.set_xticklabels([f'{i}\n{trades[i-1][0][5:]}' for i in pg_xs], fontsize=7.5)
 ax7.legend(loc='lower right', fontsize=9, ncol=2)
 ax7.grid(alpha=0.3)
 plt.tight_layout()
-out7 = f'reviews/2026-07-27-psum40-{int(TARGET*100):02d}pct-evolution.png'
+out7 = f'reviews/2026-07-29-psum40-{int(TARGET*100):02d}pct-evolution.png'
 plt.savefig(out7, dpi=120)
 print(f'✅ 图已存 {out7}')
 
