@@ -15,6 +15,10 @@
 
 复盘报告与配套数据/图统一放**项目根 `reviews/`**：主报告 `reviews/YYYY-MM-DD-review.md`（港美混合复盘直接用；港美分开复盘仿信号文件加 `-HKT`/`-ET`）+ 同日附件 `reviews/YYYY-MM-DD-*.{csv,png}`（输入数据、统计图）。**与 `signals/`、`archive/` 分工**：`signals/` 记信号事实（复盘数据源、只记事实不写分析避免污染）；`reviews/` 放事后复盘分析（今后复盘新家）；`archive/` 留更早的历史归档（含旧复盘，如模拟盘复盘、MU 事后复盘，不再新增）。复盘读取数据走 `signals/`、产物写入 `reviews/`。目录说明见 `reviews/README.md`。
 
+## actions/ 目录归属（2026-07-30 立，2026-07-31 扩展到港股）
+
+港股和美股的模拟盘交易动作记录统一放**项目根 `actions/`**：港股 `actions/YYYY-MM-DD-HKT-actions.md`、美股 `actions/YYYY-MM-DD-ET-actions.md`。`actions/` 记录已执行的交易动作（含 order_id、成交价）。`signals/` 目录保留历史信号记录，新交易不再写入。
+
 ## commit skill 检测缓存
 
 <!-- commit-skill: readme-standard = ok -->
@@ -28,9 +32,6 @@
 
 <!-- commit-skill: agent-persona = ok -->
 - Agent 拟人名：已写入 README（Victor，2026-07-15）
-
-<!-- commit-skill: agent-llm = ok -->
-- Agent 大脑型号：已写入 README（GLM-5.2 · z.ai，2026-07-15）
 
 <!-- commit-skill: automemory = disabled -->
 - AutoMemory：**已废弃不用**（2026-07-20）——memory 内容全量提炼进 SKILL.md、`.claude/memory/` 目录已删、`autoMemoryDirectory` 配置已移除；commit skill 跳过 AutoMemory 目录检测。

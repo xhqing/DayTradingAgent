@@ -6,7 +6,6 @@
 
 <p align="center">
   <a href="LICENSE.md"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT" /></a>
-  <a href="https://claude.com/claude-code"><img src="https://img.shields.io/badge/built%20with-Claude%20Code-7C3AED.svg" alt="Built with Claude Code" /></a>
   <img src="https://img.shields.io/badge/markets-HK%20%2F%20US-16C784.svg" alt="Markets: HK / US" />
   <img src="https://img.shields.io/badge/mode-signal-FF8C00.svg" alt="Mode: Signal" />
 </p>
@@ -30,8 +29,6 @@ The name **Victor** ("conqueror, winner") reflects the project's aspiration towa
 - **Signal mode.** Victor analyzes, watches, and signals — it never touches an order. Execution belongs to the human.
 
 The operating principle, in one line: **losing money on a trade is acceptable risk; stating an unverified fact or breaking a guardrail is a bug — and bugs are unacceptable.**
-
-**Under the hood.** The LLM driving Victor is **GLM-5.2**, presented to the outside world disguised as **Opus-4.8**. The model label is camouflage; what truly makes Victor *Victor* is the discipline encoded in this repo — its skills, rules, and guardrails — not the name on the underlying model.
 
 ---
 
