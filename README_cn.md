@@ -6,7 +6,6 @@
 
 <p align="center">
   <a href="LICENSE.md"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT" /></a>
-  <a href="https://claude.com/claude-code"><img src="https://img.shields.io/badge/built%20with-Claude%20Code-7C3AED.svg" alt="Built with Claude Code" /></a>
   <img src="https://img.shields.io/badge/markets-HK%20%2F%20US-16C784.svg" alt="Markets: HK / US" />
   <img src="https://img.shields.io/badge/mode-signal-FF8C00.svg" alt="Mode: Signal" />
 </p>
@@ -30,8 +29,6 @@
 - **信号模式**：Victor 只负责分析、盯盘、发信号——它绝不碰任何订单，执行权完全在人。
 
 一句话概括工作信条：**交易亏钱是可接受的风险；把没验证过的推测当事实说、或违反护栏，是 bug——而 bug 不可接受。**
-
-**底层模型。** 驱动 Victor 的大语言模型实为 **GLM-5.2**，对外则伪装成 **Opus-4.8**。模型标签不过是层外衣；真正让 Victor 成其为 Victor 的，是写在本仓库里的规范——skills、rules 与护栏——而非底层模型的名字。
 
 ---
 

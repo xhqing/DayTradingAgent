@@ -30,12 +30,21 @@
 # AI 分析时读各标的 log 最近 N 行（如 tail -60 tmp/monitor_log_<SYM>_*.csv）。
 
 import csv
+import json
 import os
 import sys
 import time
 from datetime import datetime
 
 from futu import OpenQuoteContext
+
+# 长桥止损单查询（模拟盘模式：每次采样获取最新止损单止损价）
+_LONGPORT_AVAILABLE = False
+try:
+    from trade_utils import load_config, get_today_orders
+    _LONGPORT_AVAILABLE = True
+except ImportError:
+    pass
 
 
 def parse_targets(raw):
@@ -57,6 +66,40 @@ def parse_targets(raw):
         dn = float(parts[2]) if len(parts) > 2 and parts[2].strip() else None
         targets.append({"sym": sym, "up": up, "dn": dn})
     return targets
+
+
+def query_stop_prices(symbols):
+    """查询长桥模拟盘的当日订单，提取各标的最新的止损条件单止损价。
+
+    返回 {symbol: stop_price} 字典。查不到或出错返回空字典。
+    用户可能在券商 App 里手动添加止损单，所以每次采样都要查、不凭记忆。
+
+    为什么放在采样脚本里：止损价是盯盘决策的关键输入（判断持仓止损触发、
+    移损后新的止损位），必须与行情数据同步获取，不能事后单独查。
+    """
+    if not _LONGPORT_AVAILABLE:
+        return {}
+    try:
+        config = load_config()
+        orders = get_today_orders(config)
+        result = {}
+        for order in orders:
+            # 长桥 API 返回的订单对象属性：symbol, order_type, trigger_price, status, side
+            sym = getattr(order, "symbol", None)
+            if sym is None:
+                continue
+            # 归一化标的代码（长桥可能返回不带前缀的代码）
+            for s in symbols:
+                # 匹配：长桥返回 "US.MU" 或 "MU"，对比 symbols 列表中的 "US.MU"
+                if sym == s or sym == s.split(".")[-1]:
+                    trigger = getattr(order, "trigger_price", None)
+                    if trigger and float(trigger) > 0:
+                        # 取最新的（后查询覆盖前面的）
+                        result[s] = float(trigger)
+                    break
+        return result
+    except Exception:
+        return {}
 
 
 def main():
@@ -85,7 +128,7 @@ def main():
     _PROJECT_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", "..", "..", ".."))
     LOG_DIR = os.path.join(_PROJECT_ROOT, "tmp")
     date_str = datetime.now().strftime("%Y%m%d")
-    LOG_FIELDS = ["time", "symbol", "last", "bid", "ask", "ratio", "vr", "high", "low", "turnover_yi"]
+    LOG_FIELDS = ["time", "symbol", "last", "bid", "ask", "ratio", "vr", "high", "low", "turnover_yi", "stop_price"]
 
     # state[sym] = 该标的的 log 路径 + 上一轮 high/low（用于判创新高/新低）+ 它自己的关键位
     state = {}
@@ -146,8 +189,14 @@ def main():
         print(f"    {sym}: {level_desc} | log={state[sym]['log_file']}", flush=True)
 
     broke = []  # 本段若提前退出，记录哪些标的破了什么位，供结尾汇总
+    stop_prices = {}
     while time.time() - start < DURATION:
         try:
+            # 每轮采样都查一次最新止损单（用户可能在 App 中途手动加止损，频率随采样间隔走）
+            fresh = query_stop_prices(syms)
+            if fresh:
+                stop_prices.update(fresh)
+
             ret, df = ctx.get_market_snapshot(syms)
             if ret != 0 or df is None or len(df) == 0:
                 print(f"[{datetime.now():%H:%M:%S}] snapshot 失败 ret={ret} {df}", flush=True)
@@ -187,16 +236,22 @@ def main():
                         tags.append(f"[↓破支撑{low}≤{st['dn']}]")
                 st["last_high"], st["last_low"] = high, low
 
+                # 止损价（长桥模拟盘当日止损条件单，查不到标 "-")
+                sp = stop_prices.get(sym)
+                sp_str = f"{sp:.2f}" if sp is not None else "-"
+
                 # ① append 该标的自己的连续 log（累积，AI 分析时读最近 N 行）
                 append_log(
                     state[sym]["log_file"],
-                    [ts, sym, last, bid, ask, f"{ratio:.0f}", f"{vr:.1f}", high, low, f"{turnover / 1e8:.2f}"],
+                    [ts, sym, last, bid, ask, f"{ratio:.0f}", f"{vr:.1f}", high, low,
+                     f"{turnover / 1e8:.2f}", sp_str],
                 )
                 # ② stdout 仍 print（段通知 + 突破标记），每只票一行带 [sym] 前缀
+                stop_info = f" 止损={sp_str}" if sp_str != "-" else ""
                 print(
                     f"[{ts}] [{sym}] last={last} bid={bid} ask={ask} "
                     f"买卖比={ratio:.0f} 量比={vr:.1f} high={high} low={low} "
-                    f"额={turnover / 1e8:.1f}亿 {' '.join(tags)}",
+                    f"额={turnover / 1e8:.1f}亿{stop_info} {' '.join(tags)}",
                     flush=True,
                 )
                 if tags:
