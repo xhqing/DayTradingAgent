@@ -28,7 +28,7 @@
 - LICENSE.md：已存在（2026-07-15 确认）
 
 <!-- commit-skill: github-about = ok -->
-- GitHub About：已配置（纯英文 description + topics，2026-07-18 修订：原双语 description 按 9c 规则改写为纯英文）
+- GitHub About：已配置（中英双语 description + topics，2026-08-02 修订：由纯英文改回中英双语以对齐当前 9c 规则）
 
 <!-- commit-skill: agent-persona = ok -->
 - Agent 拟人名：已写入 README（Victor，2026-07-15）
