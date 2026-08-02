@@ -70,6 +70,13 @@ def main():
     quantity = int(float(sys.argv[6]))
     mode = parse_mode()  # auto（默认，equity 走账户 API）/ signal（equity 走 equity-log）
 
+    if not symbol.startswith("US."):
+        # 分而治之（2026-08-01 立）：美股脚本只处理美股；港股走 open_position_hk.py（长桥备选）/
+        # open_position_tiger.py（老虎默认）。原港股 lot_size 硬编码 100 的死分支已随此校验移除
+        # （港股每手股数因标而异：盈富 500、腾讯 100，由港股脚本从行情接口取真实值，不硬编码）。
+        print(json.dumps({"ok": False, "error": f"本脚本只处理美股（US.xxx），港股用 open_position_hk.py / open_position_tiger.py，收到 {symbol}"}))
+        sys.exit(1)
+
     if direction not in ("long", "short"):
         print(json.dumps({"ok": False, "error": f"direction 必须是 long/short，收到 '{direction}'"}))
         sys.exit(1)
@@ -128,9 +135,7 @@ def main():
     if quantity == 0:
         equity, _eq_cur, eq_src = load_equity(mode)
         stop_distance = abs(entry_ref - stop_loss)
-        lot_size = 1  # 美股可零股；港股 lot_size 当前硬编码 100
-        if symbol.startswith("HK."):
-            lot_size = 100  # 港股临时默认
+        lot_size = 1  # 美股可零股（港股每手股数因标而异，由港股脚本从行情接口取，本脚本只处理美股）
         quantity, max_loss, budget_B = calc_position_size(
             equity, 0.02, 0.10, stop_distance, lot_size
         )
