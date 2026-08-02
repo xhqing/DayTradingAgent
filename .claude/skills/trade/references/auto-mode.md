@@ -40,6 +40,7 @@
 - `close_position.py` — 平仓（一键平仓：读持仓自动算方向 + 量，**市价单 MO** 反向下单立即成交；成功后撤销所有未触发 MIT 止损单，防反向开仓）
 - `move_stop.py` — 移动止损（**先下新止损单、再撤旧**，仓位持续保护无空窗；保留单个活动止损防空仓反向开仓）
 - `trade_utils.py` — 共用工具库（长桥 API 封装、价格范围计算、仓位计算）
+- **港股老虎默认账户独立一套**（与美股 / 港股长桥脚本解耦、分而治之，2026-08-01 立）：`trade_utils_tiger.py`（老虎 SDK 自包含：配置加载、港股 symbol `HK.02800`→老虎 `02800`（只认 5 位裸数字，2026-08-02 实测）、lot_size / tick 从 get_contract 取、开仓 LMT+附加腿 OrderLeg('LOSS')、平仓 MKT、独立止损 STP、净值取 get_assets().summary.net_liquidation）+ `open_position_tiger.py` / `close_position_tiger.py` / `move_stop_tiger.py`。**港股默认账户，未特别说明即用这套**。⚠️ 实测状态（2026-08-02）：配置加载 / 行情 / 合约 / 资产 / 持仓 / 订单只读链路已实测通过；**下单链路（开仓 LMT+附加止损、平仓 MKT、独立止损 STP 提交与触发）待 paper 账户开盘实测确认**，实测前不得用于真实下单。paper 接入：properties 的 account 填 17 位模拟账户号即自动走模拟域名。
 - **港股长桥备选账户独立一套**（与美股脚本解耦、分而治之，2026-08-01 立）：`trade_utils_hk.py`（港股自包含：symbol `HK.02800`↔`2800.HK` 转换、lot_size 从 static_info 取、港股价位 tick、HKD equity）+ `open_position_hk.py` / `close_position_hk.py` / `move_stop_hk.py`。**仅在用户特别说明用长桥时使用**，默认港股走老虎；只处理 `HK.xxx`、不碰美股持仓。
 - `log_action.sh` — 把完整交易动作写入 `actions/` 目录
 
