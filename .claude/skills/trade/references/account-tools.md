@@ -1,10 +1,12 @@
-# 账户与数据源（详细参考）
+# 行情数据源（详细参考，公共）
 
-> 本文件是 trade skill `SKILL.md` 的账户 / 工具链配置、数据源分工、标的类型判定、做空能力查询的详细参考。`SKILL.md` 只保留默认账户说明 + 做空权限两行规则；配置细节、数据源坑、标的分类启发式全部在本文件。下单前核实标的类型、查询做空能力、排查数据源问题时读取。
+> 本文件是 trade skill 的**行情数据源**详细参考——富途 OpenD / 老虎 SDK / 长桥 OpenAPI 的行情配置与坑、数据源分工、标的类型判定、做空能力查询、港美股代码格式。**公共内容，auto 与 signal 两种模式共用**（两种模式都要盯盘取行情、都要核实标的类型排除衍生品）。
+>
+> **下单 API、订单机制、下单账户配置**（长桥模拟盘交易 API、MIT 止损单、订单类型 vs 附加订单、港股长桥备选账户、长桥实盘扩展）是 **auto 模式专属**（signal 模式不下单、不需要），已挪到 `references/auto-mode.md`「下单 API 与订单机制」。本文件不再讲下单，只讲行情数据源。
 
-## 账户与工具链
+## 行情数据源分工
 
-港股默认用老虎开放平台模拟账户、美股默认用长桥模拟账户自动下单（AI 调脚本直接执行；如用户不使用默认账户会特别说明）。盯盘行情数据走富途 + 老虎两家（详见下方数据源分工总则）。要点：
+盯盘行情数据走富途 + 老虎两家（详见下方「数据源分工总则」）。auto 模式的下单账户（港股默认老虎开放平台模拟、美股默认长桥模拟）见 `SKILL.md`「模式开关」与 `auto-mode.md`；行情数据两模式一致。
 
 ### 富途 OpenD（盯盘行情主力源）
 
@@ -27,25 +29,21 @@
 
 ⚠️ 老虎 TBNZ 账户**美股无行情权限**（故美股只能靠富途单源）。⚠️ 同步 `QuoteClient` 初始化须 `TigerOpenClientConfig(props_path='~/.tigeropen/tiger_openapi_config.properties')` 构造（私钥自动加载，直接 `QuoteClient()` 会报 private key empty）；WebSocket 用 `PushClient`。代码骨架见 `tiger-websocket.md`。
 
-### 长桥第三备份 + 模拟盘交易执行
+### 长桥第三备份（行情降级兜底）
 
-富途 + 老虎**都**取不到数据时，降级切长桥 OpenAPI 兜底（**appkey 模式**，不是 OAuth——OAuth 设备流登录后调 openapi 一律 `401003`、桥接坏；凭证存 `~/.longbridge/openapi/env-sg` 新加坡账户 / `env-paper` 模拟账户，`source` 后 `longbridge quote/depth/capital/kline`，两账户行情数据等价）。
+富途 + 老虎**都**取不到数据时，降级切长桥 OpenAPI 兜底（**appkey 模式**，不是 OAuth——OAuth 设备流登录后调 openapi 一律 `401003`、桥接坏；凭证存 `~/.longbridge/openapi/env-sg` 新加坡账户 / `env-paper` 模拟账户，`source` 后 `longbridge quote/depth/capital/kline`，两账户行情数据等价）。⚠️ 长桥 OpenAPI 盘口只 **1 档**（港股 LV1 / 美股 QBBO，十档 LV2 OpenAPI 未开通）、资金流只大/中/小三档，**远不如富途/老虎深，仅降级备份、不作主力**。账户号查法：`source env-xxx && longbridge auth status --format json` 看 `account.account_no`（appkey 模式才填得上）。
 
-⚠️ 长桥 OpenAPI 盘口只 **1 档**（港股 LV1 / 美股 QBBO，十档 LV2 OpenAPI 未开通）、资金流只大/中/小三档，**远不如富途/老虎深，仅降级备份、不作主力**。账户号查法：`source env-xxx && longbridge auth status --format json` 看 `account.account_no`（appkey 模式才填得上）。
-
-**长桥模拟盘交易 API**（`longport` SDK v3.0.23）：`TradeContext.submit_order()` 支持限价单（LO）、市价单（MO）、止损条件单（trigger_price 参数）；`today_orders()` 查当日订单（含条件单，用于 `monitor_segment.py` 获取最新止损价）；凭证 `~/.longbridge/openapi/env-paper`（`LONGPORT_APP_KEY` / `LONGPORT_APP_SECRET` / `LONGPORT_ACCESS_TOKEN`，SDK 需 `LONGPORT_` 前缀，`LONGBRIDGE_` 前缀由 `trade_utils.load_env_file()` 自动映射）。
-
-⚠️ **SDK 必须连中国区，否则 connect timeout（2026-07-31 立）**：SDK 默认连国际区 `openapi.longportapp.com`（国内被墙、直连 port 443 超时，即便系统设了 HTTP_PROXY/ALL_PROXY 走 xray 代理，SDK 的 Rust 内核也不读系统代理环境变量）。CLI 按 `~/.longbridge/openapi/region-cache`（=cn）自动连中国区 `openapi.longportapp.cn`（国内直连即可达、无需代理），故 CLI 能连、SDK 默认不能。`trade_utils.load_env_file()` 已自动读 region-cache 设 `LONGPORT_REGION=cn`，让 SDK 也连中国区——**所有交易脚本经 load_config() 即自动生效，无需手动设环境变量**。实测：不设 region → 7.7s connect timeout；设 cn → 0.8s 连接成功。
-
-⚠️ **TradeContext 无 close() 方法（2026-07-31 修）**：`TradeContext` 没有 `close()`（与 `QuoteContext` 不对称），调 `tc.close()` 抛 `AttributeError`；若写在 `finally` 里会覆盖函数返回值、致所有下单/查询函数失败。`trade_utils.py` 各交易函数的 `finally` 已改为 `pass`（SDK 自动清理连接，无需显式 close），勿再加回 `tc.close()`。
+> 长桥的下单 / 交易 API（TradeContext、MIT 止损单、SDK 连中国区、TradeContext 无 close 等）见 `auto-mode.md`「下单 API 与订单机制」——行情用 CLI / appkey 模式（公共），交易用 SDK（auto 专属）。
 
 ## 数据源分工总则（最高优先级）
 
 盯盘行情数据**走富途 + 老虎两家**。富途是主力（港股 + 美股全覆盖）、老虎是港股备份 + WebSocket 推送源。实测依据：**资金流富途最丰富**（分布含 super 超大单 + 分钟序列 + 十大买卖经纪）、**分钟 K 富途深 5.5 年**、**实时性富途 / 老虎是 WebSocket 毫秒级**。⚠️ 老虎 TBNZ 账户**美股无行情权限**，故美股只靠富途单源。完整对比表见 `futu-opend-level2.md`「三源对比与选用」。
 
-## 做空能力以实际账户查询为准
+## 做空能力以实际账户查询为准（auto 模式）
 
 接入交易账户后，标的能否做空、券源是否充足，由 AI 开仓前查询账户的做空信息（老虎/长桥 API 的标的做空状态、可借券数量）确认，不凭假设。查询不到或不可做空则放弃该标的的做空、换标的或换方向。做空工具（反向 ETF vs 融券正股）按胜率优先选择，哪个胜率更高就用哪个。
+
+> signal 模式不查账户，默认所有标的可做空、发信号不问（用户在自家 App 执行时自决可行性），用户反馈「某标的不可空」时才排除。
 
 ## 标的判定（`classify_hk_security.py`，目的：排除衍生品）
 
@@ -60,7 +58,7 @@
 
 **-W/-S/-SW 后缀**：同股不同权（-W）/第二上市（-S），仍为个股（如 09988 BABA-W、09618 JD-SW）。
 
-**执行**：下单前 `python3 .claude/skills/trade/classify_hk_security.py <标的>`。**只有判定为衍生品时才不下单**；判定为 ETF/个股/REIT（任意置信度）都可交易。港股优先在 ETF 池找顺势机会（免税），个股仅当 ETF 无法覆盖该板块时考虑。
+**执行**：开仓前 `python3 .claude/skills/trade/classify_hk_security.py <标的>`。**只有判定为衍生品时才不执行**；判定为 ETF/个股/REIT（任意置信度）都可交易。港股优先在 ETF 池找顺势机会（免税），个股仅当 ETF 无法覆盖该板块时考虑。
 
 ## 标的范围与衍生品禁令
 

@@ -62,32 +62,25 @@ def port_open(p):
         return False
 print(f"📊 富途OpenD:11111 {'✅' if port_open(11111) else '❌(未登录/未启动)'}")
 
-# 风险比例 + 权益（config 权威，盯盘启动即读出；2026-07-26 改固定比例动态下注）
-import json as _json, os as _os, csv as _csv
+# 风险比例 + 权益（按模式取 equity：auto 走账户 API、signal 走 equity-log；2026-08-01 双模式重构）
+import json as _json, os as _os, sys as _sys
 try:
+    _sys.path.insert(0, _os.path.dirname(__file__))
+    from trade_utils import load_equity as _le, parse_mode as _pm
+    _mode = _pm()
     _cfg_path = _os.path.join(_os.path.dirname(__file__), '..', 'config.json')
     with open(_cfg_path) as _f:
         _risk = _json.load(_f).get('risk', {})
-    _frac = _risk.get('risk_fraction'); _eq0 = _risk.get('initial_equity')
-    _cur = _risk.get('equity_currency', 'HKD'); _fmax = _risk.get('f_max', _frac)
-    # 当前 equity = signals/equity-log.csv 最新行 equity_after（无记录则 initial_equity）
-    _eq_now = _eq0
-    _log = _os.path.join(_os.path.dirname(__file__), '..', '..', '..', '..', 'signals', 'equity-log.csv')
-    try:
-        with open(_log) as _f:
-            _rows = [r for r in _csv.DictReader(_f) if not (r.get('date') or '').startswith('#')]
-        if _rows:
-            _eq_now = float(_rows[-1]['equity_after'])
-    except FileNotFoundError:
-        pass  # 无 log → 用 initial_equity
-    if _frac is not None and _eq0 is not None:
+    _frac = _risk.get('risk_fraction'); _fmax = _risk.get('f_max', _frac)
+    _eq_now, _cur, _eq_src = _le(_mode)
+    if _frac is not None and _eq_now is not None:
         _M = _frac * _eq_now
-        print(f"💰 风险比例 {_frac*100:.1f}% × 当前 equity {_eq_now:,.0f} {_cur} = 单笔预算 B {_M:,.0f}（f_max 硬上限 {_fmax*100:.1f}%，max_loss 不得突破）")
-        print(f"   当前 equity 来自 signals/equity-log.csv 最新行（无记录则 initial {_eq0}）；每笔了结后 append 更新（含 equity 更新 + 信号文件记总资产）")
+        print(f"💰 模式 {_mode} | 风险比例 {_frac*100:.1f}% × 当前 equity {_eq_now:,.2f} {_cur} = 单笔预算 B {_M:,.2f}（f_max 硬上限 {_fmax*100:.1f}%，max_loss 不得突破）")
+        print(f"   equity 来源：{_eq_src}")
     else:
-        print(f"💰 ⚠️ config 缺 risk_fraction/initial_equity，盘中算仓位前务必手动确认")
+        print(f"💰 ⚠️ config 缺 risk_fraction，盘中算仓位前务必手动确认")
 except Exception as _e:
-    print(f"💰 ⚠️ 读取 config 失败({_e})，盘中算仓位前务必手动确认 risk.risk_fraction / initial_equity")
+    print(f"💰 ⚠️ 读取 config/equity 失败({_e})，盘中算仓位前务必手动确认 risk.risk_fraction")
 
 # positions 检查已移除（2026-07-15 信号模式：假设执行、不查 positions，见 SKILL「信号模式总则」第 1 条）
 # 长桥 CLI token 检查已移除（2026-07-15 长桥 CLI 授权撤销、token 删除，盯盘数据走富途 + 老虎）
