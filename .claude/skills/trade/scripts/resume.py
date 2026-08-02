@@ -143,28 +143,24 @@ else:
     print("   今日无采样/响铃记录（首次启动或休市日）——无需断层判断。")
 
 
-# ---------- 当前 equity + 单笔预算 B（与 preflight.py 同口径）----------
+# ---------- 当前 equity + 单笔预算 B（按模式取：auto 走账户 API、signal 走 equity-log；与 preflight.py 同口径）----------
+# 2026-08-01 双模式重构：equity 按 mode 取（auto 账户 API / signal equity-log）。
 try:
+    sys.path.insert(0, SCRIPT_DIR)
+    from trade_utils import load_equity as _le, parse_mode as _pm
+    mode = _pm()
     with open(os.path.join(SCRIPT_DIR, "..", "config.json")) as f:
         risk = json.load(f).get("risk", {})
     frac = risk.get("risk_fraction")
-    eq0 = risk.get("initial_equity")
-    cur = risk.get("equity_currency", "HKD")
     fmax = risk.get("f_max", frac)
-    eq_now = eq0
-    eqlog = os.path.join(SIGNALS_DIR, "equity-log.csv")
-    if os.path.exists(eqlog):
-        with open(eqlog) as f:
-            rows = [r for r in csv.DictReader(f) if not (r.get("date") or "").startswith("#")]
-        if rows:
-            eq_now = float(rows[-1]["equity_after"])
-    if frac is not None and eq0 is not None:
+    eq_now, cur, eq_src = _le(mode)
+    if frac is not None and eq_now is not None:
         print(
-            f"\n💰 当前 equity {eq_now:,.0f} {cur} × {frac*100:.1f}% = 单笔预算 B {frac*eq_now:,.0f}"
-            f"（f_max 硬上限 {fmax*100:.1f}%）"
+            f"\n💰 模式 {mode} | 当前 equity {eq_now:,.2f} {cur} × {frac*100:.1f}% = 单笔预算 B {frac*eq_now:,.2f}"
+            f"（f_max 硬上限 {fmax*100:.1f}%）| 来源：{eq_src}"
         )
 except Exception as e:
-    print(f"\n💰 ⚠️ 读 config/equity 失败（{e}）——发信号前手动确认 B")
+    print(f"\n💰 ⚠️ 读 config/equity 失败（{e}）——执行前手动确认 B")
 
 
 # ---------- 今日信号摘要（让 AI 知道今天发生了什么、有无悬空）----------
@@ -192,8 +188,9 @@ if not found_any:
 
 
 # ---------- 可选：snapshot 刷新指定标的现价（验证持仓 / 刷新参考价）----------
-if len(sys.argv) > 1:
-    syms = [s.strip() for s in sys.argv[1].split(",") if s.strip()]
+_positional = [a for a in sys.argv[1:] if not a.startswith("--mode")]
+if _positional:
+    syms = [s.strip() for s in _positional[0].split(",") if s.strip()]
     print(f"\n📊 刷新现价 {syms}：")
     try:
         from futu import OpenQuoteContext
