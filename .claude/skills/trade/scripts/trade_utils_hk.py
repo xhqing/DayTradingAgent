@@ -15,6 +15,14 @@
 - 开仓：主单 LO + 附加 STOP_LOSS MIT（一次 REST 提交）。
 - 移动止损：反向 MIT（SDK），撤旧再新增，量严格=持仓量。
 - 平仓：MO（市价）+ 撤未触发 MIT 止损单（防反向开仓）。
+
+✅ 实测状态（2026-08-03 paper 三动作实测通过，HK.00700 腾讯做多 100 股）：开仓 LO FILLED
+@487.0 + REST 附加 STOP_LOSS 提交接受但**模拟盘不激活**（REST 查主单 trigger_status=NOT_USED、
+不生成独立订单——模拟盘附加单静默无效，实盘前需验证）；移损 MIT @485 提交成功（SDK 状态
+OrderStatus.VarietiesNotReported = 模拟盘「品种未上报」等待态，属活动单、可撤）；平仓 MO Filled
+@487.6（长桥订单 avg_fill_price 取不到、last 兜底——观察点）+ 撤止损。修复 1 个 bug：
+get_open_position_hk / cancel_all_stop_orders_hk 对传入的富途格式 symbol 误调 to_futu_symbol
+（"HK.00700"→"00700.HK" 错乱）致持仓 / 止损匹配永远失败——已改为直接比较。
 """
 
 import os
@@ -411,7 +419,7 @@ def get_open_position_hk(config, symbol=None):
         if not collected:
             return None
         if symbol is not None:
-            target = to_futu_symbol(symbol)
+            target = symbol  # 传入即富途格式（HK.00700）；collected 内已是 to_futu_symbol 转换后的富途格式，直接比
             matches = [(s, p) for s, p in collected if to_futu_symbol(getattr(p, "symbol", "")) == target]
             if not matches:
                 return None
@@ -448,7 +456,7 @@ def cancel_all_stop_orders_hk(config, symbol, exclude_order_id=None):
     from longport.openapi import TradeContext
     tc = TradeContext(config)
     try:
-        target = to_futu_symbol(symbol)
+        target = symbol  # 传入即富途格式（HK.00700）；订单 symbol（700.HK）经 to_futu_symbol 转后与其比较
         orders = tc.today_orders()
         cancelled = []
         for order in orders:

@@ -6,14 +6,14 @@
 
 ## 交易 / 持仓处置
 
-- [ ] **关闭 MU 误开多头仓位**（记录：2026-08-01 22:54）：2026-07-31 smart_order 市价单被拒却误报成交 → close_position 反向买入开多 158 股 @ 828.575 USD（实测 2026-08-01 持仓确认）。计划下一个美股开盘（21:30 HKT）用 `close_position.py`（一键平仓）平掉，开盘前重新 `get_open_position` 核实持仓再执行。
+- ✅**已完成**（完成：2026-08-03 11:03）**关闭 MU 误开多头仓位**（记录：2026-08-01 22:54）：2026-07-31 smart_order 市价单被拒却误报成交 → close_position 反向买入开多 158 股 @ 828.575 USD（实测 2026-08-01 持仓确认）。计划下一个美股开盘（21:30 HKT）用 `close_position.py`（一键平仓）平掉，开盘前重新 `get_open_position` 核实持仓再执行。
 
 ## 代码 / 机制
 
 - ✅**已完成**（完成：2026-08-02 18:59）**`load_equity` 改用账户 API 取真实总资产**（记录：2026-08-01 22:54）：`trade_utils.load_equity`（open_position 自动算仓位用）仍读 `signals/equity-log.csv`（旧信号模式累加值、不真实）；应改为像 `preflight.py` / `resume.py` 那样从长桥 `account_balance().net_assets` 取（2026-07-31 已修 preflight/resume，open_position 的自动仓位路径漏改）。
 - [ ] **实盘实测 `submit_order_with_stop`（开仓附加订单）**（记录：2026-08-01 22:54）：该函数（REST 主单 LO + attached_params STOP_LOSS）签名逻辑已对照文档核对、REST 签名复用已验证的可工作实现，但尚未端到端实跑过一笔真实（paper）开仓。计划在美股开盘时用 paper 账户实测一笔小仓位开仓（确认主单成交 + 附加止损进入监控状态 + 成交回查拿到 fill_price），测完即平。
 
-- [ ] **港股长桥三动作开盘实测**（记录：2026-08-01 22:54）：`open_position_hk.py` / `close_position_hk.py` / `move_stop_hk.py` 已建（解耦独立一套）+ 盘后只读功能实测通过；下单链路（开仓 LO+附加MIT、移损先新增后撤旧、平仓 MO）需港股开盘时用 paper 账户端到端实测一笔小仓位。仅当用户特别说明用长桥时执行。
+- ✅**已完成**（完成：2026-08-03 10:58）**港股长桥三动作开盘实测**（记录：2026-08-01 22:54）：`open_position_hk.py` / `close_position_hk.py` / `move_stop_hk.py` 已建（解耦独立一套）+ 盘后只读功能实测通过；下单链路（开仓 LO+附加MIT、移损先新增后撤旧、平仓 MO）需港股开盘时用 paper 账户端到端实测一笔小仓位。仅当用户特别说明用长桥时执行。
 - [ ] **美股 open_position 端到端实测**（记录：2026-08-01 22:54）：美股 symbol bug 修复后（to_lb_symbol），`open_position.py` 全链路（get_quote→submit_order_with_stop→成交回查）需开盘时实测一笔小仓位确认（此前因 symbol bug 未成功跑过）。
 - ✅**已完成**（完成：2026-08-02 18:59）**港股 lot_size 从行情接口取真实每手股数（当前硬编码 100）**（记录：2026-08-02 13:54）：`open_position.py` 自动算仓位时港股 lot_size 硬编码 100（line 130-132），应改为从行情接口取真实每手股数（原代码注释提及富途 snapshot；港股转老虎后需确认实际行情源与取数字段）。
 
@@ -29,11 +29,11 @@
   - 老虎下单/平仓/止损机制逐一实测，**不能从长桥外推**（verify-facts：券商行为只信直接实测）。
 - ✅**已完成**（完成：2026-08-02 18:59）**建 `trade_utils_tiger.py`**（记录：2026-08-01 22:54）（老虎封装，自包含不依赖长桥/美股）：配置加载、港股 symbol/lot/tick、place_order（开仓 LMT+附加止损）、平仓 MO、移损止损单（先新增后撤旧）、查持仓/资产/订单、撤单、成交回查。
 - ✅**已完成**（完成：2026-08-02 18:59）**建 `open_position_tiger.py` / `close_position_tiger.py` / `move_stop_tiger.py`**（记录：2026-08-01 22:54）（与规范一致：开仓 LO+附加止损、平仓 MO+撤止损、移损先新增后撤旧且量=持仓）。
-- [ ] **开盘实测港股老虎三动作全链路**（记录：2026-08-01 22:54）（paper 账户小仓位）。
+- ✅**已完成**（完成：2026-08-03 10:47）**开盘实测港股老虎三动作全链路**（记录：2026-08-01 22:54）（paper 账户小仓位）。
 
 - ✅**已更新**（更新：2026-08-02 19:06）**老虎 paper 接入：17 位模拟账户号 + 开盘实测三动作下单链路**（记录：2026-08-02 18:59）：2026-08-02 盘后已完成「研究老虎 SDK 港股细节」的可盘后部分（详见上条 `✅**已更新**` 标记与 CHANGELOG 2026-08-02 记录）：① 配置加载根因 = `get_client_config` 必须先传 private_key_path（None 直接 TypeError），正确姿势 `TigerOpenClientConfig(props_path=~/.tigeropen/)`（私钥自动从 private_key_pk1/pk8 读，实测加载成功）；② paper 判定 = account 为 17 位纯数字账户号即 is_paper=True、网关自动走 license-PAPER 域名（domain_conf 已含 TBNZ-PAPER，实测确认）；③ 港股 symbol 只认 5 位带前导 0 裸代码（'02800'/'00700' 实测 OK，HK.02800/2800.HK/700.HK 均拒）；④ lot_size / tick 从 `get_contract` 取（实测 02800=500、00700=100、tick_sizes 完整价位表）；⑤ TradeClient API 结构与只读链路（get_assets→summary.net_liquidation / get_positions / get_orders / cancel_order / create_order+place_order / OrderLeg('LOSS') 附加腿仅限价单支持）全部实测通过；`trade_utils_tiger.py` + 三动作脚本已建（下单链路标注待实测）。**剩余**：a) 用户提供 17 位 paper 模拟账户号写入 `~/.tigeropen/tiger_openapi_config.properties` 的 account 字段（当前是 7 位实盘号 <HK_LIVE_ACCOUNT>，且该实盘账户未开通交易/资产权限——get_assets 返回全 0）；b) 港股开盘时用 paper 账户实测三动作全链路（开仓 LMT+附加止损腿提交与激活、平仓 MKT、移损 STP 先新增后撤旧、成交回查），实测结果回写脚本与文档。
 
-- [ ] **老虎 paper 账户开盘实测三动作下单链路（账户号已接入，2026-08-02 19:06 完成接入）**（记录：2026-08-02 19:06）：17 位模拟账户号 `<HK_PAPER_ACCOUNT>`（从 git 历史 2514d76 恢复）已写入 `~/.tigeropen/tiger_openapi_config.properties` 的 account 字段（原 7 位实盘号备份在 `.bak`），实测：is_paper=True、网关自动走 sandbox 域名、`get_assets` 净值 1,000,007.56 USD（初始资金 $1,000,000）、`get_positions` 有 **2 笔历史持仓**（02800 盈富多 500 股 @26.3639、07709 三星 2x 杠杆空 200 股 @43.0638）——开盘实测时先核实这两笔怎么处置（平掉 / 保留）。**剩余**：港股开盘时用 paper 账户实测三动作全链路——开仓 LMT+附加止损腿（OrderLeg('LOSS')）提交与激活、平仓 MKT、移损 STP 先新增后撤旧、成交回查；实测结果回写 `trade_utils_tiger.py` 三脚本与 `auto-mode.md` 实测状态标注（实测前标注为「待实测、不得真实下单」）。
+- ✅**已完成**（完成：2026-08-03 10:47）**老虎 paper 账户开盘实测三动作下单链路（账户号已接入，2026-08-02 19:06 完成接入）**（记录：2026-08-02 19:06）：17 位模拟账户号 `<HK_PAPER_ACCOUNT>`（从 git 历史 2514d76 恢复）已写入 `~/.tigeropen/tiger_openapi_config.properties` 的 account 字段（原 7 位实盘号备份在 `.bak`），实测：is_paper=True、网关自动走 sandbox 域名、`get_assets` 净值 1,000,007.56 USD（初始资金 $1,000,000）、`get_positions` 有 **2 笔历史持仓**（02800 盈富多 500 股 @26.3639、07709 三星 2x 杠杆空 200 股 @43.0638）——开盘实测时先核实这两笔怎么处置（平掉 / 保留）。**剩余**：港股开盘时用 paper 账户实测三动作全链路——开仓 LMT+附加止损腿（OrderLeg('LOSS')）提交与激活、平仓 MKT、移损 STP 先新增后撤旧、成交回查；实测结果回写 `trade_utils_tiger.py` 三脚本与 `auto-mode.md` 实测状态标注（实测前标注为「待实测、不得真实下单」）。
 
 ## 默认模式 = 信号（signal），自动模式需特别说明（2026-08-03 用户立，取代「港股 default 从 signal 切 auto」）
 
@@ -41,3 +41,11 @@
 - ✅**已更新**（更新：2026-08-03 09:55）**港股 default 从 signal 切 auto（signal 模式保留，两者共存）**（记录：2026-08-02 14:14）：当前决定 = 信号模式与自动交易模式二者共存，不是放弃 signal 改纯 auto。港股目前 default 仍为 signal（AI 发信号 `signals/`、手动执行）；待港股老虎三动作建好后把港股 default 切 auto（AI 调脚本下单、`actions/` 记动作）。**signal 模式保留为可切换模式**——用户说「只发信号 / 手动执行」时仍切 signal；两种模式唯一区别 = 是否使用证券账户，交易策略完全通用（主 `SKILL.md` 已是双模式公共骨架 + `references/auto-mode.md` + `references/signal-mode.md`，2026-08-01 重构完成，此处不重复）。**依赖港股老虎三动作先建好**（否则港股 auto 文档 ahead of 代码）。
 
 - ✅**已完成**（完成：2026-08-03 09:55）**默认模式改为信号（signal），自动交易（auto）需用户特别说明才用**（记录：2026-08-03 09:55）：2026-08-03 用户决定把全项目默认执行模式翻转为 signal（AI 只发信号、用户手动执行、不碰账户；auto 仅在用户特别说明「自动下单 / 自动交易 / auto」等时才启用），取代上方「港股 default 从 signal 切 auto」的方向（默认不是 auto，而是 signal）。已落地：SKILL.md（description / 模式判定 / 模式提醒顺序 / --mode 说明 / 当前阶段）、references/auto-mode.md 与 signal-mode.md（开头默认说明）、项目 .claude/CLAUDE.md、scripts/trade_utils.py 与 trade_utils_tiger.py 的 parse_mode() 与 load_equity 默认值（不传 --mode 默认 signal、equity 走 equity-log 不连账户），明细见 CHANGELOG 2026-08-03。港股老虎三动作（auto 模式下港股默认账户）照常保留，仅当用户切 auto 时使用。
+
+## 交易规则 / 策略
+
+- ✅**已完成**（完成：2026-08-03 10:34）**缩短 SKILL.md「早盘开盘首小时只观察」规定（60 分钟太长 + 一刀切，2026-08-03 立）**（记录：2026-08-03 10:18）：现行 [SKILL.md:90](.claude/skills/trade/SKILL.md#L90) 规定港股 09:30-10:30 / 美股 09:30-10:30 不发任何交易动作（含开仓、平仓、移损），只观察行情性质，10:30 后才允许开仓（2026-07-31 立，见 CHANGELOG 第 71 条）。三个问题：① **时间太长**——开盘最混乱的其实是前 15-20 分钟冲动盘消化期，30 分钟后趋势往往已较清晰；卡满 60 分钟等于放弃全天流动性最好、波动最大的黄金时段（项目自己反复强调「早盘必密采样、机会与风险都在这」）。港股上午盘 09:30-12:00 仅 2.5 小时、砍首小时后上午只剩 1.5 小时可交易，对港股伤害远大于美股（美股全天 6.5 小时、砍 1 小时影响小）。② **一刀切、不分类，与既有实战教训冲突**——07-17 MU 头肩底 09:48 破颈线确认做多（[trading-strategy.md:138](.claude/skills/trade/references/trading-strategy.md#L138)，之后涨 +29 点）、07-17 MU 连破四道阻力执念等反弹踏空整段（[trading-strategy.md:268](.claude/skills/trade/references/trading-strategy.md#L268)，核心是「方向变了立刻切、别固守太久」），首小时一刀切既会错过 09:48 这类好信号、又与项目一贯的「动态修正方向」精神相悖。③ **连平仓 / 移损都禁是风控隐患**——正常有「持仓不过夜」纪律、首小时无仓；但万一前日漏平（美股夜盘到美东开盘尤其可能），首小时价格急速反向却不能移损 / 平仓 = 裸奔。平仓、移损是风控动作，任何时候都应照常可用，不该被「观察期」挡住。
+
+  **建议改法（3 处）**：a) 时间从 60 分钟缩到 15-20 分钟；或干脆不绑死时长，改为条件触发——跑完 `monitor_summary` 判出行情性质（震荡 / 趋势）+ VWAP 方向明确 + 量价配合，**条件一满足就允许开仓**（可能 09:45 满足、也可能 10:05 才满足），与「每 10 分钟动态重估」精神一致、比机械卡表强；b) 平仓 / 移损解除限制——观察期只禁开仓，风控动作任何时候照常；c) 暴跌标的的「开盘 30 分钟内不开多、等双底 / 头肩底确认」单独规则保留不动（策略层已有、针对接飞刀更精准，不该靠「全市场禁交易一小时」这种过宽手段覆盖）。
+
+  **改前注意**：改 skill 内容须先读 `~/.claude/skills/skill-creator/` 按其结构规范来（主文件精简、详情拆 references，不违反 Progressive Disclosure）；改完记 CHANGELOG（含「缩短首小时观察期」的原因 + 评估对既有教训 07-17 头肩底 / 07-17 破阻力踏空 的影响——预期是修复冲突而非回归）。
