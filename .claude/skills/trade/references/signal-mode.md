@@ -1,6 +1,6 @@
 # 信号模式（signal-mode，详细参考）
 
-> 本文件是 trade skill **信号模式（signal）** 的专属规则。trade skill 默认 auto；当用户明确说「只发信号 / 手动执行 / 不要 AI 下单」时切 signal 模式（见 `SKILL.md`「模式开关与触发首动作」），加载本文件。本文件只在 signal 模式下加载，auto 模式不加载。
+> 本文件是 trade skill **信号模式（signal）** 的专属规则。trade skill 默认 signal（本模式）；当用户**特别说明要自动交易**（说「自动下单 / 自动交易 / auto」等）时才切 auto 模式（见 `SKILL.md`「模式开关与触发首动作」）。本文件只在 signal 模式下加载，auto 模式不加载。
 
 ## signal 与 auto 的唯一区别 = 是否需要证券账户
 

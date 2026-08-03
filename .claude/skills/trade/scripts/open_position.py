@@ -68,7 +68,7 @@ def main():
     stop_loss = float(sys.argv[4])
     target = float(sys.argv[5])
     quantity = int(float(sys.argv[6]))
-    mode = parse_mode()  # auto（默认，equity 走账户 API）/ signal（equity 走 equity-log）
+    mode = parse_mode()  # signal（默认，equity 走 equity-log）/ auto（equity 走账户 API）
 
     if not symbol.startswith("US."):
         # 分而治之（2026-08-01 立）：美股脚本只处理美股；港股走 open_position_hk.py（长桥备选）/

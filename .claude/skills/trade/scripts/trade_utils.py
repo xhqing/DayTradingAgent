@@ -653,10 +653,10 @@ def check_price_in_range(direction, current_price, entry_ref, stop_loss, target)
 # ---------------------------------------------------------------------------
 
 def parse_mode(argv=None):
-    """从命令行参数解析执行模式 --mode（auto / signal），默认 auto。
+    """从命令行参数解析执行模式 --mode（auto / signal），默认 signal。
 
-    支持两种写法：`--mode signal` 或 `--mode=signal`。不传 --mode 或值非法时返回 'auto'
-    （与 trade skill 默认自动交易模式一致）。脚本 main 里 `mode = parse_mode(sys.argv[1:])`。
+    支持两种写法：`--mode signal` 或 `--mode=signal`。不传 --mode 或值非法时返回 'signal'
+    （与 trade skill 默认信号模式一致）。脚本 main 里 `mode = parse_mode(sys.argv[1:])`。
     """
     import sys
     if argv is None:
@@ -664,14 +664,14 @@ def parse_mode(argv=None):
     for i, a in enumerate(argv):
         if a == "--mode" and i + 1 < len(argv):
             m = argv[i + 1]
-            return m if m in ("auto", "signal") else "auto"
+            return m if m in ("auto", "signal") else "signal"
         if a.startswith("--mode="):
             m = a.split("=", 1)[1]
-            return m if m in ("auto", "signal") else "auto"
-    return "auto"
+            return m if m in ("auto", "signal") else "signal"
+    return "signal"
 
 
-def load_equity(mode='auto', project_root=None, env_file=None):
+def load_equity(mode='signal', project_root=None, env_file=None):
     """按执行模式取当前 equity，返回 (equity, currency, source_str)。
 
     - mode='auto'（默认）：长桥账户 API account_balance().net_assets 优先取真实总资产；

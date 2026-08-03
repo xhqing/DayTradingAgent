@@ -1,6 +1,6 @@
 # 自动交易模式（auto-mode，详细参考）
 
-> 本文件是 trade skill **自动交易模式（auto）** 的专属规则。trade skill 默认 auto；当用户明确说「只发信号 / 手动执行 / 不要 AI 下单」时切信号模式（见 `SKILL.md`「模式开关与触发首动作」），改读 `references/signal-mode.md`。本文件只在 auto 模式下加载，signal 模式不加载。
+> 本文件是 trade skill **自动交易模式（auto）** 的专属规则。trade skill 默认 signal；当用户**特别说明要自动交易**（说「自动下单 / 自动交易 / auto」等）时才切 auto 模式（见 `SKILL.md`「模式开关与触发首动作」），加载本文件。本文件只在 auto 模式下加载，signal 模式不加载（默认加载 `references/signal-mode.md`）。
 >
 > auto 与 signal 的区别**只在最后一步「怎么执行」**：auto 是 AI 拍板后直接调券商 API 下单 + 设止损条件单，全流程自动化；signal 是 AI 只发信号、用户拿信号在自家 App 手动执行、AI 不碰账户。前面「盯盘 → 找机会 → 算仓位止损 → 复盘」完全一样，共用 `SKILL.md` 主文件 + 公共 references（`trading-strategy.md` / `risk-management.md` / `monitoring.md` / `account-tools.md` / `review-and-evaluation.md`）。
 >

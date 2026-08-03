@@ -549,14 +549,14 @@ def calc_position_size(equity, risk_fraction, f_max, stop_distance, lot_size):
 
 
 def parse_mode(argv=None):
-    """从命令行参数解析执行模式 --mode（auto / signal），默认 auto（与 trade skill 一致）。"""
+    """从命令行参数解析执行模式 --mode（auto / signal），默认 signal（与 trade skill 一致）。"""
     if argv is None:
         argv = sys.argv[1:]
     for i, a in enumerate(argv):
         if a == "--mode" and i + 1 < len(argv):
             m = argv[i + 1]
-            return m if m in ("auto", "signal") else "auto"
+            return m if m in ("auto", "signal") else "signal"
         if a.startswith("--mode="):
             m = a.split("=", 1)[1]
-            return m if m in ("auto", "signal") else "auto"
-    return "auto"
+            return m if m in ("auto", "signal") else "signal"
+    return "signal"
