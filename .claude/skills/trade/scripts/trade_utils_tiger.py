@@ -6,12 +6,16 @@
 symbol / lot_size / tick、行情、下单（开仓 LMT+附加止损、平仓 MKT、独立止损 STP）、持仓 /
 资产 / 订单查询、撤单、成交回查。
 
-⚠️ 实测状态（2026-08-02 盘后研究 + 只读实测完成；下单 / 平仓 / 止损机制待开盘 paper 实测）：
-- ✅ 已实测：配置加载、paper 判定机制（17 位账户号）、港股 symbol 格式（只认 5 位裸数字）、
-  lot_size（get_contract）、tick（get_contract.tick_sizes）、资产 / 持仓 / 订单只读查询、
-  行情（get_stock_briefs）。
-- ⏳ 待开盘实测：下单链路（开仓 LMT+附加止损、平仓 MKT、独立止损 STP 的提交与触发行为）。
-  **券商行为只信直接实测，不能从长桥外推**——本模块的订单语义以 paper 实测为准，实测后修订。
+✅ 实测状态（2026-08-03 paper 三动作全链路开盘实测通过）：
+- ✅ 已实测：配置加载、paper 判定、港股 symbol 格式、lot_size / tick、资产 / 持仓 / 订单只读、
+  行情，以及下单链路——开仓 LMT+附加止损腿（OrderLeg('LOSS') 落成独立 STP 单、主单成交后
+  HELD 监控）、平仓 MKT（Filled、avg_fill_price 真实成交价）、独立止损 STP（先新增后撤旧、
+  旧单可独立撤销）。
+- 🔧 实测发现并修复 2 个 bug（2026-08-03）：① _make_order 的 order_type 传枚举对象致 place_order
+  序列化失败（TypeError: Object of type OrderType is not JSON serializable）——须传字符串
+  'LMT'/'MKT'/'STP'；② check_order_filled_tiger 直接 str(OrderStatus 枚举) 得
+  'OrderStatus.FILLED'、'Filled' in 它恒 False → 已成交误判未成交并撤已成交单——须取
+  status.value（'Filled'）再判断。**券商行为只信直接实测，不能从长桥外推**——本模块订单语义已按实测落地。
 
 老虎相对长桥的差异点（本模块封装）：
 - **配置加载**：`TigerOpenClientConfig(props_path=...)` 构造（私钥自动从 properties 的
@@ -136,7 +140,8 @@ def get_tick_sizes_tiger(tc, symbol):
 
 
 def _tick_from_table(price, tick_sizes):
-    """从价位表按价格查最小报价单位 tick。区间匹配（begin, end]；边界语义待开盘实测确认。"""
+    """从价位表按价格查最小报价单位 tick。区间匹配（begin, end]；2026-08-03 paper 实测：
+    开仓 LMT 486.2、移损 trigger 484.0 均正确取整合 tick，边界语义验证通过。"""
     if not tick_sizes:
         return None
     p = float(price)
@@ -271,11 +276,11 @@ def _make_order(tc, config, symbol, action, order_type, quantity,
     """创建订单对象（create_order）并提交（place_order）。返回全局订单 id。
 
     action: 'BUY' / 'SELL'（老虎枚举是 BUY/SELL，与长桥 Buy/Sell 不同，注意转换）。
-    order_type: 老虎 OrderType 枚举（LMT / MKT / STP 等）。
+    order_type: 老虎 OrderType 枚举的**字符串值**（'LMT' / 'MKT' / 'STP'）——Order 构造函数
+      原样存 order_type、place_order 序列化订单时 JSON 化该字段，传枚举对象会崩
+      （TypeError: Object of type OrderType is not JSON serializable，2026-08-03 paper 实测发现）。
     """
-    from tigeropen.common.consts import OrderType, SecurityType
-    if isinstance(order_type, str):
-        order_type = OrderType[order_type.upper()]
+    from tigeropen.common.consts import SecurityType
     contract = tc.get_contract(to_tiger_symbol(symbol), sec_type=SecurityType.STK)
     if contract is None:
         raise RuntimeError(f"查不到老虎合约 {symbol}（代码格式须 5 位数字，如 02800）")
@@ -304,7 +309,6 @@ def submit_order_with_stop_tiger(config, symbol, side, quantity, submitted_price
     与长桥 attached STOP_LOSS 一致；腿 TIF 默认 DAY（日内策略当日有效；跨日场景待实测）。
     返回全局订单 id。
     """
-    from tigeropen.common.consts import OrderType
     from tigeropen.trade.domain.order import OrderLeg
     last_err = None
     for attempt in range(retries):
@@ -312,7 +316,7 @@ def submit_order_with_stop_tiger(config, symbol, side, quantity, submitted_price
             tc = new_trade_client(config)
             action = "BUY" if side == "Buy" else "SELL"
             legs = [OrderLeg("LOSS", stop_loss_price)]
-            return _make_order(tc, config, symbol, action, OrderType.LMT, quantity,
+            return _make_order(tc, config, symbol, action, "LMT", quantity,
                                limit_price=submitted_price, order_legs=legs)
         except Exception as e:
             last_err = e
@@ -327,13 +331,12 @@ def submit_order_with_stop_tiger(config, symbol, side, quantity, submitted_price
 
 def submit_market_order_tiger(config, symbol, side, quantity, retries=3):
     """港股市价单 MKT（平仓用）。side: 'Buy' / 'Sell'。返回全局订单 id。"""
-    from tigeropen.common.consts import OrderType
     last_err = None
     for attempt in range(retries):
         try:
             tc = new_trade_client(config)
             action = "BUY" if side == "Buy" else "SELL"
-            return _make_order(tc, config, symbol, action, OrderType.MKT, quantity)
+            return _make_order(tc, config, symbol, action, "MKT", quantity)
         except Exception as e:
             last_err = e
             if attempt < retries - 1:
@@ -349,13 +352,12 @@ def submit_stop_order_tiger(config, symbol, side, quantity, trigger_price, retri
     相对现价自动判定（与长桥 MIT 一致，2026-08-01 实测）。触发后市价成交。
     返回全局订单 id。
     """
-    from tigeropen.common.consts import OrderType
     last_err = None
     for attempt in range(retries):
         try:
             tc = new_trade_client(config)
             action = "BUY" if side == "Buy" else "SELL"
-            return _make_order(tc, config, symbol, action, OrderType.STP, quantity,
+            return _make_order(tc, config, symbol, action, "STP", quantity,
                                aux_price=trigger_price)
         except Exception as e:
             last_err = e
@@ -376,6 +378,11 @@ def check_order_filled_tiger(config, order_id, timeout=8, poll_interval=2):
 
     老虎状态值与长桥不同（2026-08-02 源码确认）：Filled / PartiallyFilled / Cancelled /
     Inactive（已失效）/ Invalid（非法）等；长桥是 filled / cancelled / expired / dead / rejected。
+
+    ⚠️ status 是 OrderStatus 枚举（OrderStatus.FILLED），必须取 .value（'Filled'）再判断——
+    直接 str(枚举) 得 'OrderStatus.FILLED'，'Filled' in 它恒 False → 已成交误判未成交、
+    随后撤单撤已成交的单（持仓实际已建立、附加止损还挂着）。2026-08-03 paper 实测暴露
+    （开仓主单实际 FILLED @486.2，脚本却输出「主单未成交、已撤」）。
     """
     tc = new_trade_client(config)
     try:
@@ -386,7 +393,8 @@ def check_order_filled_tiger(config, order_id, timeout=8, poll_interval=2):
                 if str(getattr(o, "id", "")) != str(order_id) and \
                    str(getattr(o, "order_id", "")) != str(order_id):
                     continue
-                status = str(getattr(o, "status", ""))
+                status_obj = getattr(o, "status", "")
+                status = status_obj.value if hasattr(status_obj, "value") else str(status_obj)
                 last_status = status
                 avg = getattr(o, "avg_fill_price", None)
                 if "Filled" in status:
@@ -456,8 +464,9 @@ def cancel_all_stop_orders_tiger(config, symbol, exclude_order_id=None):
 
     两类止损都撤：
     - 独立止损单（order_type=STP，aux_price=触发价）——直接撤。
-    - 附加止损腿（order_legs 含 LOSS 腿的订单）——腿不能单独撤，撤其主单（或父单）；
-      主单成交后腿的行为待开盘实测，保守处理：能定位到腿所属订单则撤之。
+    - 附加止损腿——2026-08-03 paper 实测：OrderLeg('LOSS') 提交后由券商落成**独立 STP 单**
+      （order_type=STP，action 按主单方向），主单成交后该单进入 HELD 监控，可像独立止损单一样
+      直接撤销（实测：移损撤旧成功撤掉开仓附加腿落成的 STP 单，无需撤主单）。
     状态已 Filled / Cancelled / Inactive / Invalid / PendingCancel 的跳过。
     返回 (n, ids)。
     """

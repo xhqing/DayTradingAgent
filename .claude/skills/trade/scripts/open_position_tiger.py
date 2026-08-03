@@ -5,8 +5,10 @@
 再回查主单成交状态。附加止损随主单一同提交——开仓失败或主单未成交则撤主单，附加腿随之
 自动撤销，不残留裸止损单。
 
-⚠️ 实测状态（2026-08-02）：本脚本的下单链路**尚未开盘实测**（只读功能已实测通过）——
-下单 / 附加止损腿 / 回查的券商行为待 paper 账户开盘实测确认，以实测为准修订。
+✅ 实测状态（2026-08-03）：下单链路已 paper 开盘实测通过——LMT 主单 FILLED @486.2 +
+附加止损腿 OrderLeg('LOSS') 一次提交成功、附加腿激活为独立 STP 单进入 HELD 监控（腾讯 100 股）。
+实测发现并修复 2 个 bug（详见 trade_utils_tiger.py 与 CHANGELOG 2026-08-03）：① create_order 的
+order_type 传枚举对象序列化失败（须传字符串 'LMT'）；② 成交回查 status 枚举须取 .value。
 
 用法：
   python3 open_position_tiger.py <symbol> <direction> <entry_ref> <stop_loss> <target> <quantity>
@@ -127,7 +129,8 @@ def main():
     lo_price = U.round_to_tick_tiger(lo_price, tick_sizes)
     side_str = "Buy" if direction == "long" else "Sell"
 
-    # 主单 LMT + 附加止损腿 OrderLeg('LOSS')（一次提交；券商语义待开盘实测确认）
+    # 主单 LMT + 附加止损腿 OrderLeg('LOSS')（一次提交；券商语义 2026-08-03 实测：
+    # 附加腿落成独立 STP 单、主单成交后进入 HELD 监控，可独立撤销）
     try:
         order_id = U.submit_order_with_stop_tiger(config, symbol, side_str, quantity, lo_price, stop_loss)
     except Exception as e:

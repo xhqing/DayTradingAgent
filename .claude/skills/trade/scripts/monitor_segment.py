@@ -300,6 +300,36 @@ def main():
     except Exception as e:
         print(f"[重估提醒检查 err:{e}]", flush=True)
 
+    # 段结束 VWAP 检查（强制锚点 2026-08-03：VWAP 位置随盘面动态变化，段结束输出自带 VWAP，
+    # AI 段结束唤醒即见全貌方向，不靠记忆去跑 monitor_summary）
+    try:
+        ret, df = ctx.get_market_snapshot(syms)
+        if ret == 0 and df is not None and len(df) > 0 and "avg_price" in df.columns:
+            if "code" in df.columns:
+                rows = {r["code"]: r for _, r in df.iterrows()}
+            else:
+                rows = {syms[i]: df.iloc[i] for i in range(min(len(syms), len(df)))}
+            lines = []
+            for sym in syms:
+                row = rows.get(sym)
+                if row is None:
+                    lines.append(f"  {sym}: 无快照")
+                    continue
+                cur = row.get("last_price")
+                vwap = row.get("avg_price")
+                if cur is None or vwap is None or (isinstance(vwap, float) and vwap != vwap):
+                    lines.append(f"  {sym}: VWAP 获取失败")
+                    continue
+                cur, vwap = float(cur), float(vwap)
+                diff = cur - vwap
+                who = "上方（多头占优）" if diff > 0 else ("下方（空头占优）" if diff < 0 else "持平")
+                lines.append(f"  {sym}: 现价 {cur:.2f} | VWAP {vwap:.2f} | {who} {diff:+.2f}")
+            print("📊 VWAP 检查（方向框架地面真相，段结束必看）:\n" + "\n".join(lines), flush=True)
+        else:
+            print(f"📊 VWAP 检查: snapshot 失败 ret={ret}", flush=True)
+    except Exception as e:
+        print(f"[VWAP 检查 err:{e}]", flush=True)
+
     print(
         f"=== 分段结束 {datetime.now():%H:%M:%S}"
         f"（AI 读各标的 log 最近 N 行分析：{' / '.join(state[s]['log_file'] for s in syms)}）===",
