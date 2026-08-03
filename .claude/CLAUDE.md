@@ -44,3 +44,6 @@
 
 <!-- commit-skill: repo-sponsors = ok -->
 - 仓库 Sponsors 按钮：已就绪（xhqing/.github 全局默认 FUNDING.yml，2026-07-19 确认）
+
+<!-- commit-skill: readme-no-stars-badge = ok -->
+- README 徽章：已不含 GitHub Stars 数量徽章（2026-08-03 确认）

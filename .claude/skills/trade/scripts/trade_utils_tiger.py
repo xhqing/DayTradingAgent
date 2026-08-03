@@ -36,7 +36,9 @@ symbol / lot_size / tick、行情、下单（开仓 LMT+附加止损、平仓 MK
 - 开仓：主单 LMT + 附加止损腿 OrderLeg('LOSS', price)（老虎附加订单仅限价单支持；长桥是
   LO + attached STOP_LOSS MIT，2026-08-02 源码确认 OrderLeg 对应）。
 - 移动止损：独立 STP 止损单（aux_price=触发价；长桥是 MIT），先下新再撤旧、量严格=持仓量。
-- 平仓：MKT（市价）+ 撤未触发止损单（防反向开仓）。
+- 平仓：**先撤全部未触发止损单、再下 MKT 市价单**（2026-08-03 午后实测：老虎与长桥不同，
+  挂着的止损单占用持仓可平额度，Buy 平空单被拒「exceeds holdings」；先撤止损再平立即成交。
+  平仓脚本 close_position_tiger.py 已按此顺序实现）。
 """
 
 import os
