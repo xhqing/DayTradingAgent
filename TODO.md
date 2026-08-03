@@ -19,7 +19,7 @@
 
 ## 港股老虎模拟账户三动作（默认账户，独立解耦一套）
 
-> 港股默认老虎，要实现和长桥一样的三动作，与港股长桥（备选）+ 美股代码分开（分而治之，2026-08-01 用户立）。建好后才能做「港股 default 从 signal 切 auto」（signal 模式保留，两者共存）。
+> 港股默认老虎，要实现和长桥一样的三动作，与港股长桥（备选）+ 美股代码分开（分而治之，2026-08-01 用户立）。三动作已建好（2026-08-02）；2026-08-03 起全项目默认模式为 signal、auto 需用户特别说明才用（见下节）——本节的「港股默认老虎」指 auto 模式下的港股默认账户，仅在用户切 auto 时启用。
 
 - ✅**已更新**（更新：2026-08-02 18:59）**研究老虎 SDK 港股细节**（记录：2026-08-01 22:54）（开盘 + paper 实测才能确认，盘后做不了）：
   - 配置加载：`get_client_config(props_path=...)` 失败，要研究老虎 paper 配置正确加载方式（`~/.tigeropen/tiger_openapi_config.properties` + 私钥）。
@@ -35,7 +35,9 @@
 
 - [ ] **老虎 paper 账户开盘实测三动作下单链路（账户号已接入，2026-08-02 19:06 完成接入）**（记录：2026-08-02 19:06）：17 位模拟账户号 `<HK_PAPER_ACCOUNT>`（从 git 历史 2514d76 恢复）已写入 `~/.tigeropen/tiger_openapi_config.properties` 的 account 字段（原 7 位实盘号备份在 `.bak`），实测：is_paper=True、网关自动走 sandbox 域名、`get_assets` 净值 1,000,007.56 USD（初始资金 $1,000,000）、`get_positions` 有 **2 笔历史持仓**（02800 盈富多 500 股 @26.3639、07709 三星 2x 杠杆空 200 股 @43.0638）——开盘实测时先核实这两笔怎么处置（平掉 / 保留）。**剩余**：港股开盘时用 paper 账户实测三动作全链路——开仓 LMT+附加止损腿（OrderLeg('LOSS')）提交与激活、平仓 MKT、移损 STP 先新增后撤旧、成交回查；实测结果回写 `trade_utils_tiger.py` 三脚本与 `auto-mode.md` 实测状态标注（实测前标注为「待实测、不得真实下单」）。
 
-## 港股 default 从 signal 切 auto（依赖港股老虎三动作建好；signal 模式保留，两者共存）
+## 默认模式 = 信号（signal），自动模式需特别说明（2026-08-03 用户立，取代「港股 default 从 signal 切 auto」）
 
 - ✅**已更新**（更新：2026-08-02 14:14）**港股完全转自动交易**（记录：2026-08-01 22:54）：港股从信号模式（AI 发信号 `signals/`、手动执行）转自动交易（AI 调脚本下单、`actions/` 记动作）。**信号模式描述已随 2026-08-01 双模式重构处理**——signal 已作为独立可切换 reference（`references/signal-mode.md`）恢复、主 `SKILL.md` 改双模式（默认 auto + 可切 signal），不再是「要改掉的旧模式」。剩余待办：港股老虎三动作建好后把港股 default 切 auto（港股目前仍 signal——老虎三动作未建，见上方「港股老虎模拟账户三动作」节）。**依赖港股老虎三动作先建好**（否则港股 auto 文档 ahead of 代码）。
-- [ ] **港股 default 从 signal 切 auto（signal 模式保留，两者共存）**（记录：2026-08-02 14:14）：当前决定 = 信号模式与自动交易模式二者共存，不是放弃 signal 改纯 auto。港股目前 default 仍为 signal（AI 发信号 `signals/`、手动执行）；待港股老虎三动作建好后把港股 default 切 auto（AI 调脚本下单、`actions/` 记动作）。**signal 模式保留为可切换模式**——用户说「只发信号 / 手动执行」时仍切 signal；两种模式唯一区别 = 是否使用证券账户，交易策略完全通用（主 `SKILL.md` 已是双模式公共骨架 + `references/auto-mode.md` + `references/signal-mode.md`，2026-08-01 重构完成，此处不重复）。**依赖港股老虎三动作先建好**（否则港股 auto 文档 ahead of 代码）。
+- ✅**已更新**（更新：2026-08-03 09:55）**港股 default 从 signal 切 auto（signal 模式保留，两者共存）**（记录：2026-08-02 14:14）：当前决定 = 信号模式与自动交易模式二者共存，不是放弃 signal 改纯 auto。港股目前 default 仍为 signal（AI 发信号 `signals/`、手动执行）；待港股老虎三动作建好后把港股 default 切 auto（AI 调脚本下单、`actions/` 记动作）。**signal 模式保留为可切换模式**——用户说「只发信号 / 手动执行」时仍切 signal；两种模式唯一区别 = 是否使用证券账户，交易策略完全通用（主 `SKILL.md` 已是双模式公共骨架 + `references/auto-mode.md` + `references/signal-mode.md`，2026-08-01 重构完成，此处不重复）。**依赖港股老虎三动作先建好**（否则港股 auto 文档 ahead of 代码）。
+
+- ✅**已完成**（完成：2026-08-03 09:55）**默认模式改为信号（signal），自动交易（auto）需用户特别说明才用**（记录：2026-08-03 09:55）：2026-08-03 用户决定把全项目默认执行模式翻转为 signal（AI 只发信号、用户手动执行、不碰账户；auto 仅在用户特别说明「自动下单 / 自动交易 / auto」等时才启用），取代上方「港股 default 从 signal 切 auto」的方向（默认不是 auto，而是 signal）。已落地：SKILL.md（description / 模式判定 / 模式提醒顺序 / --mode 说明 / 当前阶段）、references/auto-mode.md 与 signal-mode.md（开头默认说明）、项目 .claude/CLAUDE.md、scripts/trade_utils.py 与 trade_utils_tiger.py 的 parse_mode() 与 load_equity 默认值（不传 --mode 默认 signal、equity 走 equity-log 不连账户），明细见 CHANGELOG 2026-08-03。港股老虎三动作（auto 模式下港股默认账户）照常保留，仅当用户切 auto 时使用。
