@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """港股平仓动作脚本（老虎证券模拟账户，港股默认账户）。
 
-一键平仓：读**港股**持仓自动算方向+量（不会碰美股持仓），市价单 MKT 立即成交——
-平仓是「方向不看好、要立即成交」，MKT 保证成交确定性、允许价格往不利方向偏移。
-平仓后撤该港股标的的全部未触发止损单（防反向开仓——平仓后账户空仓，残留止损单若被
-价格触发会被券商接受、反向开仓；这属于平仓动作的一部分）。
+一键平仓：读**港股**持仓自动算方向+量（不会碰美股持仓），**先撤该标的全部未触发止损单、
+再下市价单 MKT 立即成交**——平仓是「方向不看好、要立即成交」，MKT 保证成交确定性、允许
+价格往不利方向偏移。撤止损必须在平仓之前（2026-08-03 午盘实测：老虎与长桥不同——挂着的
+止损单（如开仓附加腿落成的 STP）会占用平仓单的持仓校验额度，Buy 平空单被拒
+「The order quantity you entered exceeds your current holdings」；先撤止损再平仓立即成交）。
+平仓后不再需要撤止损（已提前撤）；撤止损到平仓之间有几秒裸奔窗口，MKT 立即成交、窗口极小。
 
 ✅ 实测状态（2026-08-03）：下单链路已 paper 开盘实测通过——MKT 平仓单 Filled @486.0
 （avg_fill_price 真实成交价，非 last 兜底）、平仓后撤全部未触发止损单成功（含移损新增 STP 与
-开仓附加腿落成的 STP 单，腾讯 100 股）。
+开仓附加腿落成的 STP 单，腾讯 100 股）。**午后修正**：平仓顺序改为「先撤止损再平仓」（实测
+07709 空单：挂 STP 时 Buy 38,500/10,000/100 股全部 EXPIRED「exceeds holdings」，撤 3 笔止损单后
+Buy MKT 立即 Filled @36.20）。
 
 用法：
   python3 close_position_tiger.py [symbol] [direction] [quantity]
@@ -68,7 +72,17 @@ def main():
         print(json.dumps(result_base, ensure_ascii=False))
         sys.exit(1)
 
-    # MKT 市价平仓（立即成交；方向不看好时要确定性而非控价）
+    # 第一步：先撤该港股标的全部未触发止损单（2026-08-03 实测：老虎平仓前必须撤止损，
+    # 挂着的 STP 占用平仓单校验额度，Buy 平空被拒「exceeds holdings」；撤后平仓立即成交）
+    try:
+        n, ids = U.cancel_all_stop_orders_tiger(config, symbol)
+        result_base["stop_orders_cancelled"] = n
+        if n > 0:
+            result_base["cancelled_order_ids"] = ids
+    except Exception as e:
+        result_base["stop_orders_cancelled_warning"] = f"撤止损单失败（需手动）: {e}"
+
+    # 第二步：MKT 市价平仓（立即成交；方向不看好时要确定性而非控价）
     try:
         order_id = U.submit_market_order_tiger(config, symbol, close_side, quantity)
     except Exception as e:
@@ -89,15 +103,6 @@ def main():
         fill_src = "last（MKT 成交均价缺失兜底）"
     result_base.update({"ok": True, "order_id": order_id, "fill_price": fill_price,
                         "fill_price_source": fill_src, "method": "market", "main_status": status})
-
-    # 撤该港股标的全部未触发止损单（防反向开仓）
-    try:
-        n, ids = U.cancel_all_stop_orders_tiger(config, symbol)
-        result_base["stop_orders_cancelled"] = n
-        if n > 0:
-            result_base["cancelled_order_ids"] = ids
-    except Exception as e:
-        result_base["stop_orders_cancelled_warning"] = f"撤止损单失败（需手动）: {e}"
 
     print(json.dumps(result_base, ensure_ascii=False))
 
