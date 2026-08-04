@@ -511,30 +511,58 @@ def cancel_all_stop_orders_tiger(config, symbol, exclude_order_id=None):
 # 价格范围 / 仓位计算（纯函数，与长桥同逻辑、独立实现以解耦）
 # ---------------------------------------------------------------------------
 
-def calc_entry_range(direction, entry_ref, stop_loss, target):
-    """开仓价格范围：做多 [ref - R0*0.8, ref + ref*3/8]；做空 [ref - ref*3/8, ref + R0*0.8]。"""
+# 单边手续费率（2026-08-04 用户立：盯盘前瞻赔率改净口径，与复盘 review.py 同口径）。
+# 港股 18bps/边、美股 3bps/边（1bps=0.0001）；一笔交易 = 开仓 + 平仓 两边各收一次。
+# 本 utils 只处理港股（HK.），_fee_per_side 按 symbol 前缀判、与美股 utils / review.py 一致。
+def _fee_per_side(symbol):
+    s = (symbol or '').upper()
+    if s.startswith('HK.'): return 0.0018   # 18bps
+    if s.startswith('US.'): return 0.0003   # 3bps
+    return 0.0   # 未知市场前缀：保守不扣费（等价毛口径），避免误判
+
+
+def _net_odds(direction, entry, target, stop, fee_per_side):
+    """净前瞻赔率（与复盘 R = P_net / M 同口径）。
+
+    分子 = 到止盈的净盈利 = 止盈距 − 双边费（开仓按 entry、平仓按 target 各收一次单边费率，
+    即 fee_per_side × (entry + target)）；分母 = 毛止损距（与复盘 M = shares×止损距 同为毛值、不动）。
+    前瞻假设到止盈 target 出场，故「平仓价」用 target（与复盘用实际平仓价算费同结构）。
+    做多 stop_dist = entry − stop；做空 stop_dist = stop − entry；≤0 返回 inf（方向错或贴止损）。
+    """
+    if direction == 'long':
+        gross_gain = target - entry
+        stop_dist = entry - stop
+    else:
+        gross_gain = entry - target
+        stop_dist = stop - entry
+    if stop_dist <= 1e-12:
+        return float('inf')
+    fee_per_share = fee_per_side * (entry + target)
+    return (gross_gain - fee_per_share) / stop_dist
+
+
+def calc_entry_range(direction, entry_ref, stop_loss, target, symbol=None):
+    """开仓价格范围（经验参数、与毛/净赔率无关）：做多 [ref - R0*0.8, ref + ref*3/8]；做空 [ref - ref*3/8, ref + R0*0.8]。
+    价格范围用毛 R0 算、不随净口径变；odds_at_ref 为净口径（扣双边费）。"""
     R0 = abs(entry_ref - stop_loss)
     if R0 < 1e-9:
         raise ValueError("止损价与参考价相同，R0=0，无法计算价格范围")
     if direction == "long":
         range_low = entry_ref - R0 * 0.8
         range_high = entry_ref + entry_ref * 3.0 / 8.0
-        odds_at_ref = (target - entry_ref) / R0
     else:
         range_low = entry_ref - entry_ref * 3.0 / 8.0
         range_high = entry_ref + R0 * 0.8
-        odds_at_ref = (entry_ref - target) / R0
+    odds_at_ref = _net_odds(direction, entry_ref, target, stop_loss, _fee_per_side(symbol))
     return range_low, range_high, odds_at_ref
 
 
-def check_price_in_range(direction, current_price, entry_ref, stop_loss, target):
-    """检查当前价是否在可接受开仓范围内。返回 (in_range, low, high, odds_ref, odds_current)。"""
-    range_low, range_high, odds_at_ref = calc_entry_range(direction, entry_ref, stop_loss, target)
+def check_price_in_range(direction, current_price, entry_ref, stop_loss, target, symbol=None):
+    """检查当前价是否在可接受开仓范围内。返回 (in_range, low, high, odds_ref, odds_current)。
+    odds_ref / odds_current 均为净口径（扣双边费）。"""
+    range_low, range_high, odds_at_ref = calc_entry_range(direction, entry_ref, stop_loss, target, symbol)
     in_range = range_low <= current_price <= range_high
-    if direction == "long":
-        odds_at_current = (target - current_price) / (current_price - stop_loss) if current_price > stop_loss else float("inf")
-    else:
-        odds_at_current = (current_price - target) / (stop_loss - current_price) if stop_loss > current_price else float("inf")
+    odds_at_current = _net_odds(direction, current_price, target, stop_loss, _fee_per_side(symbol))
     return in_range, range_low, range_high, odds_at_ref, odds_at_current
 
 

@@ -16,6 +16,32 @@
       "Bash(bash .claude/skills/trade/scripts/alert.sh *)",
       "Bash(bash .claude/skills/keep-awake/scripts/off.sh *)",
       "Bash(bash .claude/skills/keep-awake/scripts/on.sh *)"
+    ],
+    "deny": [
+      "CronCreate"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "python3 .claude/hooks/monitor_guard.py pretool" }
+        ]
+      },
+      {
+        "matcher": "TaskStop",
+        "hooks": [
+          { "type": "command", "command": "python3 .claude/hooks/monitor_guard.py taskstop" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "python3 .claude/hooks/monitor_guard.py stop" }
+        ]
+      }
     ]
   }
 }

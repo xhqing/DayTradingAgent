@@ -27,13 +27,25 @@ def ppos_emp(xbar, n, sigma):
     mu = pd * xbar / (pp + pd)
     return ss.norm.cdf(mu * math.sqrt(pp + pd))
 
+# 单边手续费率（2026-08-03 用户立：复盘 R / EV / 胜率等一律用扣费净盈亏 net）
+# 港股 18bps/边、美股 3bps/边；一笔交易 = 开仓 + 平仓 两边各收一次。
+def _fee_per_side(symbol):
+    s = symbol.upper()
+    if s.startswith('HK.'): return 0.0018   # 18bps
+    if s.startswith('US.'): return 0.0003   # 3bps
+    raise ValueError(f"未知市场前缀、无法定费率: {symbol!r}（只支持 HK. / US.）")
+
 # 读累积 trades CSV（单一数据源，与 review.py 同源；每次复盘更新此 CSV）
+# R = 扣双边手续费后的净 R（与 review.py net 口径一致）
 trades = []
-with open('reviews/2026-07-29-trades.csv') as fh:
+with open('reviews/2026-08-04-trades.csv') as fh:
     for r in csv.DictReader(fh):
         sign = 1 if r['direction'].strip().lower() in ('long', '做多') else -1
-        P = (float(r['exit_price']) - float(r['entry_price'])) * float(r['shares']) * sign
-        trades.append([r['date'], r['symbol'], P / float(r['max_loss'])])
+        entry, exit_, shares = float(r['entry_price']), float(r['exit_price']), float(r['shares'])
+        P_gross = (exit_ - entry) * shares * sign                       # 毛盈亏
+        fee = _fee_per_side(r['symbol']) * (entry + exit_) * shares     # 开 + 平 两边手续费
+        R = (P_gross - fee) / float(r['max_loss'])                      # 净 R（分母 max_loss 保持毛值）
+        trades.append([r['date'], r['symbol'], R])
 trades.sort(key=lambda x: (x[0], x[1]))
 
 # 序贯累积：P(EV>0) 从 N>=2 起；EV（累计 R 均值 ± 频率派 95% CI）从 N>=1 起、CI 从 N>=2 起
@@ -79,6 +91,56 @@ for i, t in enumerate(trades, 1):
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from matplotlib.transforms import blended_transform_factory
+
+
+def mark_end_single(ax, xs, ys, color='#E67E22', unit='%', x_name='N', val_fmt='{:.2f}'):
+    """单线图末点标注：十字虚线（末点→x 轴 / 末点→y 轴）+ 末点高亮 + 右上方带框坐标文本。
+    虚线用深灰色（与橙色主线对比，避免与主线末段重合时看不清）；末点圆点加大白边突出。"""
+    lx, ly = xs[-1], ys[-1]
+    ylim = ax.get_ylim(); xlim = ax.get_xlim()
+    ybase = 0 if ylim[0] <= 0 <= ylim[1] else ylim[0]
+    dash = dict(color='#333333', ls='--', alpha=0.8, lw=1.2, zorder=4)
+    ax.plot([lx, lx], [ybase, ly], **dash)
+    ax.plot([xlim[0], lx], [ly, ly], **dash)
+    ax.plot(lx, ly, 'o', color=color, ms=9, mec='white', mew=1.5, zorder=5)
+    ax.annotate(f'({x_name}={lx:g}, {val_fmt.format(ly)}{unit})',
+                xy=(lx, ly), xytext=(10, 10), textcoords='offset points',
+                fontsize=9.5, color=color, fontweight='bold', ha='left', va='bottom', zorder=6,
+                bbox=dict(boxstyle='round,pad=0.3', fc='white', ec=color, alpha=0.9))
+
+
+def mark_end_multi(ax, xs, ends, unit='%'):
+    """多 f 图末点标注：1 条垂直虚线对齐横坐标 + 每线水平虚线对齐纵坐标 + 右侧避让 end-labels。
+    ends = [(color, label, y_end), ...]（按时间序）；图需已 set_ylim。
+    调用方需 plt.tight_layout(rect=[0, 0, 0.80, 1]) 留右侧 20% 空间放 end-labels。"""
+    lx = xs[-1]
+    ylim = ax.get_ylim(); xlim = ax.get_xlim()
+    ybase = 0 if ylim[0] <= 0 <= ylim[1] else ylim[0]
+    ymax = max(e[2] for e in ends)
+    ax.plot([lx, lx], [ybase, ymax], color='#333333', ls='--', alpha=0.6, lw=1.1, zorder=3)  # 横坐标对齐
+    ax_yx = blended_transform_factory(ax.transAxes, ax.transData)
+    for color, label, y_end in ends:
+        ax.plot([xlim[0], lx], [y_end, y_end], color=color, ls='--', alpha=0.55, lw=1, zorder=3)  # 纵坐标对齐
+        ax.plot(lx, y_end, 'o', color=color, ms=6, mec='white', mew=1, zorder=4)
+    # 右侧 end-labels：按 y 降序、相邻太近则下压 + 短引导线，避免重叠
+    gap = (ylim[1] - ylim[0]) * 0.045
+    xa = 1.015
+    prev_y = None
+    for color, label, y_end in sorted(ends, key=lambda e: -e[2]):
+        ly = y_end
+        if prev_y is not None and prev_y - ly < gap:
+            ly = prev_y - gap
+        ly = min(max(ly, ylim[0] + gap * 0.4), ylim[1] - gap * 0.4)
+        if abs(ly - y_end) > 0.05:
+            ax.plot([xa - 0.006, xa - 0.006], [y_end, ly], color=color, lw=0.8, alpha=0.55,
+                    transform=ax_yx, clip_on=False, zorder=4)
+        ax.text(xa, ly, f'{label}: {y_end:.1f}{unit}', transform=ax_yx,
+                ha='left', va='center', fontsize=8.5, color=color, fontweight='bold', zorder=5)
+        prev_y = ly
+    ax.text(0.99, 0.97, f'endpoint: N={lx:g}', transform=ax.transAxes,
+            ha='right', va='top', fontsize=8.5, color='gray', alpha=0.85)
+
 
 # ① P(EV>0) 演化图
 fig, ax = plt.subplots(figsize=(13, 6.5))
@@ -96,8 +158,9 @@ ax.set_xticks(xs)
 ax.set_xticklabels([f'{i}\n{trades[i-1][0][5:]}' for i in xs], fontsize=7.5)
 ax.legend(loc='lower right', fontsize=9)
 ax.grid(alpha=0.3)
+mark_end_single(ax, xs, ppos, val_fmt='{:.1f}')
 plt.tight_layout()
-out = 'reviews/2026-07-29-bayes-evolution.png'
+out = 'reviews/2026-08-04-bayes-evolution.png'
 plt.savefig(out, dpi=120)
 print(f'\n✅ 图已存 {out}')
 
@@ -115,8 +178,9 @@ ax2.set_xticks(ev_xs)
 ax2.set_xticklabels([f'{i}\n{trades[i-1][0][5:]}' for i in ev_xs], fontsize=7.5)
 ax2.legend(loc='lower right', fontsize=9)
 ax2.grid(alpha=0.3)
+mark_end_single(ax2, ev_xs, ev_mean, unit='R', val_fmt='{:+.2f}')
 plt.tight_layout()
-out2 = 'reviews/2026-07-29-ev-evolution.png'
+out2 = 'reviews/2026-08-04-ev-evolution.png'
 plt.savefig(out2, dpi=120)
 print(f'✅ 图已存 {out2}')
 
@@ -136,8 +200,9 @@ ax3.set_xticks(wr_xs)
 ax3.set_xticklabels([f'{i}\n{trades[i-1][0][5:]}' for i in wr_xs], fontsize=7.5)
 ax3.legend(loc='lower right', fontsize=9)
 ax3.grid(alpha=0.3)
+mark_end_single(ax3, wr_xs, wr_bayes, val_fmt='{:.1f}')
 plt.tight_layout()
-out3 = 'reviews/2026-07-29-winrate-evolution.png'
+out3 = 'reviews/2026-08-04-winrate-evolution.png'
 plt.savefig(out3, dpi=120)
 print(f'✅ 图已存 {out3}')
 
@@ -151,10 +216,12 @@ colors = plt.cm.tab10.colors
 
 # ④ P(g>0) 演化图
 fig4, ax4 = plt.subplots(figsize=(13, 6.5))
+ends4 = []
 for fi, f in enumerate(FS):
     pg_pts = [p_g_pos(r_cum[:i], f)['P_pos'] * 100 for i in pg_xs]
     ax4.plot(pg_xs, pg_pts, '-o', color=colors[fi], linewidth=1.8, markersize=4.5,
              label=f'f={f*100:.1f}%')
+    ends4.append((colors[fi], f'f={f*100:.1f}%', pg_pts[-1]))
 ax4.axhline(50, color='gray', linestyle=':', alpha=0.5, label='50% neutral')
 ax4.axhline(95, color='green', linestyle=':', alpha=0.6, label='95% confirmed')
 ax4.set_xlabel('Trade # (chronological)', fontsize=11)
@@ -166,17 +233,20 @@ ax4.set_xticks(pg_xs)
 ax4.set_xticklabels([f'{i}\n{trades[i-1][0][5:]}' for i in pg_xs], fontsize=7.5)
 ax4.legend(loc='lower right', fontsize=9, ncol=2)
 ax4.grid(alpha=0.3)
-plt.tight_layout()
-out4 = 'reviews/2026-07-29-pg-evolution.png'
+mark_end_multi(ax4, pg_xs, ends4)
+plt.tight_layout(rect=[0, 0, 0.80, 1])
+out4 = 'reviews/2026-08-04-pg-evolution.png'
 plt.savefig(out4, dpi=120)
 print(f'\n✅ 图已存 {out4}')
 
 # ⑤ P(∑_{i=1}^{40} Y_i ≥ 0) 演化图（固定 n=40）
 fig5, ax5 = plt.subplots(figsize=(13, 6.5))
+ends5 = []
 for fi, f in enumerate(FS):
     ps_pts = [p_sum_y_pos(r_cum[:i], f, 40)['P_pos'] * 100 for i in pg_xs]
     ax5.plot(pg_xs, ps_pts, '-o', color=colors[fi], linewidth=1.8, markersize=4.5,
              label=f'f={f*100:.1f}%')
+    ends5.append((colors[fi], f'f={f*100:.1f}%', ps_pts[-1]))
 ax5.axhline(50, color='gray', linestyle=':', alpha=0.5, label='50% neutral')
 ax5.set_xlabel('Trade # (chronological)', fontsize=11)
 ax5.set_ylabel('P(next 40 trades ≥ break-even)  %', fontsize=11)
@@ -187,8 +257,9 @@ ax5.set_xticks(pg_xs)
 ax5.set_xticklabels([f'{i}\n{trades[i-1][0][5:]}' for i in pg_xs], fontsize=7.5)
 ax5.legend(loc='lower right', fontsize=9, ncol=2)
 ax5.grid(alpha=0.3)
-plt.tight_layout()
-out5 = 'reviews/2026-07-29-psum40-evolution.png'
+mark_end_multi(ax5, pg_xs, ends5)
+plt.tight_layout(rect=[0, 0, 0.80, 1])
+out5 = 'reviews/2026-08-04-psum40-evolution.png'
 plt.savefig(out5, dpi=120)
 print(f'✅ 图已存 {out5}')
 
@@ -199,10 +270,12 @@ TARGET = 0.20   # 累计收益率目标 20%
 
 # ⑥ P(g ≥ ln(1+target)/40) 演化图
 fig6, ax6 = plt.subplots(figsize=(13, 6.5))
+ends6 = []
 for fi, f in enumerate(FS):
     pts = [p_g_target(r_cum[:i], f, 40, TARGET)['P_pos'] * 100 for i in pg_xs]
     ax6.plot(pg_xs, pts, '-o', color=colors[fi], linewidth=1.8, markersize=4.5,
              label=f'f={f*100:.1f}%')
+    ends6.append((colors[fi], f'f={f*100:.1f}%', pts[-1]))
 ax6.axhline(50, color='gray', linestyle=':', alpha=0.5, label='50% neutral')
 ax6.set_xlabel('Trade # (chronological)', fontsize=11)
 ax6.set_ylabel(f'P(40-trade return ≥ {TARGET*100:.0f}%)  %', fontsize=11)
@@ -213,17 +286,20 @@ ax6.set_xticks(pg_xs)
 ax6.set_xticklabels([f'{i}\n{trades[i-1][0][5:]}' for i in pg_xs], fontsize=7.5)
 ax6.legend(loc='lower right', fontsize=9, ncol=2)
 ax6.grid(alpha=0.3)
-plt.tight_layout()
-out6 = f'reviews/2026-07-29-pg{int(TARGET*100):02d}-evolution.png'
+mark_end_multi(ax6, pg_xs, ends6)
+plt.tight_layout(rect=[0, 0, 0.80, 1])
+out6 = f'reviews/2026-08-04-pg{int(TARGET*100):02d}-evolution.png'
 plt.savefig(out6, dpi=120)
 print(f'✅ 图已存 {out6}')
 
 # ⑦ P(∑_{1}^{40} Y ≥ ln(1+target)) 演化图（n=40 固定）
 fig7, ax7 = plt.subplots(figsize=(13, 6.5))
+ends7 = []
 for fi, f in enumerate(FS):
     pts = [p_sum_y_target(r_cum[:i], f, 40, TARGET)['P_pos'] * 100 for i in pg_xs]
     ax7.plot(pg_xs, pts, '-o', color=colors[fi], linewidth=1.8, markersize=4.5,
              label=f'f={f*100:.1f}%')
+    ends7.append((colors[fi], f'f={f*100:.1f}%', pts[-1]))
 ax7.axhline(50, color='gray', linestyle=':', alpha=0.5, label='50% neutral')
 ax7.set_xlabel('Trade # (chronological)', fontsize=11)
 ax7.set_ylabel(f'P(next 40 trades return ≥ {TARGET*100:.0f}%)  %', fontsize=11)
@@ -233,8 +309,9 @@ ax7.set_xticks(pg_xs)
 ax7.set_xticklabels([f'{i}\n{trades[i-1][0][5:]}' for i in pg_xs], fontsize=7.5)
 ax7.legend(loc='lower right', fontsize=9, ncol=2)
 ax7.grid(alpha=0.3)
-plt.tight_layout()
-out7 = f'reviews/2026-07-29-psum40-{int(TARGET*100):02d}pct-evolution.png'
+mark_end_multi(ax7, pg_xs, ends7)
+plt.tight_layout(rect=[0, 0, 0.80, 1])
+out7 = f'reviews/2026-08-04-psum40-{int(TARGET*100):02d}pct-evolution.png'
 plt.savefig(out7, dpi=120)
 print(f'✅ 图已存 {out7}')
 

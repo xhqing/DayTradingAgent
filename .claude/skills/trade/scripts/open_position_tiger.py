@@ -81,7 +81,7 @@ def main():
     current_price = quote["last"]
 
     in_range, range_low, range_high, odds_at_ref, odds_at_current = U.check_price_in_range(
-        direction, current_price, entry_ref, stop_loss, target
+        direction, current_price, entry_ref, stop_loss, target, symbol
     )
     result_base = {
         "action": "open_position_tiger", "market": "HK", "symbol": symbol, "direction": direction,

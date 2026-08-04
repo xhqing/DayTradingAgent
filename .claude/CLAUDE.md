@@ -17,7 +17,7 @@
 
 ## actions/ 目录归属（2026-07-30 立，2026-07-31 扩展到港股）
 
-港股和美股的模拟盘交易动作记录统一放**项目根 `actions/`**：港股 `actions/YYYY-MM-DD-HKT-actions.md`、美股 `actions/YYYY-MM-DD-ET-actions.md`。`actions/` 记录已执行的交易动作（含 order_id、成交价）。`signals/` 目录保留历史信号记录，新交易不再写入。
+港股和美股的模拟盘交易动作记录统一放**项目根 `actions/`**：港股 `actions/YYYY-MM-DD-HKT-actions.md`、美股 `actions/YYYY-MM-DD-ET-actions.md`。`actions/` 记录已执行的交易动作（含 order_id、成交价）。`signals/` 目录保留历史信号记录，新交易不再写入。**复盘数据源 = `signals/` + `actions/` 两个目录的全部交易记录（2026-08-03 用户立：以后复盘都复盘这两个目录下的所有交易）**——signal 模式交易在 `signals/`、auto 模式交易在 `actions/`，复盘时两目录全遍历、合并为全量样本。
 
 ## commit skill 检测缓存
 
@@ -47,3 +47,6 @@
 
 <!-- commit-skill: readme-no-stars-badge = ok -->
 - README 徽章：已不含 GitHub Stars 数量徽章（2026-08-03 确认）
+
+<!-- commit-skill: changelog-version = ok -->
+- CHANGELOG.md 与 VERSION 文件：已存在（2026-08-03 确认）

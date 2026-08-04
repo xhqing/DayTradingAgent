@@ -6,7 +6,7 @@
 
 **触发**：只在收到用户明确的**复盘指令**时做。盯盘期间专注盯盘、**不自主复盘**（见「信号模式总则」第 5 条）。**所有数值用 Python 实算，不心算报数**（遵守「第一原则」）。
 
-**数据源**：`signals/` 目录的历史信号记录——港股 `signals/YYYY-MM-DD-HKT-signals.md`、美股 `signals/YYYY-MM-DD-ET-signals.md`（港美分开记）。**按批次拆笔**：开仓 🟢 / 加仓 🔵 记录含 发信号时间、标的、批次、方向、量、参考价、止损、止盈、单笔预算、预估 max_loss、置信度、依据；该批次的 减仓 🟠 / 平仓 🔴 / 移损 🟡 记录含 针对批次、参考价、理由。复盘按批次逐笔算参数（入场价、止损、盈亏、R-multiple）。
+**数据源（2026-08-03 用户立：复盘所有交易 = signals/ + actions/ 两个目录的全部记录）**：复盘数据源 = 项目根 **`signals/` + `actions/` 两个目录下的全部交易记录**——`signals/`（港股 `signals/YYYY-MM-DD-HKT-signals.md`、美股 `signals/YYYY-MM-DD-ET-signals.md`）记 signal 模式信号事实（港美分开记），`actions/`（港股 `actions/YYYY-MM-DD-HKT-actions.md`、美股 `actions/YYYY-MM-DD-ET-actions.md`）记 auto 模式实际成交动作（含 order_id、成交价）。**按批次拆笔**：开仓 🟢 / 加仓 🔵 记录含 发信号时间、标的、批次、方向、量、参考价、止损、止盈、单笔预算、预估 max_loss、置信度、依据；该批次的 减仓 🟠 / 平仓 🔴 / 移损 🟡 记录含 针对批次、参考价、理由。复盘按批次逐笔算参数（入场价、止损、盈亏、R-multiple）。⚠️ 防重复计数：同一笔交易只计一次——signal 与 auto 交易各记各的目录、互不重叠；若同一笔两处都有，以 `actions/` 实际成交记录为准；开仓失败 / 撤销 / 作废批次不计样本（记录上有明确标注）。⚠️ 全量对账纪律（2026-08-03 教训）：此前美股样本曾遗漏 3 笔（07-21 MU 空 / 07-23 MU 多 / 07-28 SOXS 多，样本 N 由 28 → 33、EV 由 +0.606R 修正为 +0.498R、频率派 CI 由全正退回跨 0——漏样本造成幸存者偏差），**每次复盘必须遍历两目录全部文件、与现有 trades.csv 逐日对账，不许只补增量**。
 
 **复盘产物存放（`reviews/`，2026-07-21 立）**：复盘报告与配套数据/图统一放项目根 `reviews/`——主报告 `reviews/YYYY-MM-DD-review.md`（港美混合复盘直接用此；港美分开复盘仿信号文件加 `-HKT`/`-ET`）+ 同日附件 `reviews/YYYY-MM-DD-*.{csv,png}`（输入数据 CSV、统计图）。**`reviews/` 是事后复盘分析的存放处，与 `signals/`、`archive/` 三者分工**：`signals/` 记信号事实（复盘的数据源，只记事实不写分析、避免污染复盘数据源）；`reviews/` 放今后复盘分析；`archive/` 留更早的历史归档（含旧复盘，如 `archive/2026-07-06-sim-review.md`、`archive/2026-07-17-ET-review.md`，不再向其新增复盘）。目录说明见 `reviews/README.md`。
 
@@ -32,7 +32,13 @@
 
 *Notation.* 已了结样本集 $\mathcal{T}=\{T_1,\ldots,T_N\}$，$N=|\mathcal{T}|$ 为样本总量（= 已了结的交易笔数；一笔交易 = 一个开仓/加仓建仓批次，其多次了结——减仓/平仓/移损——合并为该笔的加权 exit 与总盈亏，计为一个 T）。第 $i$ 笔实际盈亏 $P_i\in\mathbb{R}$（$P_i>0$ 盈利、$P_i<0$ 亏损）。第 $i$ 笔归属批次的实际 max_loss $M_i:=\text{仓位}_i\times\Delta_{\text{stop},i}>0$（各笔按其实际仓位与止损距算、**各笔不同**；选仓位时围绕单笔预算 $B_i=\text{risk\_fraction}\times\text{equity}_i$ 选最近、可略超或略低于 $B_i$、不超 $\text{equity}_i\times f_{\max}$）。
 
-*Definition（R-multiple）.* $R_i:=P_i/M_i\in[-1,+\infty)$（实际盈亏 ÷ 该笔实际 max_loss；选最接近 $B_i$ 的离散仓位定下仓位后 $M_i$ 随之确定，最亏即止损 $P_i=-M_i$ 故 $R_i\geq -1$）。
+*Definition（净盈亏 / 净 R，net 口径，2026-08-03 用户立）.* 复盘里所有盈亏、赔率、EV、胜率、贝叶斯 $P(\mathrm{EV}>0)$ 一律按**扣双边手续费后的净额**计算（此前为毛口径、未扣费，2026-08-03 改正）：
+
+$$P_i^{\text{net}}:=P_i^{\text{gross}}-\text{fee}_i,\qquad \text{fee}_i=\text{单边费率}_i\times(\text{入场额}_i+\text{平仓额}_i),$$
+
+即开仓、平仓两边各按成交额收一次单边手续费（一买一卖各算一边）。**单边费率按市场**：港股 18bps/边（$0.0018$）、美股 3bps/边（$0.0003$；$1\text{bps}=0.0001$），由 `symbol` 前缀 `HK.` / `US.` 判定。分母 $M_i$（max_loss）**保持毛值不动**——它是开仓前定下的风险预算、归一化标尺，不被费率改动。**下文凡写 $P_i$ 默认指净盈亏 $P_i^{\text{net}}$**；脚本 `scripts/review.py` / `scripts/bayes_evolution.py` 已在算 $R$ 的源头扣双边费、下游全部自动跟随净口径。⚠️ 真实交易另有印花税 / 平台费 / 最低佣金等，此处只按用户给的单边费率做近似扣费；未来要更精细可在 `trades.csv` 加 `fee` 列覆盖。⚠️ **费率对窄止损策略冲击极大**：止损距越小、$M_i$ 越小，$\text{fee}_i/M_i$ 占比越高（极端如止损距 0.4% 的港股单，双边费可吃掉毛盈利的九成）——故窄止损小单在净口径下 edge 极薄，这是改净口径后 EV 明显下降的主因。
+
+*Definition（R-multiple）.* $R_i:=P_i^{\text{net}}/M_i$（**净**盈亏 ÷ 该笔实际 max_loss；选最接近 $B_i$ 的离散仓位定下仓位后 $M_i$ 随之确定）。⚠️ 改净口径后「$R_i\geq -1$」**不再严格成立**：止损触发时实际亏 $M_i+\text{平仓费}$，故净 $R_i$ 可略低于 $-1$——这是真实情况（止损时确实比毛预算多付一笔平仓费），非数据错误。
 
 划分 $\mathcal{W}:=\{i:R_i>0\}$（胜）、$\mathcal{L}:=\{i:R_i\le 0\}$（败，**含平手 $R_i=0$**——与「胜率演化图」$R_i\le 0$ 记败同口径，保 $N=N_W+N_L$、$q=1-p$ 严格成立；日内交易打平极罕见，本项目仅 SOXL 07-08 一笔），$N_W:=|\mathcal{W}|$、$N_L:=|\mathcal{L}|$，$N=N_W+N_L$。
 
@@ -49,7 +55,7 @@ pR_W+qR_L
 &=\frac{1}{N}\sum_{i=1}^{N}R_i=\mathrm{EV}.\qquad\blacksquare
 \end{aligned}$$
 
-*Corollary（预估 EV）.* 开仓前取预估胜赔率 $\hat{R}_W\geq 1.2$、保守取 $R_L=-1$（假设每次亏满 $M_i$、即 $R_i=-1$），则 $\mathrm{EV}_{\text{est}}=p\,\hat{R}_W-q$，即「交易策略纪律」的 $EV=\text{胜率}\times\text{赔率}-\text{败率}$。
+*Corollary（预估 EV）.* 开仓前取预估**净**胜赔率 $\hat{R}_W\geq 1.2$（净口径，扣双边费，见 `trading-strategy.md`「赔率三阶段」）、保守取 $R_L=-1$（假设每次亏满 $M_i$、即 $R_i=-1$），则 $\mathrm{EV}_{\text{est}}=p\,\hat{R}_W-q$，即「交易策略纪律」的 $EV=\text{胜率}\times\text{赔率}-\text{败率}$。
 
 *Definition（百分制 / 金额制）.* $\mathrm{EV}\%:=100\,\mathrm{EV}$（百分制 R-multiple）；$\overline{P}:=\dfrac{1}{N}\sum_{i=1}^{N}P_i$（平均每单盈利金额，直接平均各笔绝对盈亏；各笔 $M_i$ 不同时 $\overline{P}\neq M\cdot\mathrm{EV}$，故金额制独立定义、不经统一 $M$）。
 
