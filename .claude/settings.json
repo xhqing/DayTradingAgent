@@ -26,20 +26,20 @@
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "python3 .claude/hooks/monitor_guard.py pretool" }
+          { "type": "command", "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/monitor_guard.py pretool" }
         ]
       },
       {
         "matcher": "TaskStop",
         "hooks": [
-          { "type": "command", "command": "python3 .claude/hooks/monitor_guard.py taskstop" }
+          { "type": "command", "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/monitor_guard.py taskstop" }
         ]
       }
     ],
     "Stop": [
       {
         "hooks": [
-          { "type": "command", "command": "python3 .claude/hooks/monitor_guard.py stop" }
+          { "type": "command", "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/monitor_guard.py stop" }
         ]
       }
     ]
