@@ -17,7 +17,7 @@ CSV 字段（首行表头，逗号分隔；# 开头行当注释跳过）:
   python3 review.py <trades.csv>                  # 用 CSV 自带 raw_high/raw_low
   python3 review.py <trades.csv> --fetch-futu     # 缺 high/low 时连富途按时间戳自动拉
 
-输出（R-multiple 体系，与 SKILL「复盘分析」一致）:
+输出（R-multiple 体系，与 SKILL「复盘分析」一致；2026-08-03 起改 net 口径）:
   1. 样本明细
   2. 终局统计量（胜率 / 败率 / 胜赔率 / 败赔率 / EV / EV% / 平均每单盈亏）
   3. 过程指标分盈利单 / 亏损单各一组（MAE / MFE / 回吐 / 锁利效率 η）
@@ -25,7 +25,14 @@ CSV 字段（首行表头，逗号分隔；# 开头行当注释跳过）:
   5. 频率派 EV 的 95% CI（对照）
   6. 样本量规划（代入当前 s）
 
-⚠️ 盈亏按信号参考价与 max_loss 实算，不涉及真实账户资金（信号模式：AI 不管账户）。
+费率扣费口径（net，2026-08-03 用户立）:
+  盈亏 P 与 R 一律扣双边手续费后再算：P_net = P_gross − fee，
+  fee = 单边费率 ×（入场额 + 平仓额），即开仓 + 平仓两边各收一次。
+  单边费率按 symbol 市场前缀：港股 18bps/边（0.0018）、美股 3bps/边（0.0003）。
+  分母 max_loss 保持毛值（开仓前定的风险预算标尺不动），故止损单净 R 可能略低于 −1。
+  EV / 胜率 / 赔率 / 贝叶斯 P(EV>0) 全部基于净 R，自动跟随净口径。
+
+⚠️ 盈亏按信号参考价与 max_loss 实算、扣双边手续费，不涉及真实账户资金（信号模式：AI 不管账户）。
 依赖: scipy（无则退化：t→正态近似、χ²→Wilson-Hilferty，小样本偏乐观；建议装 scipy）。
 """
 import sys, csv, math, argparse
@@ -55,6 +62,16 @@ def _direction(s):
     if s in ('long', '做多', '多', 'buy', '买入'): return 1
     if s in ('short', '做空', '空', 'sell', '卖出'): return -1
     raise ValueError(f"direction 无法解析: {s!r}")
+
+# 单边手续费率（2026-08-03 用户立：复盘 R / EV / 胜率等一律用扣费净盈亏 net）
+# 港股 18bps/边、美股 3bps/边（1bps=0.0001）；一笔交易 = 开仓 + 平仓 两边各收一次。
+# 真实交易还有印花税 / 平台费 / 最低佣金等，这里只按用户给的单边费率做近似扣费，
+# 与用户口径一致；未来要更精细可在 trades.csv 加 fee 列覆盖。
+def _fee_per_side(symbol):
+    s = (symbol or '').upper()
+    if s.startswith('HK.'): return 0.0018   # 18bps
+    if s.startswith('US.'): return 0.0003   # 3bps
+    raise ValueError(f"未知市场前缀、无法定费率: {symbol!r}（只支持 HK. / US.）")
 
 def _opt_float(v):
     if v is None: return None
@@ -99,8 +116,12 @@ def load_trades(path):
                      exit_time=(r.get('exit_time') or '').strip() or None)
         except Exception as e:
             sys.exit(f"❌ 第{i}行解析失败: {e}\n  {r}")
-        t['P'] = (t['exit'] - t['entry']) * t['shares'] * t['sign']
-        t['R'] = t['P'] / t['M']
+        t['P_gross'] = (t['exit'] - t['entry']) * t['shares'] * t['sign']  # 毛盈亏（未扣费）
+        fps = _fee_per_side(t['symbol'])
+        t['fee'] = fps * (t['entry'] + t['exit']) * t['shares']  # 开仓 + 平仓 两边手续费（均按成交额×单边费率）
+        t['P'] = t['P_gross'] - t['fee']  # 净盈亏（扣双边手续费）——复盘所有盈亏 / R 口径
+        t['R'] = t['P'] / t['M']          # 净 R；分母 max_loss 保持毛值（风险预算标尺不动），
+        #                                    故止损单净 R 会略低于 -1（止损实际比毛预算多亏一笔平仓费，真实）
         compute_process(t)
         trades.append(t)
     trades.sort(key=lambda t: (t['date'], t['symbol']))  # 与 bayes_evolution.py 同排序：样本明细编号 = 序贯图横轴
@@ -286,12 +307,12 @@ def main():
     print("=" * 66)
 
     # 1. 样本明细
-    print("\n【样本明细】")
-    print(f"{'#':<3}{'日期':<11}{'标的':<16}{'向':<4}{'entry→exit':<18}{'P':>9}{'max_loss':>10}{'R=P/M':>9}")
+    print("\n【样本明细】（P / R 均为扣双边手续费后的净额；fee = 开+平两边手续费）")
+    print(f"{'#':<3}{'日期':<11}{'标的':<16}{'向':<4}{'entry→exit':<18}{'P净':>9}{'fee':>8}{'max_loss':>10}{'R净':>9}")
     for i, t in enumerate(trades, 1):
         d = '多' if t['sign'] > 0 else '空'
         ee = f"{t['entry']}→{t['exit']}"
-        print(f"{i:<3}{t['date']:<11}{t['symbol']:<16}{d:<4}{ee:<18}{t['P']:>+9.1f}{t['M']:>10.0f}{t['R']:>+9.3f}")
+        print(f"{i:<3}{t['date']:<11}{t['symbol']:<16}{d:<4}{ee:<18}{t['P']:>+9.1f}{t['fee']:>8.1f}{t['M']:>10.0f}{t['R']:>+9.3f}")
 
     # 2. 终局统计量
     print("\n【终局统计量】")
@@ -356,7 +377,7 @@ def main():
     print(f"  确认 EV>0(80%把握): 真实 EV=0.10R→{f80 * s ** 2 / 0.10 ** 2:.0f} 笔   0.20R→{f80 * s ** 2 / 0.20 ** 2:.0f} 笔")
     print("  (鸡生蛋：基于当前 N 估的 s，初步规划、非定论；每次复盘用当下样本重算 s 重填)")
 
-    print("\n⚠️ 盈亏按信号参考价与 max_loss 实算，不涉及真实账户资金（信号模式）。")
+    print("\n⚠️ 盈亏按信号参考价与 max_loss 实算、扣双边手续费（港股 18bps/边、美股 3bps/边），不涉及真实账户资金（信号模式）。")
 
 
 if __name__ == '__main__':

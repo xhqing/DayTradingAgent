@@ -588,21 +588,50 @@ def get_open_position(config, symbol=None):
 # 价格范围计算（6 要素核心逻辑）
 # ---------------------------------------------------------------------------
 
-def calc_entry_range(direction, entry_ref, stop_loss, target):
+# 单边手续费率（2026-08-04 用户立：盯盘前瞻赔率改净口径，与复盘 review.py 同口径）。
+# 港股 18bps/边、美股 3bps/边（1bps=0.0001）；一笔交易 = 开仓 + 平仓 两边各收一次。
+def _fee_per_side(symbol):
+    s = (symbol or '').upper()
+    if s.startswith('HK.'): return 0.0018   # 18bps
+    if s.startswith('US.'): return 0.0003   # 3bps
+    return 0.0   # 未知市场前缀：保守不扣费（等价毛口径），避免误判
+
+
+def _net_odds(direction, entry, target, stop, fee_per_side):
+    """净前瞻赔率（与复盘 R = P_net / M 同口径）。
+
+    分子 = 到止盈的净盈利 = 止盈距 − 双边费（开仓按 entry、平仓按 target 各收一次单边费率，
+    即 fee_per_side × (entry + target)）；分母 = 毛止损距（与复盘 M = shares×止损距 同为毛值、不动）。
+    前瞻假设到止盈 target 出场，故「平仓价」用 target（与复盘用实际平仓价算费同结构）。
+    做多 stop_dist = entry − stop；做空 stop_dist = stop − entry；≤0 返回 inf（方向错或贴止损）。
+    """
+    if direction == 'long':
+        gross_gain = target - entry
+        stop_dist = entry - stop
+    else:
+        gross_gain = entry - target
+        stop_dist = stop - entry
+    if stop_dist <= 1e-12:
+        return float('inf')
+    fee_per_share = fee_per_side * (entry + target)
+    return (gross_gain - fee_per_share) / stop_dist
+
+
+def calc_entry_range(direction, entry_ref, stop_loss, target, symbol=None):
     """计算开仓/加仓的可接受价格范围（6 要素中的「价格范围」）。
 
-    价格范围由两部分组成（不对称）：
+    价格范围由两部分组成（不对称，经验参数、与毛/净赔率无关）：
     - 80% 部分：来自风险距离 R₀ = |entry_ref - stop_loss| 的 80%
     - 3/8 部分：来自参考价本身的 37.5%
 
     做多：[entry_ref - R₀ × 0.8, entry_ref + entry_ref × 3/8]
     做空：[entry_ref - entry_ref × 3/8, entry_ref + R₀ × 0.8]
 
-    下单时修正预期赔率 = 止盈距离 ÷ 止损距离（用成交价计算），在价格范围内
-    的修正预期赔率区间大致在 [0.6, 10] 之间。
+    价格范围本身用毛 R₀ 算、不随净口径变（80%/3/8 是经验近似区间）；范围内的净修正预期赔率
+    大致在 [0.6, 10] 之间（净口径下因分子扣双边费、数值略低于毛口径）。
 
     返回 (range_low, range_high, odds_at_ref)：
-    - odds_at_ref：参考价处的初始预期赔率
+    - odds_at_ref：参考价处的初始预期赔率（净口径，扣双边费）
     """
     R0 = abs(entry_ref - stop_loss)  # 参考价处的风险单位 R₀（下单前的基准）
     if R0 < 1e-9:
@@ -619,31 +648,25 @@ def calc_entry_range(direction, entry_ref, stop_loss, target):
     else:
         raise ValueError(f"direction 必须是 'long' 或 'short'，收到 '{direction}'")
 
-    # 参考价处的初始预期赔率
-    if direction == "long":
-        odds_at_ref = (target - entry_ref) / R0
-    else:
-        odds_at_ref = (entry_ref - target) / R0
+    # 参考价处的初始预期赔率（净口径，2026-08-04：扣双边费）
+    odds_at_ref = _net_odds(direction, entry_ref, target, stop_loss, _fee_per_side(symbol))
 
     return range_low, range_high, odds_at_ref
 
 
-def check_price_in_range(direction, current_price, entry_ref, stop_loss, target):
+def check_price_in_range(direction, current_price, entry_ref, stop_loss, target, symbol=None):
     """检查当前价格是否在可接受的开仓/加仓价格范围内。
 
     返回 (in_range, range_low, range_high, odds_at_ref, odds_at_current)：
-    - odds_at_ref：参考价处的初始预期赔率
-    - odds_at_current：当前价处的修正预期赔率（若按此价成交）
+    - odds_at_ref：参考价处的初始预期赔率（净口径）
+    - odds_at_current：当前价处的修正预期赔率（净口径，若按此价成交）
     """
-    range_low, range_high, odds_at_ref = calc_entry_range(direction, entry_ref, stop_loss, target)
+    range_low, range_high, odds_at_ref = calc_entry_range(direction, entry_ref, stop_loss, target, symbol)
 
     in_range = range_low <= current_price <= range_high
 
-    # 当前价处的修正预期赔率（若按此价成交）
-    if direction == "long":
-        odds_at_current = (target - current_price) / (current_price - stop_loss) if current_price > stop_loss else float("inf")
-    else:
-        odds_at_current = (current_price - target) / (stop_loss - current_price) if stop_loss > current_price else float("inf")
+    # 当前价处的修正预期赔率（净口径，若按此价成交）
+    odds_at_current = _net_odds(direction, current_price, target, stop_loss, _fee_per_side(symbol))
 
     return in_range, range_low, range_high, odds_at_ref, odds_at_current
 

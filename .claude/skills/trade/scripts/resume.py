@@ -12,7 +12,7 @@
   signals/YYYY-MM-DD-HKT-signals.md / -ET-signals.md  当天信号（含假设持仓的开仓/加仓批次）
   signals/equity-log.csv 末行                          当前 equity（算单笔预算 B）
   signals/ring-log.csv 末行                            最后一次响铃（判断有无响铃未取实测价的悬空项）
-  tmp/monitor_log_*.csv 尾部                           上次最后采样时间（时间断层的断点）
+  tmp/monitor_log_*_{mode}.csv 尾部                      上次最后采样时间（按 mode 分；时间断层的断点）
 
 用法：
   python3 resume.py                    基础恢复：时间 + 市场状态 + 断层检测 + equity + 今日信号摘要
@@ -32,6 +32,10 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "..", "..", ".."))
 SIGNALS_DIR = os.path.join(PROJECT_ROOT, "signals")
 TMP_DIR = os.path.join(PROJECT_ROOT, "tmp")
+
+sys.path.insert(0, SCRIPT_DIR)
+from trade_utils import parse_mode
+MODE = parse_mode()  # 运行时 log 按 mode 分文件（signal/auto 两会话并行盯盘不互相污染）；ring-log 仅 signal 读
 
 # 时间断层警告阈值（分钟）：正常段间循环 < 1 分钟，超过这个值基本可断定断网/暂停/故障致断层。
 GAP_WARN_MIN = 5
@@ -89,7 +93,7 @@ print(f"📈 美股：{us_status()}")
 def last_monitor_time():
     """今日所有 monitor_log_*.csv 里最晚的一条采样时间。"""
     date_str = now.strftime("%Y%m%d")
-    logs = glob.glob(os.path.join(TMP_DIR, f"monitor_log_*_{date_str}.csv"))
+    logs = glob.glob(os.path.join(TMP_DIR, f"monitor_log_*_{date_str}_{MODE}.csv"))
     best = None
     for lg in logs:
         try:
@@ -106,7 +110,9 @@ def last_monitor_time():
 
 
 def last_ring_time():
-    """ring-log.csv 最后一条响铃时间（含日期）。"""
+    """ring-log.csv 最后一条响铃时间（含日期；仅 signal 模式读——auto 不响铃，读 signal 会话的 ring-log 会把别会话响铃误当本会话活动时间）。"""
+    if MODE != "signal":
+        return None
     ring = os.path.join(SIGNALS_DIR, "ring-log.csv")
     if not os.path.exists(ring):
         return None
@@ -132,8 +138,16 @@ if candidates:
     last_activity = max(candidates)
     gap = (now - last_activity).total_seconds() / 60
     if gap >= GAP_WARN_MIN:
+        # B5（2026-08-04）：盘中断层额外强调「疑似主动停密采样」+ 立即重启 monitor_segment
+        # （盯盘纪律：盘中不得擅自停/降频，2026-08-04 教训）；盘外断层才按断网/故障处理。
+        in_session = ("盘中" in hk_status()) or ("盘中" in us_status())
+        stop_hint = (
+            " → 盘中疑似【主动停密采样】（非断网/故障）！立即重启 monitor_segment 40 秒循环恢复密盯"
+            "（2026-08-04 教训：盯盘期间不得擅自停/降频，唯一停盯途径是用户喊停或撞上 12:00/16:00 边界）"
+            if in_session else ""
+        )
         print(
-            f"   ⚠️ 距上次活动 {gap:.0f} 分钟（≥ {GAP_WARN_MIN}min）→ 疑似时间断层（断网/暂停/故障）！"
+            f"   ⚠️ 距上次活动 {gap:.0f} 分钟（≥ {GAP_WARN_MIN}min）→ 疑似时间断层（断网/暂停/故障）{stop_hint}！"
             f"绝不用断层前的旧数据发信号；先读今日 signals 重建持仓认知、确认无悬空（响铃未取实测价）信号，"
             f"再 snapshot 刷新现价。"
         )
@@ -147,8 +161,8 @@ else:
 # 2026-08-01 双模式重构：equity 按 mode 取（auto 账户 API / signal equity-log）。
 try:
     sys.path.insert(0, SCRIPT_DIR)
-    from trade_utils import load_equity as _le, parse_mode as _pm
-    mode = _pm()
+    from trade_utils import load_equity as _le
+    mode = MODE
     with open(os.path.join(SCRIPT_DIR, "..", "config.json")) as f:
         risk = json.load(f).get("risk", {})
     frac = risk.get("risk_fraction")

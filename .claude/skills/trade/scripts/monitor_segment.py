@@ -12,8 +12,8 @@
 # 或 low 创新低且 <= 它自己的 dn 支撑位，立即打标记 + 整段提前退出通知 AI
 # （任一只破位都叫 AI 来看，突破响应延迟从段时长压到约一个采样间隔）。
 #
-# 每只票各写各的连续 log（tmp/monitor_log_{symbol}_{date}.csv，按标的分文件、累积不丢），
-# monitor_summary.py 按标的读——多标的不混在同一个 CSV 里、分析时各读各的。
+# 每只票各写各的连续 log（tmp/monitor_log_{symbol}_{date}_{mode}.csv，按标的 + 模式分文件、累积不丢），
+# monitor_summary.py 按标的 + 模式读——多标的不混在同一个 CSV 里、signal/auto 两会话也不混（2026-08-04 立）。
 #
 # 用法：
 #   python3 monitor_segment.py <targets> <duration_sec> [interval_sec]
@@ -25,7 +25,7 @@
 #     duration_sec 本段采样时长（秒），到点退出触发通知；建议 40
 #     interval_sec 采样间隔（秒），默认 10
 #
-# log 文件：每只票 tmp/monitor_log_{SYM}_{YYYYMMDD}.csv，CSV 列：
+# log 文件：每只票 tmp/monitor_log_{SYM}_{YYYYMMDD}_{mode}.csv（mode = signal/auto，两会话并行盯盘各写各的、不污染），CSV 列：
 #   time,symbol,last,bid,ask,ratio,vr,high,low,turnover_yi
 # AI 分析时读各标的 log 最近 N 行（如 tail -60 tmp/monitor_log_<SYM>_*.csv）。
 
@@ -34,9 +34,11 @@ import json
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from futu import OpenQuoteContext
+
+from trade_utils import parse_mode  # 模式标识：运行时 log 按 mode 分文件，signal/auto 两会话并行盯盘不互相污染
 
 # 长桥止损单查询（模拟盘模式：每次采样获取最新止损单止损价）
 _LONGPORT_AVAILABLE = False
@@ -120,21 +122,43 @@ def main():
         sys.exit(1)
 
     DURATION = int(sys.argv[2]) if len(sys.argv) > 2 else 40
+    # 强制 40 以内密采样（2026-08-03 用户立）：盯盘期间曾擅自降频 120s/300s 违反「不因市况降频」。
+    # 工具固化——传入 >40 自动夹到 40 + 警告，AI 即便误传降频也被挡回 40。
+    # 市场无机会应换标的（hot_list 找活跃）或继续密盯，不降频（与段结束自带完整统计同理：工具强制不依赖记忆）。
+    if DURATION > 40:
+        print(
+            f"⚠️ DURATION={DURATION} 超过 40，违反「40 以内密采样 + 不因市况降频」规定，强制夹到 40。"
+            f"市场无机会应换标的（hot_list）或继续密盯，不降频。",
+            flush=True,
+        )
+        DURATION = 40
     INTERVAL = int(sys.argv[3]) if len(sys.argv) > 3 else 10
     syms = [t["sym"] for t in targets]
+    mode = parse_mode()  # signal（默认）/ auto —— 运行时 log 按 mode 分文件，两会话并行盯盘不互相污染
 
     # 每只票的连续 log 路径 + 突破检测状态。项目根 = 脚本目录(scripts)上四级。
     _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
     _PROJECT_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", "..", "..", ".."))
     LOG_DIR = os.path.join(_PROJECT_ROOT, "tmp")
-    date_str = datetime.now().strftime("%Y%m%d")
+    # log 文件按市场对应交易日命名（2026-08-04 修 bug）：原统一用「北京 -12h」算美东交易日（为美股跨北京午夜），
+    # 但对港股早盘失效——港股盘中北京 09:30-12:00，减 12h = 昨天 21:30 → log 落昨天日期，今天采样污染昨天 log、
+    # 完整采样统计混入昨天数据（如开=123.60 是昨天的价）+ 哨兵读昨天末行误报断层（1069 分钟）。改为按市场区分：
+    # 港股 HK 用北京日期（盘中不跨午夜）；美股 US 仍用美东交易日（北京 -12h 夏令时 EDT=UTC-4；冬令时 EST=UTC-5 需 -13h）。
+    def trading_date_str(sym: str) -> str:
+        now = datetime.now()
+        if sym.startswith("US."):
+            return (now - timedelta(hours=12)).strftime("%Y%m%d")  # 美东交易日（夏令时；冬令时改 -13h）
+        return now.strftime("%Y%m%d")  # 港股及其它：北京日期
+    # 重估提醒检查（下方 marker 文件命名 + 首点时间拼算）需 date_str 与主标的 log 文件日期一致，
+    # 故取主标的市场对应的交易日（港股=北京日期、美股=美东交易日）。
+    date_str = trading_date_str(syms[0]) if syms else datetime.now().strftime("%Y%m%d")
     LOG_FIELDS = ["time", "symbol", "last", "bid", "ask", "ratio", "vr", "high", "low", "turnover_yi", "stop_price"]
 
     # state[sym] = 该标的的 log 路径 + 上一轮 high/low（用于判创新高/新低）+ 它自己的关键位
     state = {}
     for t in targets:
         sym = t["sym"]
-        log_file = os.path.join(LOG_DIR, f"monitor_log_{sym.replace('.', '_')}_{date_str}.csv")
+        log_file = os.path.join(LOG_DIR, f"monitor_log_{sym.replace('.', '_')}_{trading_date_str(sym)}_{mode}.csv")
         state[sym] = {"log_file": log_file, "last_high": None, "last_low": None, "up": t["up"], "dn": t["dn"]}
 
     def append_log(log_file, row):
@@ -159,9 +183,15 @@ def main():
                 rows = list(csv.reader(lf))
             if len(rows) <= 1:
                 continue
-            last_t = rows[-1][0]  # "HH:MM:SS"
-            last_dt = datetime.strptime(f"{date_str} {last_t}", "%Y%m%d %H:%M:%S")
-            gap_min = (datetime.now() - last_dt).total_seconds() / 60
+            last_t = rows[-1][0]  # "HH:MM:SS"（log 只记时分秒，日期靠推断）
+            now = datetime.now()
+            last_time = datetime.strptime(last_t, "%H:%M:%S").time()
+            # 推断 last 的日期（跨午夜安全 2026-08-04 立）：默认今天，若 last 时分 > now 时分
+            # （如 last 23:59 now 00:01，跨午夜）则 last 是昨天。避免用 date_str 拼接导致跨午夜 gap 误算
+            # （美东盘中跨午夜后 date_str 是昨天美东交易日、但 last_t 是今天时分，拼接错算 24h gap 误报）。
+            last_date = now.date() - timedelta(days=1) if last_time > now.time() else now.date()
+            last_dt = datetime.combine(last_date, last_time)
+            gap_min = (now - last_dt).total_seconds() / 60
             if gap_min >= 5:
                 print(
                     f"⚠️ 时间断层哨兵：{sym} 距上次采样 {gap_min:.0f} 分钟（上次 {last_t} → 现在），"
@@ -270,7 +300,7 @@ def main():
     # 盯盘容易固守开盘方向、忘记 skill 的「动态修正方向」规定（2026-07-27 MU 午盘守偏空 4 小时
     # 没重估、错过 ~9700 HKD）。靠工具强制提醒，不靠记忆。
     try:
-        marker_file = os.path.join(LOG_DIR, f"reassess_marker_{date_str}.txt")
+        marker_file = os.path.join(LOG_DIR, f"reassess_marker_{date_str}_{mode}.txt")
         reminded = set()
         if os.path.exists(marker_file):
             with open(marker_file) as mf:
@@ -329,6 +359,48 @@ def main():
             print(f"📊 VWAP 检查: snapshot 失败 ret={ret}", flush=True)
     except Exception as e:
         print(f"[VWAP 检查 err:{e}]", flush=True)
+
+    # 段结束完整采样统计（2026-08-03 立）：段结束自带「从开盘到当前的完整统计」，
+    # AI 看段结束即见整体（点数/开/末/high/low/买卖比均/量比均/近5点），不只看本段 4-5 点。
+    # 为什么：曾只看段结束当前段、漏整体趋势（2026-08-03 用户三次纠正：降频/没拉全貌/没看完整log）。
+    # 靠工具固化段结束自带完整统计，不依赖记忆——与上方 VWAP 检查、重估提醒同理（工具强制，不靠记忆）。
+    try:
+        print("📊 完整采样统计（从开盘到当前所有点，看整体不只看本段）:", flush=True)
+        for sym in syms:
+            log_file = state[sym]["log_file"]
+            if not os.path.exists(log_file):
+                continue
+            with open(log_file) as lf:
+                rows = list(csv.DictReader(lf))
+            if not rows:
+                continue
+            lasts = [float(r["last"]) for r in rows if r.get("last", "").replace(".", "").isdigit()]
+            ratios = [float(r["ratio"]) for r in rows if r.get("ratio", "").lstrip("-").replace(".", "").isdigit()]
+            vrs = [float(r["vr"]) for r in rows if r.get("vr", "").lstrip("-").replace(".", "").isdigit()]
+            if not lasts:
+                continue
+            n = len(lasts)
+            recent = " ".join(f"{r['last']}({r['ratio']})" for r in rows[-5:])
+            # 连续性指标（2026-08-04 立 C7）：距首次采样分钟数，与点数并列让 AI 和用户一眼看出降频
+            # （密采样正常 = 点数多且距首采样合理；降频 = 点数少-距首采样久，明显不匹配）。
+            mins_str = ""
+            first_t = rows[0].get("time", "") if rows else ""
+            if first_t:
+                try:
+                    ft = datetime.strptime(first_t, "%H:%M:%S").time()
+                    fdate = (datetime.now().date() - timedelta(days=1)) if ft > datetime.now().time() else datetime.now().date()
+                    mins_str = f" 距首采样{(datetime.now() - datetime.combine(fdate, ft)).total_seconds()/60:.0f}分钟"
+                except Exception:
+                    pass
+            print(
+                f"  {sym}: 点数={n}{mins_str} 开={lasts[0]:.2f} 末={lasts[-1]:.2f} "
+                f"high={max(lasts):.2f} low={min(lasts):.2f} "
+                f"买卖比均={sum(ratios)/len(ratios):.0f} 量比均={sum(vrs)/len(vrs):.1f} "
+                f"| 近5点(价 买卖比): {recent}",
+                flush=True,
+            )
+    except Exception as e:
+        print(f"[完整统计 err:{e}]", flush=True)
 
     print(
         f"=== 分段结束 {datetime.now():%H:%M:%S}"

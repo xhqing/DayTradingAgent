@@ -102,7 +102,7 @@ def main():
 
     # ② 计算价格范围 + 检查是否在范围内
     in_range, range_low, range_high, odds_at_ref, odds_at_current = check_price_in_range(
-        direction, current_price, entry_ref, stop_loss, target
+        direction, current_price, entry_ref, stop_loss, target, symbol
     )
 
     result_base = {

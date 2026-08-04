@@ -7,19 +7,33 @@
 #
 # AI 分析分两层：①先跑本脚本看【全貌摘要】判行情性质 + 重判随时切换；②再读 log 最近 N 行看即时突破/回踩。
 #
-# 用法：python3 monitor_summary.py [symbol]   （默认 HK.00981，读当日 log）
+# 用法：python3 monitor_summary.py [symbol] [--mode signal|auto]   （默认 HK.00981 + signal，读当日对应模式 log）
 
 import csv
 import os
 import sys
 import statistics
-from datetime import datetime
+from datetime import datetime, timedelta
 
-SYMBOL = sys.argv[1] if len(sys.argv) > 1 else "HK.00981"
+# SYMBOL 取第一个非 `--` 开头的位置参数（兼容 `SYM --mode auto` / `--mode auto SYM` 两种传参顺序）。
+SYMBOL = next((a for a in sys.argv[1:] if not a.startswith("-")), "HK.00981")
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", "..", "..", ".."))
+
+from trade_utils import parse_mode  # 模式标识：log 按 mode 分文件，signal/auto 两会话并行盯盘不互相污染
+MODE = parse_mode()
+
+# log 日期按市场对应交易日（与 monitor_segment.py 的 trading_date_str 同口径）：港股用北京日期、
+# 美股用美东交易日（北京 -12h 夏令时；冬令时 EST 需 -13h）——否则美股跨北京午夜时 summary 找不到 segment 写的 log。
+def _trading_date_str(symbol):
+    now = datetime.now()
+    if symbol.startswith("US."):
+        return (now - timedelta(hours=12)).strftime("%Y%m%d")
+    return now.strftime("%Y%m%d")
+
 LOG_FILE = os.path.join(
-    _PROJECT_ROOT, "tmp", f"monitor_log_{SYMBOL.replace('.', '_')}_{datetime.now().strftime('%Y%m%d')}.csv"
+    _PROJECT_ROOT, "tmp",
+    f"monitor_log_{SYMBOL.replace('.', '_')}_{_trading_date_str(SYMBOL)}_{MODE}.csv"
 )
 
 if not os.path.exists(LOG_FILE):
