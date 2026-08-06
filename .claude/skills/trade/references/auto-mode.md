@@ -8,17 +8,15 @@
 
 ## 自动交易模式总则（最高优先级）
 
-本 skill 处于 **自动交易模式**。港股默认用老虎开放平台模拟账户（`<HK_PAPER_ACCOUNT>`）、美股默认用长桥模拟账户（`~/.longbridge/openapi/env-paper`），AI 决定拍板后**直接调用券商 API 下单 + 设止损条件单**，全流程自动化。如用户不使用默认账户会特别说明。
-
-**港股另设长桥模拟账户为备选**（复用美股同一长桥账户，HKD 计价、有港股权限）——默认不用，仅当用户盯盘时**特别说明用长桥**，才调港股长桥脚本（`*_hk.py`）下单；未特别说明则港股走默认老虎。长桥凭证可切换（默认模拟盘 `env-paper`，可扩展实盘——设环境变量 `LONGBRIDGE_ENV_FILE`，见下文「长桥实盘扩展」）。
+本 skill 处于 **自动交易模式**。港股、美股默认都用老虎开放平台模拟账户（`<HK_PAPER_ACCOUNT>`，港股 HKD / 美股 USD 同账户），AI 决定拍板后**直接调用券商 API 下单 + 设止损条件单**，全流程自动化。如用户不使用默认账户会特别说明。
 
 ## 3 类动作（开仓 / 平仓 / 移损，禁止加仓减仓）
 
 空仓时只能做**开仓**，持仓时只能做**平仓**和**移损**。**禁止加仓和减仓**（不复活旧信号模式的加仓 / 减仓动作）。最多持仓一个标的。
 
 - **开仓 🟢** — 空仓时建仓（做多 / 做空），开仓 = 一笔交易开始，包含附加止损单（主单 + 附加止损一次提交）。必含 ① 标的 ② 方向 ③ 开仓量 ④ 参考价 ⑤ 止损价（附加止损触发价，主单 + 附加一次提交、主单成交才激活，无裸奔空窗）⑥ 止盈目标价（预期值，不设止盈条件单）⑦ 单笔预算 + 预估 max_loss ⑧ 初始预期赔率（≥1.2）⑨ 置信度 ⑩ 依据。
-- **平仓 🔴** — 持仓时主动清仓（**市价单 MO** 立即成交，方向不看好时要确定性、允许不利偏移），或止损 MIT 被动触发；平仓后撤销所有未触发 MIT 止损单（防反向开仓，属平仓动作的一部分）；平仓 = 一笔交易结束。
-- **移损 🟡** — 持仓时移动止损（只朝有利方向移；**先下新止损单、再撤旧止损单**，保留单个活动止损——防空仓反向开仓：完全空仓时 MIT 触发会被接受、反向开仓，故不能累积）。
+- **平仓 🔴** — 持仓时主动清仓：**把持仓的止损单（开仓附加腿落成的 STP）触发价 modify 为想平仓的价格（主动平仓 = 现价、取整 tick），止损单立即触发、按市价成交平仓**（主路径，只改一个触发价、无「撤止损 + 市价单」两步、无 race，方向不看好时要确定性、允许不利偏移）；无活动止损单时直接市价单，modify 失败 / 未触发才 fallback「撤止损 + 市价单」（保证平仓）。或止损单被动触发。平仓后不残留未触发止损单（防反向开仓，属平仓动作的一部分）；平仓 = 一笔交易结束。
+- **移损 🟡** — 持仓时移动止损（只朝有利方向移；**把随开仓附带的止损单触发价 modify 为新止损价**（单步、无撤单 race——2026-08-05 实测开仓附加止损腿 OrderLeg('LOSS') 落成的独立 STP 可直接 `modify_order(aux_price=新价)`），保留单个活动止损——防空仓反向开仓：完全空仓时止损单触发会被接受、反向开仓，故不能累积）。仓位无活动止损才补下新 STP、modify 失败才 fallback「先下新止损单、再撤旧止损单」。
 
 **一笔交易（a trade）= 一次开仓到一次平仓**。同一标的同一时刻只有一笔持仓。开仓 = 一笔交易开始，平仓 = 一笔交易结束。复盘时逐笔算 R-multiple、胜率、EV。
 
@@ -30,23 +28,19 @@
 | 主动平仓 | AI 平仓 → 脚本自动执行 | **主动锁利** | **主动锁亏** |
 | 被动平仓 | 止损条件单触发 | **被动锁利** | **被动锁亏** |
 
-- **主动平仓 🔴**：AI 判断动能减弱 / 情况不对 / 到硬平仓时点等，调 `close_position.py` 执行平仓，记录到 `actions/`。
+- **主动平仓 🔴**：AI 判断动能减弱 / 情况不对 / 到硬平仓时点等，调对应老虎平仓脚本（港股 `close_position_tiger.py` / 美股 `close_position_tiger_us.py`）执行平仓——脚本把持仓止损单触发价 modify 为现价、止损单立即触发市价平仓（见上方「平仓 🔴」定义），记录到 `actions/`。
 - **被动平仓（止损条件单触发）**：只标记记录（「XX 止损 $Y 触发、成交 ~$Z、亏/盈 $M」），更新 equity。不存在止盈条件单——锁利靠平仓 / 移损两个主动动作。
 - **止盈靠两类动作**：① 主动平仓 🔴（AI 判断到目标 / 情况不对）② 移动止损锁利 🟡（浮盈中上移止损到盈利区，被动触发锁利）。不设移动止盈动作，不设止盈条件单。
 
 ## 交易动作脚本（`.claude/skills/trade/scripts/`）
 
-- `open_position.py` — 开仓（6 要素：标的 / 方向 / 参考价 / 价格范围 / 数量 / 止损价；自动算价格范围 + **主单(LO) + 附加止损(STOP_LOSS) 一次 REST 提交**（无裸奔空窗）+ 成交回查）
-- `close_position.py` — 平仓（一键平仓：读持仓自动算方向 + 量，**市价单 MO** 反向下单立即成交；成功后撤销所有未触发 MIT 止损单，防反向开仓）
-- `move_stop.py` — 移动止损（**先下新止损单、再撤旧**，仓位持续保护无空窗；保留单个活动止损防空仓反向开仓）
-- `trade_utils.py` — 共用工具库（长桥 API 封装、价格范围计算、仓位计算）
-- **港股老虎默认账户独立一套**（与美股 / 港股长桥脚本解耦、分而治之，2026-08-01 立）：`trade_utils_tiger.py`（老虎 SDK 自包含：配置加载、港股 symbol `HK.02800`→老虎 `02800`（只认 5 位裸数字，2026-08-02 实测）、lot_size / tick 从 get_contract 取、开仓 LMT+附加腿 OrderLeg('LOSS')、平仓 MKT、独立止损 STP、净值取 get_assets().summary.net_liquidation）+ `open_position_tiger.py` / `close_position_tiger.py` / `move_stop_tiger.py`。**港股默认账户，未特别说明即用这套**。✅ 实测状态（2026-08-03）：三动作全链路已 paper 开盘实测通过（HK.00700 腾讯做多 100 股）——开仓 LMT 主单 FILLED @486.2 + 附加腿激活为独立 STP 单 HELD 监控；移损独立 STP（trigger 484.0）先新增后撤旧、开仓附加腿可独立撤销；平仓 MKT Filled @486.0（avg_fill_price 真实成交价）+ 撤全部止损单；账户回到原 2 笔历史持仓（02800 多 1000 / 07709 空 200，保留不动）。实测发现并修复 2 个 bug（order_type 传字符串 / 成交回查 status 取 .value，详见 CHANGELOG 2026-08-03 与脚本 docstring）。**午后实测再发现 1 个 bug 并修复（2026-08-03）：平仓顺序必须先撤止损单、再下平仓单**——老虎与长桥不同，挂着的止损单（开仓附加腿落成的 STP）占用持仓的可平额度（salable=0 = 持仓 − 挂单量），Buy 平空单被拒 EXPIRED「The order quantity you entered exceeds your current holdings」（实测 Buy 38,500/10,000/100 股全被拒）；先 `cancel_all_stop_orders_tiger` 撤全部止损单、再下 MKT 平仓单即立即成交（Filled @36.20）。`close_position_tiger.py` 已按「先撤止损 → 再平仓」修复（原「先平仓后撤止损」是沿长桥逻辑，对老虎错误）。⚠️ **做空平仓前置 = 必须无挂着的止损单**；`move_stop` 移损（先新增后撤旧）期间若平仓也会被拒，平仓前统一先撤。该笔 07709 空单（38,500 股 @36.32 → 36.20）因基础设施问题作废，未计入 actions/。paper 接入：properties 的 account 填 17 位模拟账户号即自动走模拟域名。
-- **港股长桥备选账户独立一套**（与美股脚本解耦、分而治之，2026-08-01 立）：`trade_utils_hk.py`（港股自包含：symbol `HK.02800`↔`2800.HK` 转换、lot_size 从 static_info 取、港股价位 tick、HKD equity）+ `open_position_hk.py` / `close_position_hk.py` / `move_stop_hk.py`。**仅在用户特别说明用长桥时使用**，默认港股走老虎；只处理 `HK.xxx`、不碰美股持仓。✅ 实测状态（2026-08-03）：三动作 paper 实测通过（HK.00700 做多 100 股）——开仓 LO FILLED @487.0、**模拟盘附加 STOP_LOSS 不激活**（提交接受但 trigger_status=NOT_USED、不生成独立订单，实盘前需验证）；移损 MIT 先新增后撤旧（提交状态 OrderStatus.VarietiesNotReported 属活动单可撤）；平仓 MO Filled @487.6；顺带修复 get_open_position_hk / cancel_all_stop_orders_hk 对富途格式 symbol 误调 to_futu_symbol 的匹配 bug（详见 CHANGELOG 2026-08-03）。
+- **港股老虎默认账户独立一套**（2026-08-01 立）：`trade_utils_tiger.py`（老虎 SDK 自包含：配置加载、港股 symbol `HK.02800`→老虎 `02800`（只认 5 位裸数字，2026-08-02 实测）、lot_size / tick 从 get_contract 取、开仓 LMT+附加腿 OrderLeg('LOSS')、平仓 modify 止损触发价（无活动止损才直接 MKT）、独立止损 STP、净值取 get_assets().summary.net_liquidation）+ `open_position_tiger.py` / `close_position_tiger.py` / `move_stop_tiger.py`。**港股默认账户，未特别说明即用这套**。✅ 实测状态（2026-08-03）：三动作全链路已 paper 开盘实测通过（HK.00700 腾讯做多 100 股）——开仓 LMT 主单 FILLED @486.2 + 附加腿激活为独立 STP 单 HELD 监控；移损独立 STP（trigger 484.0）先新增后撤旧（2026-08-03 实测时）；**2026-08-05 改用 modify aux_price**（实测开仓附加止损单 OrderLeg('LOSS') 落成的独立 STP 可直接 `modify_order(aux_price=新价)` 改触发价 492→493、移损变单步无撤单 race——主路径 modify、0 个活动 STP 下新、≥2 个撤多余再 modify、modify 异常 fallback「先下新+撤旧」，详见 `move_stop_tiger.py` 与 CHANGELOG）；开仓附加腿可独立撤销；平仓 MKT Filled @486.0（avg_fill_price 真实成交价）+ 撤全部止损单；账户回到原 2 笔历史持仓（02800 多 1000 / 07709 空 200，保留不动）。实测发现并修复 2 个 bug（order_type 传字符串 / 成交回查 status 取 .value，详见 CHANGELOG 2026-08-03 与脚本 docstring）。**午后实测再发现 1 个 bug 并修复（2026-08-03）：平仓顺序必须先撤止损单、再下平仓单**——挂着的止损单（开仓附加腿落成的 STP）占用持仓的可平额度（salable=0 = 持仓 − 挂单量），Buy 平空单被拒 EXPIRED「The order quantity you entered exceeds your current holdings」（实测 Buy 38,500/10,000/100 股全被拒）；先 `cancel_all_stop_orders_tiger` 撤全部止损单、再下 MKT 平仓单即立即成交（Filled @36.20）。`close_position_tiger.py` 已按「先撤止损 → 再平仓」修复（原「先平仓后撤止损」顺序错误）。该笔 07709 空单（38,500 股 @36.32 → 36.20）因基础设施问题作废，未计入 actions/。（上一条「做空平仓前置 = 必须无挂着的止损单」是 2026-08-03 旧实现下的限制，2026-08-05 起 modify 方案已消除——主路径只改触发价、止损单本身成交、不产生超额平仓单；仅 fallback「撤止损 + MO」仍先撤后平。）paper 接入：properties 的 account 填 17 位模拟账户号即自动走模拟域名。**2026-08-05 close_position_tiger 改用「modify 止损单触发价=现价」平仓**（用户方案、彻底消除平仓 race condition）：把持仓止损单触发价 modify 到现价、止损单立即触发 Sell/Buy MO（严格=持仓量、平后持仓 0、无第二个 MO 不会反向开仓），有活动止损单走 modify 主路径、无活动止损单直接 MO、modify 失败/未触发 fallback「撤止损+MO」；端到端实测通过（附加止损 @491.8 → modify 触发价→494.8 → 止损单触发 Sell MO Filled @494.6、持仓归 0、无反向开仓）。今天事故（撤止损+MO 反向开空 -36500）的 race 从机制上消除。move_stop_tiger 改 modify 见上方「移损」段。
+- **美股老虎默认账户独立一套**（2026-08-05 立，与港股 tiger 解耦）：`trade_utils_tiger_us.py`（复用 trade_utils_tiger 不分市场基础设施 + 美股特定：symbol 裸代码 MU、lot 1、tick 0.01、USD 净值、3bps 费）+ `open_position_tiger_us.py` / `close_position_tiger_us.py` / `move_stop_tiger_us.py`。**美股默认账户，未特别说明即用这套**。`close_position_tiger_us` 走「modify 止损触发价=现价」无 race 路径、`move_stop_tiger_us` 走「modify aux_price」单步路径（同港股 2026-08-05 改造）；`cancel_all_stop_orders_us` 含 TRAIL（吸收中芯残留事故教训）。⏳ 下单链路待美股盘中实测（白天盘外、晚上 21:30 开盘测）。
 - `log_action.sh` — 把完整交易动作写入 `actions/` 目录
 
 ## 操作原则（auto 专属）
 
-1. **自动执行**：AI 拍板后立即调用 `open_position.py`（开仓）/ `close_position.py`（平仓）/ `move_stop.py`（移损），脚本主单 + 附加止损一次提交（无裸奔空窗）+ 成交回查（目标最优成交价）。下单结果（order_id、成交价）由脚本 JSON 输出，AI 据此记录交易动作到 `actions/` 目录（`log_action.sh`）。
+1. **自动执行**：AI 拍板后立即调用对应老虎脚本（港股 `open_position_tiger.py`（开仓）/ `close_position_tiger.py`（平仓）/ `move_stop_tiger.py`（移损）、美股 `*_tiger_us.py`），脚本主单 + 附加止损一次提交（无裸奔空窗）+ 成交回查（目标最优成交价）。下单结果（order_id、成交价）由脚本 JSON 输出，AI 据此记录交易动作到 `actions/` 目录（`log_action.sh`）。
 2. **自主循环、不打断用户**：AI 自主跑「盯盘→分析→执行→记录」循环，不中途停下问用户、不等确认。盯盘由用户指令启动、AI 不自主启动。盯盘期间无人值守——AI 所有盯盘决策（换标的 / 方向 / 止损 / 平仓 / 移损 / 降频）自主完成，不 AskUserQuestion 中断。无机会时自主决策树：① 换标的（hot_list 刷新找活跃标的）；② 降频（整个市场无活跃机会时放宽采样间隔）；③ 持续盯到收盘 / 用户喊停。
 3. **持仓状态从脚本输出跟踪**：AI 调用开仓 / 平仓脚本后，从脚本 JSON 输出获取 order_id 和成交价据此确定持仓状态——不需要假设、不查 positions。
 4. **记录到 `actions/` 目录（复盘基准）**：下单成功后 `log_action.sh` 写交易动作到 `actions/YYYY-MM-DD-<market>-actions.md`（港股 HKT / 美股 ET）。记录必含：时间（精确到秒）、标的、动作类型（开仓 🟢 / 平仓 🔴 / 移损 🟡）、方向、量、参考价、止损价、止盈目标价（预期值，不设止盈条件单）、单笔预算、预估 max_loss、置信度、依据、下单结果（order_id、成交价）。
@@ -96,7 +90,7 @@ AI 拍板后调脚本下单，脚本返回 order_id 和成交价，最后 `log_a
 | 标的 | 代码 中文名 |
 | 方向 | 平多 / 平空 |
 | 开仓价 | $X（开仓成交价）|
-| 平仓价 | $P（MO 成交价；止损被动触发 = 触发价）|
+| 平仓价 | $P（市价成交价：主动平仓 = modify 止损触发 / 直接市价单，止损被动触发 = 触发价）|
 | 盈亏 | ±$M（实际成交价算）|
 | **实际落地赔率** | **±R 倍**（净盈亏 ÷ 开仓 max_loss = 仓位 × 开仓止损距；**平仓必填**，见下）|
 | 理由 | 动能减弱 / 做空时回踩前低不破（下跌动能衰竭）/ 做多时回踩前高遇阻（上涨遇阻）/ 做空时资金流转正（买盘涌入）/ 做多时资金流转负（卖盘涌出）/ 到硬平仓时点（止损条件单被动触发只标记，不在此列）|
@@ -114,103 +108,20 @@ AI 拍板后调脚本下单，脚本返回 order_id 和成交价，最后 `log_a
 | 项 | 值 |
 |---|---|
 | 标的 | 代码 中文名 |
-| 新止损 | $Y（先下新单再撤旧单，仅保留本笔为唯一活动止损）|
+| 新止损 | $Y（把现有止损单触发价 modify 到 $Y，仅保留本笔为唯一活动止损）|
 | 理由 | 锁利 / 保本 |
 
 ## auto 专属硬护栏（下单前逐条自检，违反不得下单）
 
 > 公共硬护栏（标的范围 / 衍生品禁令 / 单持仓 / 盯盘时段 / lot_size / 单笔预算与 max_loss 概念）见 `SKILL.md`「硬性护栏」。下面是 auto 模式专属的下单护栏。
 
-1. **开仓止损用附加止损单（STOP_LOSS MIT，主单成交才激活），一律市价（2026-07-31 用户新规）**。「主订单 / 附加订单」**不是订单的固有分类**——订单本质按类型分（`LO`/`MO`/`MIT` 等），「主/附加」只是开仓把 `LO`+`MIT` 打包一次提交时的相对称呼（主单 = 开仓 LO、附加 = 跟随提交的止损单），**只在开仓场景才有**（长桥官方：主订单仅支持开仓，平仓无附加单入口）。完整概念（为何只在开仓时有、两种等价挂法、附加止损方向由后端自动定）见下文「订单类型 vs 附加订单」。开仓场景的操作要点：
-   - **开仓**：REST 一次提交主单（LO）+ `attached_params`（`attached_order_type=STOP_LOSS` + `stop_loss_price` + `activate_order_type=MIT`）。附加止损随主单提交、主单成交才激活，开仓失败止损不残留；STOP_LOSS 的方向与触发符号由券商后端按主单方向自动定（与主单相反）、无需传 side / `trigger_direction`。SDK `submit_order` 不支持 `attached_params` 故走 REST。
-   - **禁止限价止损**（独立止损用 `LIT` 限价触发单、或附加止损配 `activate_order_type=LIT`）：止损单一律市价（`MIT` / `STOP_LOSS` 触发后市价成交）。限价止损委托价不合理时有无法及时成交的风险（长桥官方：止损限价单「若委托价格设置不合理，有无法及时止盈或止损的风险」），故本 skill 提到「止损单」默认指市价止损单；`move_stop` 移损新增的止损单也一律用市价止损单。（`SLO` 是长桥「特殊限价单」、非止损；`STP_LMT` 是老虎枚举、长桥无此类型——两者都不是长桥的止损限价单。）
-   - **止损只能用条件单（`MIT` / `STOP_LOSS`），不能用反向的普通订单（`LO`/`MO`）冒充**：`LO`/`MO` 没有「价格到触发价才成交」的语义，要么挂单要么立即成交，起不到条件止损作用（详见下文「订单类型 vs 附加订单」末段）。
+1. **开仓止损用附加止损腿（OrderLeg('LOSS')，主单成交才激活），一律市价触发（2026-07-31 用户新规）**。「主订单 / 附加订单」**不是订单的固有分类**——订单本质按类型分（`LMT`/`MKT`/`STP` 等），「主/附加」只是开仓把主单 + 止损腿打包一次提交时的相对称呼（主单 = 开仓 LMT、附加 = 跟随提交的止损腿），**只在开仓场景才有**（老虎附加订单仅开仓限价单支持）。开仓场景的操作要点：
+   - **开仓**：一次提交主单（LMT）+ 附加止损腿 `OrderLeg('LOSS', 止损价)`（`trade_utils_tiger.submit_order_with_stop_tiger`）。附加止损随主单提交、主单成交才激活，开仓失败止损不残留；附加腿的方向与触发符号由券商后端按主单方向自动定（与主单相反）、无需传 side。
+   - **禁止限价止损**（独立止损用 `STP_LMT` 限价触发单）：止损单一律市价触发（`STP` 触发后市价成交）。限价止损委托价不合理时有无法及时成交的风险（老虎官方：止损限价单「若委托价格设置不合理，有无法及时止盈或止损的风险」），故本 skill 提到「止损单」默认指市价止损单；`move_stop` 移损 fallback（无活动止损 / modify 失败）下新止损单时也一律用市价止损单。
+   - **止损只能用条件单（`STP` 或附加腿 `LOSS`），不能用反向的普通订单（`LMT`/`MKT`）冒充**：`LMT`/`MKT` 没有「价格到触发价才成交」的语义，要么挂单要么立即成交，起不到条件止损作用（2026-07-31 MU 事故的真因之一正是误用市价单当止损——提交即按市价成交、瞬间平仓亏 $119，见 CHANGELOG 2026-07-31）。这才是「禁止反向订单止损」的正确含义——不是说止损单不能反向（止损单本就和开仓反向），而是说**不能用一笔反向的普通订单冒充条件止损单**。
    - **触发价 = 目标止损价**（允许小范围偏差）；用户也会在 App 手动新增止损单，故最新止损价不能凭记忆，`monitor_segment.py` 每轮采样查账户当日订单获取最新止损价。
-2. **AI 直接下单**：港股默认用老虎开放平台模拟账户、美股默认用长桥模拟账户，AI 拍板后调用对应脚本直接下单（限价单 + 止损条件单）。如用户不使用默认账户会特别说明。
+2. **AI 直接下单**：港美股默认都用老虎开放平台模拟账户，AI 拍板后调用对应脚本直接下单（港股 `*_tiger.py` / 美股 `*_tiger_us.py`，限价单 + 止损条件单）。如用户不使用默认账户会特别说明。
 3. **开仓 / 平仓触发**：① 开仓必带止损条件单（脚本自动设置，止损单用市价单）；② 平仓在动能减弱 / 做空时回踩前低不破（下跌动能衰竭）/ 做多时回踩前高遇阻（上涨遇阻）/ 做空时资金流转正（买盘涌入）/ 做多时资金流转负（卖盘涌出）/ 到硬平仓时点时由 AI 调脚本执行；③ AI 最高频盯盘，触发条件一到立即执行，出手要快。
-
-## 下单 API 与订单机制
-
-> 行情数据源（富途 / 老虎 / 长桥的 quote / depth / capital，公共）见 `references/account-tools.md`。本节只讲 auto 模式专属的下单 API、订单类型、订单机制。
-
-### 长桥模拟盘交易 API
-
-**长桥模拟盘交易 API**（`longport` SDK v3.0.23）：`TradeContext.submit_order()` 支持限价单（LO）、市价单（MO）、止损条件单（trigger_price 参数）；`today_orders()` 查当日订单（含条件单，用于 `monitor_segment.py` 获取最新止损价）；凭证 `~/.longbridge/openapi/env-paper`（`LONGPORT_APP_KEY` / `LONGPORT_APP_SECRET` / `LONGPORT_ACCESS_TOKEN`，SDK 需 `LONGPORT_` 前缀，`LONGBRIDGE_` 前缀由 `trade_utils.load_env_file()` 自动映射）。
-
-⚠️ **SDK 必须连中国区，否则 connect timeout（2026-07-31 立）**：SDK 默认连国际区 `openapi.longportapp.com`（国内被墙、直连 port 443 超时，即便系统设了 HTTP_PROXY/ALL_PROXY 走 xray 代理，SDK 的 Rust 内核也不读系统代理环境变量）。CLI 按 `~/.longbridge/openapi/region-cache`（=cn）自动连中国区 `openapi.longportapp.cn`（国内直连即可达、无需代理），故 CLI 能连、SDK 默认不能。`trade_utils.load_env_file()` 已自动读 region-cache 设 `LONGPORT_REGION=cn`，让 SDK 也连中国区——**所有交易脚本经 load_config() 即自动生效，无需手动设环境变量**。实测：不设 region → 7.7s connect timeout；设 cn → 0.8s 连接成功。
-
-⚠️ **TradeContext 无 close() 方法（2026-07-31 修）**：`TradeContext` 没有 `close()`（与 `QuoteContext` 不对称），调 `tc.close()` 抛 `AttributeError`；若写在 `finally` 里会覆盖函数返回值、致所有下单/查询函数失败。`trade_utils.py` 各交易函数的 `finally` 已改为 `pass`（SDK 自动清理连接，无需显式 close），勿再加回 `tc.close()`。
-
-### 给已有持仓加止损用裸 MIT（调用方定 side，触发方向自动，2026-08-02 厘清）
-
-给已有持仓加 / 移止损（`move_stop.py`）走的是**裸 MIT 单**，不是 STOP_LOSS 封装——`trade_utils.submit_stop_order` 用 SDK `submit_order(order_type=MIT, side, trigger_price)`。**长桥 OrderType 枚举里没有独立「止损单」类型**（本机 SDK v3.0.23 实测 + 官方「[交易命名词典](https://open.longbridge.com/zh-CN/docs/trade/trade-definition)」坐实：港股/美股完整枚举只有 `LO`/`ELO`/`MO`/`AO`/`ALO`/`ODD`/`LIT`/`MIT`/`TSLPAMT`/`TSLPPCT`/`SLO`，外加 SDK 的 `TSMAMT`/`TSMPCT` 跟踪止损市价单；**无 `STOP_LOSS`、无 `SMO`、无 `STP`/`STOP`——这些都不存在**）。`STOP_LOSS` 仅作开仓附加订单的 `attached_order_type` 出现（见下文「订单类型 vs 附加订单」）。所以给已有持仓加止损没有 STOP_LOSS 封装可用，只能下裸 MIT（市价触发）或 LIT（限价触发）——**功能上和 STOP_LOSS 等价**（都是「价格到触发价市价平仓」的止损），但区别在责任归属：STOP_LOSS 封装由券商后端自动配方向 + 触发符号（不会配错），裸 MIT 则**全靠调用方代码把方向、符号、触发价、数量配对**，没有券商兜底。裸 MIT 的参数各自由谁定：
-
-- **`side`（买/卖）由调用方设定**：`move_stop.py` 按持仓方向算——做多持仓止损传 `Sell`、做空持仓止损传 `Buy`（`stop_side = "Sell" if direction == "long" else "Buy"`）。**MIT 不会自动选 side**，传反了会反向开仓。
-- **`trigger_price` + 触发符号由调用方设定**：做多止损 trigger 低于现价（价格 ≤ 触发价触发）、做空止损 trigger 高于现价（价格 ≥ 触发价触发），符合止损语义；设反了（如做多止损 trigger 高于现价）会立即触发。
-- **数量必须严格等于持仓量**：超持仓会被券商判失效（Reject「Insufficient holdings」）；`move_stop.py` 下单前做量校验、拒绝超量提交。
-- **触发方向（价格跌到 / 涨到触发价）由券商按 `trigger_price` 相对现价的位置自动判定**：trigger 低于现价 → 下跌触发；高于现价 → 上涨触发。长桥 MIT **没有 `trigger_direction` 字段、也不用传**——这是 MIT 唯一「自动」的部分（触发方向自动），**不是 side 自动**。
-
-所以「MIT 自动定向」是误读：MIT 忠实执行调用方传的 `side` + `trigger_price`，只在「触发方向（涨/跌）」这一项上自动判定。**真正 side + 触发符号都由券商后端自动定的是 STOP_LOSS 封装**（开仓附加订单 `submit_order_with_stop`——那层不传 side，后端按主单反方向自动定，见下文「订单类型 vs 附加订单」第 3 点）；给已有持仓加止损没有 STOP_LOSS 可用，只能下裸 MIT、side 自己定，**故代码必须配对——这是用裸 MIT 相对 STOP_LOSS 封装多出来的责任**（方向传反、符号设反、数量不符都会出事，MU 事故即订单类型与方向配错的教训）。
-
-实测（2026-08-01 paper 盘后）：MIT Sell trigger=700、MIT Buy trigger=1000（现价 ~823），均不带 trigger_direction，提交后 `trigger_status=Active`（监控等待），side 与触发方向均按传参生效、未误触发。
-
-⚠️ **2026-07-31 MU 事故真因更正**：原归因「MIT 默认触发方向错、需 trigger_direction 补方向」是**误判**。真因是当时 `submit_stop_order` 用了 `order_type=MO`（市价单）+ `trigger_price` 提交——MO 是市价单、提交即按市价成交，`trigger_price` 被忽略，做空止损 Buy 瞬间按市价买入平仓亏 $119。正确做法是用 `order_type=MIT`（触发单）而非 MO——MIT 不会提交即成交、会等价格到 `trigger_price` 才按调用方传的 side 市价成交。注意 MIT **不自动选 side**：当时方向正确是因为调用方传对了 side（做空止损传 Buy），不是 MIT 自动定向；MIT 唯一自动的是触发方向（涨/跌，由 `trigger_price` 相对现价判定），故 `trigger_direction` 多余（长桥 MIT 无此字段，详见上文「给已有持仓加止损用裸 MIT」）。早期为「补 trigger_direction」写的 REST 签名封装已从 `submit_stop_order` 移除——REST 签名仅保留在 `submit_order_with_stop`（开仓附加订单，SDK 不支持 `attached_params`，仍需 REST，见下文「订单类型 vs 附加订单」）。
-
-（保留的连带修复：`smart_order` 限价取整到美股 tick 0.01——原裸 ask 825.975 报 602035 Wrong bid size；SDK 一度升级到无 `Config.from_env` 的版本破坏 `load_config`，已回滚 3.0.23。）
-
-### 订单类型 vs 附加订单（开仓打包封装，2026-08-02 用户厘清）
-
-下单本质上下的是某种**订单类型**——限价单 `LO`、市价单 `MO`、市价触发单 `MIT`（价格触及触发价后转市价单成交）、限价触发单 `LIT` 等（长桥 submit order 文档列出的 order_type 即这些）。本项目三类动作各自对应的订单类型很清楚：
-
-- **开仓** = 一笔 `LO`（限价开仓单）；
-- **平仓** = 一笔 `MO`（市价平仓单，反方向立即成交）；
-- **独立止损 / 移损** = 一笔 `MIT`（带 `trigger_price` 的市价触发单，价格到触发价才转市价成交）。
-
-「**主订单**」和「**附加订单**」**不是订单类型，也不是每笔订单固有的身份**——它俩只是**开仓场景下把两笔订单打包成一次提交**时才出现的相对称呼：主订单 = 这次打包里的开仓单（`LO`），附加订单 = 跟随主单一起提交的止损单（挂在开仓单上、等主单成交才激活）。长桥官方对附加订单的定义（[什么是附加订单](https://longbridge.com/hk/zh-CN/support/topics/misc/attach_order_help)）原文：「附加在一笔普通的**开仓订单**之上用于平仓的订单，会在**主订单完全成交**并达到触发价之后提交」。由此坐实三个关键点：
-
-1. **附加订单只在开仓时有**。官方注意事项明说「**主订单仅支持开仓**，若平仓 App 界面不会有附加单入口」。所以平仓的 `MO`、移损的 `MIT` 都是各自独立的普通订单，**不存在谁是它们的主订单**；也别把已成交的开仓单继续叫「主订单」——它成交后就只是持仓，不再是哪笔订单的主单。
-2. **主单成交才激活、主单撤则附加自动撤**。主单「已提交未成交」时附加处于「未提交」、不监控；主单完全成交后附加才进入监控；主单被撤，附加随之撤销、不残留裸止损。这是开仓用打包提交相对「拆开两步下」的主要好处（开仓失败止损不残留）。
-3. **附加止损的方向与触发符号由券商后端自动定**。官方原文：止损触发时「系统会自动向市场提交一笔**与主订单方向相反的市价单**」。做多（主单 Buy）→ 止损方向 Sell、触发条件为价格 ≤ 触发价；做空（主单 Sell）→ 止损方向 Buy、触发条件为价格 ≥ 触发价。用户**不需要、也不传** side / `trigger_direction`——这也说明「止损单本就和开仓单反向」是正常语义，不是什么要特别禁的事。
-
-**附加订单本质 = `LO` + `MIT` 打包一次提交**，等价于拆成两步独立下：「先 `LO` 开仓 → 等成交 → 再独立下一个 `MIT` 止损单」。两种做法功能完全一样，区别只是挂法：
-
-| 挂法 | 提交方式 | 激活与撤销 | 本项目用在哪 |
-|---|---|---|---|
-| ① 打包（附加订单） | 开仓时一次 REST 提交 `LO` + `attached_params`(STOP_LOSS) | 主单成交才激活附加、主单撤则附加自动撤 | `open_position.py`（`submit_order_with_stop`） |
-| ② 拆开（独立 MIT） | 先 `LO` 开仓成交，再单独下 `order_type=MIT` + side + trigger_price | 提交即进入监控、与开仓单彼此独立 | `move_stop.py` 给已有持仓加 / 移止损（`submit_stop_order`） |
-
-所以「止损单」在本项目里就有这两种挂法：开仓时随主单打包提交（①）、给已有持仓单独下 `MIT`（②）。两者底层都是 `MIT` 止损单、功能都是「价格到触发价市价平仓」，只是挂法不同。**给已有持仓加 / 移止损用 ②、不是附加订单**——因为那时已经没有「开仓主单」可挂了（官方：主订单仅支持开仓）。
-
-> 长桥附加订单分三类：止盈单（`TAKE_PROFIT`）、止损单（`STOP_LOSS`）、括号单（Bracket = 止盈 + 止损，先触发的那笔成交、另一笔自动撤）。**本项目只用 STOP_LOSS**——止盈靠主动平仓 🔴 / 移动止损锁利 🟡（不设止盈条件单，见上文「止盈靠两类动作」），故 `submit_order_with_stop` 的 `attached_params` 只设 `attached_order_type=STOP_LOSS`。
->
-> 老虎（港股默认账户）的止损单接口叫法与字段以老虎开放平台文档为准；本仓库下单脚本目前均走长桥（美股 + 港股长桥备选），上面这套「附加订单」表述以长桥为准。
-
-⚠️ **止损只能用条件单（`MIT` / `STOP_LOSS`），不能用普通订单（`LO`/`MO`）去凑**：想止损（等价格到触发价才平仓）时必须下 `MIT` 触发单；若误下反向的 `LO`/`MO`，`LO` 是挂单、`MO` 是立即成交，两者都没有「价格到 X 才触发」的语义，提交后要么挂在那里要么马上成交、起不到条件止损作用（2026-07-31 MU 事故的真因之一正是误用 `MO` 当止损——`MO` 提交即按市价成交、`trigger_price` 被忽略，瞬间平仓亏 $119，见上文「2026-07-31 MU 事故真因更正」）。这才是「禁止反向订单止损」的正确含义——不是说止损单不能反向（止损单本就和开仓反向），而是说**不能用一笔反向的普通订单冒充条件止损单**。
-
-### 港股长桥备选账户（独立代码，2026-08-01 立）
-
-港股交易**默认走老虎模拟账户**；长桥模拟账户为**备选**——**仅当用户盯盘时特别说明用长桥**，才用港股长桥脚本（`scripts/*_hk.py`）；未特别说明则港股走默认老虎。
-
-- **账户**：复用美股同一长桥账户 `~/.longbridge/openapi/env-paper`（HKD 计价，实测有港股权限：可查港股行情 / lot_size / 持仓 / 下单）。
-- **代码解耦**（分而治之）：港股长桥**独立一套** `trade_utils_hk.py` + `open_position_hk.py` / `close_position_hk.py` / `move_stop_hk.py`，不 import 美股模块、不影响美股代码。港股专属规则都在这套里：
-  - **symbol 转换**：富途 `HK.02800` ↔ 长桥原生 `2800.HK`（含去前导 0）。
-  - **lot_size**：从长桥 `static_info` 取真实每手股数（盈富 500、腾讯/阿里 100、中芯 500、中广核电力 1000 等），不硬编码。
-  - **价位 tick**：港交所价位表（2025-08-04 调整版）按价格区间取整（限价单必须合 tick）。
-  - **币种**：账户与标的均 HKD，equity 直取 `net_assets`。
-  - **持仓隔离**：`get_open_position_hk` 只看 `.HK` 持仓，不会误碰美股持仓。
-- **三动作订单类型**（与美股规范一致）：开仓 LO + 附加 STOP_LOSS MIT；移损反向 MIT（**先新增后撤旧**、量严格=持仓量）；平仓 MO + 撤未触发 MIT 止损单。
-
-⚠️ **长桥 symbol 格式（港美通用，2026-08-01 实测）**：长桥 API **只认原生格式**（`MU.US` / `2800.HK`），**不认富途格式**（`US.MU` / `HK.02800`，返回空）。`trade_utils`（美股）与 `trade_utils_hk`（港股）各自内部都做了 `to_lb_symbol` 转换——调用方传富途格式即可。美股之前传 `US.MU` 导致 `get_quote` None / 下单失败，已修。
-
-### 长桥实盘扩展（凭证可切换，2026-08-01 立）
-
-美股 `trade_utils` 与港股 `trade_utils_hk` 的凭证加载统一走 `_env_file(env_file)`——优先级 **`env_file` 参数 > 环境变量 `LONGBRIDGE_ENV_FILE` > 默认 `~/.longbridge/openapi/env-paper`（模拟盘）**。后续接长桥实盘账户，**无需改代码**：
-
-- **设环境变量**（推荐，脚本不用改命令行）：`export LONGBRIDGE_ENV_FILE=~/.longbridge/openapi/env-real`（实盘凭证路径），所有长桥脚本（含 REST `submit_order_with_stop`）自动用实盘凭证。
-- **或传 `env_file` 参数**：`load_config(env_file='实盘凭证路径')`。
-- 默认（不设环境变量、不传参）→ `env-paper`（模拟盘），即当前行为。
-
-⚠️ 实盘接入前注意：① 实盘凭证文件格式同 `env-paper`（`export LONGPORT_APP_KEY=...` 等）；② region 可能不同（实盘账户的 region-cache 待确认，`load_env_file` 会读 `~/.longbridge/openapi/region-cache`）；③ 实盘真金白银，接入前务必在模拟盘充分验证三个动作全链路。港股长桥与美股长桥各自独立一份 `_env_file`（解耦）。
 
 ## 执行反馈
 

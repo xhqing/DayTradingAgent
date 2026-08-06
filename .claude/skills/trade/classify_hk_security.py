@@ -3,7 +3,7 @@
 """
 港股证券类型判定(个股/ETF/REIT/衍生品/未知)。
 
-背景:长桥 `static`/`quote`/`security-list` 实测均无 type 字段
+背景:`static`/`quote`/`security-list` 实测均无 type 字段
 (2026-07-05 用 19 标的实测确认:name/lot_size/eps/dividend/currency/exchange,
 无 security_type)。本脚本用四层启发式判定,最终 ETF 身份以 HKEX 官方白名单
 为准(本地缓存一份,见 HKEX_ETF_WHITELIST)。
@@ -28,7 +28,7 @@ import subprocess
 import os
 
 # ============ HKEX 官方港股 ETF 白名单(本地缓存) ============
-# 来源:HKEX 交易所买卖产品名录 + 长桥 static 实测(2026-07-05)
+# 来源:HKEX 交易所买卖产品名录 + static 实测(2026-07-05)
 # 这只是主力 ETF,非完整名单完整名单需从 HKEX 官网下载更新
 # 更新方法:见本目录 hk-level2-sources.md 的"优先行动序列"
 HKEX_ETF_WHITELIST = {
@@ -116,7 +116,7 @@ def code_in_ranges(code_str: str, ranges):
 
 def get_static_info(symbols: list) -> dict:
     """用富途 OpenD get_market_snapshot 拉静态信息,返回 {归一化code: static_dict}。
-    富途符号 市场.代码 前缀（HK.02800）。长桥 CLI 2026-07-15 撤销后改用富途。"""
+    富途符号 市场.代码 前缀（HK.02800）。"""
     from futu import OpenQuoteContext
     # 统一转富途 HK. 前缀格式
     codes = []

@@ -1,6 +1,6 @@
 # DayTradingAgent
 
-港股 / 美股日内交易的 AI 执行项目。核心执行规范在 trade skill（`.claude/skills/trade/SKILL.md`），涉及盯盘、下单、复盘、分析标的或实盘账户操作时激活。trade skill 有**两种执行模式**：默认**信号模式（signal）**（AI 只发信号、用户手动执行、不碰账户），用户**特别说明要自动交易**（说「自动下单 / 自动交易 / auto」等）时才切**自动交易模式（auto）**（港股老虎模拟账户、美股长桥模拟账户，AI 直接调脚本下单）；两种模式交易策略完全通用，唯一区别 = 是否使用证券账户（详见 `SKILL.md`「模式开关与触发首动作」、`references/auto-mode.md` / `signal-mode.md`）。
+港股 / 美股日内交易的 AI 执行项目。核心执行规范在 trade skill（`.claude/skills/trade/SKILL.md`），涉及盯盘、下单、复盘、分析标的或实盘账户操作时激活。trade skill 有**两种执行模式**：默认**信号模式（signal）**（AI 只发信号、用户手动执行、不碰账户），用户**特别说明要自动交易**（说「自动下单 / 自动交易 / auto」等）时才切**自动交易模式（auto）**（港股老虎模拟账户、美股老虎模拟账户，AI 直接调脚本下单）；两种模式交易策略完全通用，唯一区别 = 是否使用证券账户（详见 `SKILL.md`「模式开关与触发首动作」、`references/auto-mode.md` / `signal-mode.md`）。
 
 ## 工作规则（对本项目生效，显式引用）
 

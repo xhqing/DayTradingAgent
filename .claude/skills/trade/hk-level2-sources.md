@@ -48,7 +48,7 @@
 | 场景 | 首选 | 备选 |
 |---|---|---|
 | 早盘盯盘（实时 10 档推送） | 富途 OpenD（免费 WebSocket） | 老虎 Lv2 Global（若购买） |
-| 多源交叉验证 | 富途 + 长桥 + 老虎三源对比盘口 | free-quote（仅测试不实盘） |
+| 多源交叉验证 | 富途 + 老虎双源对比盘口 | free-quote（仅测试不实盘） |
 | 盘后复盘（历史逐笔） | AKShare 历史 + 富途逐笔 | futu_tick_downloader 存盘 |
 
 ## 优先行动序列
@@ -56,4 +56,4 @@
 1. 先试富途 OpenD（零成本）：注册 moomoo → 装 OpenD → 实测港股 depth 订阅能否 10 档 + 海外是否免费。最可能直接解决。
 2. 若富途海外不免费 → 问老虎客服 `hkStockQuoteLv2Global` 价格，便宜则在已通的老虎 SDK 激活。
 3. free-quote 仅作临时对照测试，不进实盘。
-4. 长桥 CLI 的 LV2 + broker queue 命令继续用，补充经纪队列维度。
+4. 富途的 LV2 + broker queue 命令继续用，补充经纪队列维度。

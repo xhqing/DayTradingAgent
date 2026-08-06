@@ -1,24 +1,19 @@
 #!/usr/bin/env python3
-"""港股平仓动作脚本（老虎证券模拟账户，港股默认账户）。
+"""美股平仓动作脚本（老虎证券模拟账户，美股默认账户）。
 
-**主路径：modify 持仓止损单的触发价 = 现价，让止损单自己触发 Sell/Buy MO 平仓**（2026-08-05
-用户方案，消除「撤止损单 + MO」的 race condition）。持仓的止损单本就是「Sell @ 触发价」（做多），
-把触发价改到现价（或触发方向上略远），它立即触发、MO 严格 = 持仓量成交、平后持仓归 0——全程
-只有一个 modify 动作，不存在「第二个 MO 在持仓 0 时反向开仓」的可能（今天事故的根源）。
+**主路径：modify 持仓止损单触发价=现价，让止损单自己触发 Sell/Buy MO 平仓**（2026-08-05 用户
+方案，消除「撤止损 + MO」race condition，同港股 close_position_tiger 改造）。无活动止损单 →
+直接 MO（无冲突）；modify 失败/未触发 → fallback「撤止损 + MO」。
 
-路径分支：
-  - 有活动止损单 → modify 触发价=现价（取整 tick）→ 等止损单触发 MO 成交（主路径，无 race）
-  - 无活动止损单 → 直接 MO 平仓（无止损单冲突、无 race）
-  - modify 抛异常 或 触发未成交 → fallback「撤止损 + MO」（保证平仓，回到原逻辑）
+_is_stop_order 含 TRAIL（跟踪止损）——吸收 2026-08-05 中芯残留事故教训（cancel 只撤 STP/LOSS
+漏 TRAIL、致 salable=0 平仓被拒）。
 
-触发价取现价（取整 tick）；做多止损 Sell@触发价（价格 ≤ 触发价触发），现价 ≤ 现价即满足、立即触发；
-做空止损 Buy@触发价（价格 ≥ 触发价触发），现价 ≥ 现价即满足。若券商要求严格穿越、modify 后价格
-反向离开致未触发，fallback 兜底。
+⏳ 实测状态（2026-08-05）：基于港股 close_position_tiger.py 解耦 + 美股适配；待美股盘中实测。
 
 用法：
-  python3 close_position_tiger.py [symbol] [direction] [quantity]
-    不给参数 = 一键平账户唯一港股持仓
-    HK.02800 / HK.02800 long 500（显式）
+  python3 close_position_tiger_us.py [symbol] [direction] [quantity]
+    不给参数 = 一键平账户唯一美股持仓
+    US.MU / US.MU long 40（显式）
 """
 
 import json
@@ -27,13 +22,17 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import trade_utils_tiger as U
+import trade_utils_tiger_us as U
 
 
 def _is_stop_order(o):
+    """止损单判定（含 STP/STOP/TRAIL/LOSS 附加腿）。"""
     otype = getattr(o, "order_type", None)
     otype_val = otype.value if hasattr(otype, "value") else str(otype)
-    return "STP" in str(otype_val).upper() or "STOP" in str(otype_val).upper()
+    upper = str(otype_val).upper()
+    legs = getattr(o, "order_legs", None) or []
+    return ("STP" in upper or "STOP" in upper or "TRAIL" in upper
+            or any(str(getattr(leg, "leg_type", "")).upper() == "LOSS" for leg in legs))
 
 
 def _status_str(o):
@@ -49,8 +48,8 @@ def main():
     direction = sys.argv[2] if len(sys.argv) > 2 else None
     quantity = int(float(sys.argv[3])) if len(sys.argv) > 3 else None
 
-    if symbol and not symbol.startswith("HK."):
-        print(json.dumps({"ok": False, "error": f"本脚本只处理港股（HK.xxx），收到 {symbol}"}))
+    if symbol and not symbol.startswith("US."):
+        print(json.dumps({"ok": False, "error": f"本脚本只处理美股（US.xxx），收到 {symbol}"}))
         sys.exit(1)
 
     try:
@@ -59,11 +58,11 @@ def main():
         print(json.dumps({"ok": False, "error": f"老虎配置加载失败: {e}"}))
         sys.exit(1)
 
-    # 读持仓补全 symbol / direction / quantity（一键平仓核心）
+    # 读持仓补全 symbol / direction / quantity（一键平仓核心，只看美股持仓）
     if symbol is None or direction is None or quantity is None:
-        pos = U.get_open_position_tiger(config, symbol)
+        pos = U.get_open_position_us(config, symbol)
         if pos is None:
-            hint = "账户无港股持仓" if symbol is None else f"未找到港股 {symbol} 持仓"
+            hint = "账户无美股持仓" if symbol is None else f"未找到美股 {symbol} 持仓"
             print(json.dumps({"ok": False, "error": hint}, ensure_ascii=False))
             sys.exit(1)
         if symbol is None:
@@ -78,20 +77,20 @@ def main():
         sys.exit(1)
     close_side = "Sell" if direction == "long" else "Buy"
 
-    result_base = {"action": "close_position_tiger", "market": "HK", "symbol": symbol,
+    result_base = {"action": "close_position_tiger_us", "market": "US", "symbol": symbol,
                    "direction": direction, "quantity": quantity, "close_side": close_side}
 
-    quote = U.get_quote_tiger(config, symbol)
+    quote = U.get_quote_us(config, symbol)
     if quote is None:
-        result_base.update({"ok": False, "error": f"港股报价为空: {symbol}"})
+        result_base.update({"ok": False, "error": f"美股报价为空: {symbol}"})
         print(json.dumps(result_base, ensure_ascii=False))
         sys.exit(1)
     current_price = quote["last"]
 
     tc = U.new_trade_client(config)
-    target_sym = U.to_tiger_symbol(symbol)
+    target_sym = U.to_tiger_symbol_us(symbol)
 
-    # 查活动止损单（该标的、STP 类型、非终结状态）
+    # 查活动止损单（该标的、止损类型含 TRAIL、非终结状态）
     stp = None
     for o in (tc.get_orders() or []):
         sym = str(getattr(getattr(o, "contract", None), "symbol", ""))
@@ -108,45 +107,44 @@ def main():
     if stp is not None:
         stp_id = getattr(stp, "id", None)
         old_aux = float(getattr(stp, "aux_price", 0) or 0)
-        tick_sizes = U.get_tick_sizes_tiger(tc, symbol)
-        trig = U.round_to_tick_tiger(current_price, tick_sizes)
+        trig = U.round_to_tick_us(current_price)
         result_base.update({"path": "modify_stop_trigger", "old_trigger": old_aux,
                             "new_trigger": trig, "current_price": current_price})
         try:
             tc.modify_order(stp, aux_price=trig)
         except Exception as e:
             result_base["modify_failed_fallback"] = f"modify 触发价抛异常 {e}，回退「撤止损 + MO」"
-            _fallback_cancel_and_mo(config, symbol, close_side, quantity, result_base)
+            _fallback_cancel_and_mo(config, symbol, close_side, quantity, result_base, current_price)
             sys.exit(0)
 
-        # 等止损单触发 Sell/Buy MO 成交（触发价=现价，应立即触发）
-        filled, fill_price, status = U.check_order_filled_tiger(config, stp_id, timeout=12)
+        filled, fill_price, status = U.check_order_filled_us(config, stp_id, timeout=12)
         if filled:
             fill_src = "avg_fill_price"
             if fill_price is None:
                 fill_price = current_price
                 fill_src = "current_price（MO 成交均价缺失兜底）"
             result_base.update({"ok": True, "order_id": stp_id, "fill_price": fill_price,
-                                "fill_price_source": fill_src, "method": "modify_stop_trigger（止损单触发 MO 平仓、无撤单 race）",
+                                "fill_price_source": fill_src,
+                                "method": "modify_stop_trigger（止损单触发 MO 平仓、无撤单 race）",
                                 "main_status": status})
             print(json.dumps(result_base, ensure_ascii=False))
             sys.exit(0)
         else:
-            # modify 后未触发（价格反向离开 / 券商要求穿越）→ fallback 撤止损 + MO
-            result_base["modify_not_triggered_fallback"] = f"modify 触发价 {trig} 后止损单未触发（{status}），回退撤止损 + MO"
-            _fallback_cancel_and_mo(config, symbol, close_side, quantity, result_base)
+            result_base["modify_not_triggered_fallback"] = (
+                f"modify 触发价 {trig} 后止损单未触发（{status}），回退撤止损 + MO")
+            _fallback_cancel_and_mo(config, symbol, close_side, quantity, result_base, current_price)
             sys.exit(0)
 
     # ===== 无活动止损单 → 直接 MO 平仓（无止损单冲突、无 race）=====
     result_base["path"] = "no_active_stop → direct MO"
     try:
-        order_id = U.submit_market_order_tiger(config, symbol, close_side, quantity)
+        order_id = U.submit_market_order_us(config, symbol, close_side, quantity)
     except Exception as e:
         result_base.update({"ok": False, "error": f"平仓 MKT 提交失败: {e}"})
         print(json.dumps(result_base, ensure_ascii=False))
         sys.exit(1)
 
-    filled, fill_price, status = U.check_order_filled_tiger(config, order_id, timeout=8)
+    filled, fill_price, status = U.check_order_filled_us(config, order_id, timeout=8)
     if not filled:
         result_base.update({"ok": False, "error": f"平仓 MKT 未成交（{status}）", "order_id": order_id})
         print(json.dumps(result_base, ensure_ascii=False))
@@ -161,29 +159,29 @@ def main():
     print(json.dumps(result_base, ensure_ascii=False))
 
 
-def _fallback_cancel_and_mo(config, symbol, close_side, quantity, result_base):
-    """fallback：撤止损单 + MO 平仓（modify 路径失败时兜底，回到原逻辑）。"""
+def _fallback_cancel_and_mo(config, symbol, close_side, quantity, result_base, current_price):
+    """fallback：撤止损单 + MO 平仓（modify 路径失败时兜底）。"""
     try:
-        n, ids = U.cancel_all_stop_orders_tiger(config, symbol)
+        n, ids = U.cancel_all_stop_orders_us(config, symbol)
         result_base["stop_orders_cancelled"] = n
         if n > 0:
             result_base["cancelled_order_ids"] = ids
     except Exception as e:
         result_base["stop_orders_cancelled_warning"] = f"撤止损单失败（需手动）: {e}"
     try:
-        order_id = U.submit_market_order_tiger(config, symbol, close_side, quantity)
+        order_id = U.submit_market_order_us(config, symbol, close_side, quantity)
     except Exception as e:
         result_base.update({"ok": False, "error": f"fallback MO 提交失败: {e}"})
         print(json.dumps(result_base, ensure_ascii=False))
         sys.exit(1)
-    filled, fill_price, status = U.check_order_filled_tiger(config, order_id, timeout=8)
+    filled, fill_price, status = U.check_order_filled_us(config, order_id, timeout=8)
     if not filled:
         result_base.update({"ok": False, "error": f"fallback MO 未成交（{status}）", "order_id": order_id})
         print(json.dumps(result_base, ensure_ascii=False))
         sys.exit(1)
     fill_src = "avg_fill_price"
     if fill_price is None:
-        fill_price = result_base.get("current_price")
+        fill_price = current_price
         fill_src = "current_price（MO 成交均价缺失兜底）"
     result_base.update({"ok": True, "order_id": order_id, "fill_price": fill_price,
                         "fill_price_source": fill_src, "method": "fallback：cancel_stop + MO",

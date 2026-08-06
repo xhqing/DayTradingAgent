@@ -34,7 +34,7 @@ SIGNALS_DIR = os.path.join(PROJECT_ROOT, "signals")
 TMP_DIR = os.path.join(PROJECT_ROOT, "tmp")
 
 sys.path.insert(0, SCRIPT_DIR)
-from trade_utils import parse_mode
+from trade_utils_tiger import parse_mode
 MODE = parse_mode()  # 运行时 log 按 mode 分文件（signal/auto 两会话并行盯盘不互相污染）；ring-log 仅 signal 读
 
 # 时间断层警告阈值（分钟）：正常段间循环 < 1 分钟，超过这个值基本可断定断网/暂停/故障致断层。
@@ -161,7 +161,7 @@ else:
 # 2026-08-01 双模式重构：equity 按 mode 取（auto 账户 API / signal equity-log）。
 try:
     sys.path.insert(0, SCRIPT_DIR)
-    from trade_utils import load_equity as _le
+    from trade_utils_tiger import load_equity as _le
     mode = MODE
     with open(os.path.join(SCRIPT_DIR, "..", "config.json")) as f:
         risk = json.load(f).get("risk", {})
