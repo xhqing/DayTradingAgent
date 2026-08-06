@@ -5,7 +5,8 @@
 分支：1 个活动 STP → modify aux_price（主路径）；0 个 → 下新 STP（补保护）；≥2 个 → 撤多余
 保留 1 个再 modify；modify 抛异常 → fallback「先下新 STP + 撤旧」。触发价取整到美股 tick 0.01。
 
-⏳ 实测状态（2026-08-05）：基于港股 move_stop_tiger.py 解耦 + 美股适配；待美股盘中实测。
+✅ 实测状态（2026-08-05 美股盘中）：下单链路已 paper 端到端实测通过（SPY 2 股多：modify
+aux_price 770.61→771.71、验证 verified=true）。行情走富途 OpenD 单源（老虎美股无行情权限）。
 
 用法：
   python3 move_stop_tiger_us.py <symbol> <direction> <new_stop_price> <quantity>

@@ -7,9 +7,11 @@
 lot 1、tick 0.01、USD 净值、附加止损 OrderLeg）。平仓走「modify 止损触发价=现价」无 race 路径
 （同港股 close_position_tiger 2026-08-05 改造）。
 
-⏳ 实测状态（2026-08-05）：symbol 格式、合约查询、净值已实测（MU/AAPL 查询成功、净值 USD、
-购买力充足）；下单链路（开仓 LMT+附加止损、平仓 modify 触发价、移损 modify aux）待美股盘中
-实测（白天美股盘外，晚上 21:30 开盘测）。
+✅ 实测状态（2026-08-05 美股盘中）：下单链路全链路已 paper 端到端实测通过（SPY 2 股小仓位：
+开仓 LMT Filled @773.68 + 附加止损腿 LOSS 激活 → 移损 modify aux_price 770.61→771.71 验证成功
+→ 平仓 modify 触发价=现价、止损单触发 MO Filled @773.44、持仓归零无残留止损单）。行情数据源
+修复：老虎 TBNZ 账户**美股无行情权限**（get_stock_briefs 实测报 code=4 msg=4000 permission
+denied US market），get_quote_us 改富途 OpenD 单源（美股行情只有富途可用）。
 
 老虎美股关键差异（vs 港股）：
 - **symbol = 裸代码**（MU / AAPL，2026-08-05 实测：MU.US / US.MU 报「don't support trading」，
@@ -100,41 +102,47 @@ def round_to_tick_us(price, tick_sizes=None):
 
 
 # ---------------------------------------------------------------------------
-# 行情（QuoteClient.get_stock_briefs，同港股；symbol 用裸代码）
+# 行情（富途 OpenD 单源——老虎 TBNZ 账户美股无行情权限，2026-08-05 盘中实测
+# get_stock_briefs 报 code=4 msg=4000 permission denied(US market)；美股行情只能走富途）
 # ---------------------------------------------------------------------------
 
 def get_quote_us(config, symbol, retries=3):
-    """美股最新报价。返回 dict {symbol, last, bid, ask, high, low, volume, latest_time} 或 None。"""
-    qc = new_quote_client(config)
-    tig = to_tiger_symbol_us(symbol)
+    """美股最新报价——富途 OpenD 单源（老虎账户美股无行情权限、美股行情只有富途可用）。
+
+    返回 dict {symbol, last, bid, ask, high, low, volume, latest_time} 或 None。"""
+    from futu import OpenQuoteContext, RET_OK
     for attempt in range(retries):
         try:
-            df = qc.get_stock_briefs([tig])
-            if df is None or len(df) == 0:
-                return None
-            row = df.iloc[0]
-
-            def _f(v):
-                try:
-                    return float(v) if v is not None and str(v) not in ("nan", "None") else None
-                except (TypeError, ValueError):
+            qc = OpenQuoteContext("127.0.0.1", 11111)
+            try:
+                ret, df = qc.get_market_snapshot([symbol])
+                if ret != RET_OK or df is None or len(df) == 0:
                     return None
+                row = df.iloc[0]
 
-            return {
-                "symbol": symbol,
-                "last": _f(row.get("latest_price")),
-                "bid": _f(row.get("bid_price")),
-                "ask": _f(row.get("ask_price")),
-                "high": _f(row.get("high")),
-                "low": _f(row.get("low")),
-                "volume": int(row.get("volume") or 0),
-                "latest_time": row.get("latest_time"),
-            }
+                def _f(v):
+                    try:
+                        return float(v) if v is not None and str(v) not in ("nan", "None") else None
+                    except (TypeError, ValueError):
+                        return None
+
+                return {
+                    "symbol": symbol,
+                    "last": _f(row.get("last_price")),
+                    "bid": _f(row.get("bid_price")),
+                    "ask": _f(row.get("ask_price")),
+                    "high": _f(row.get("high_price")),
+                    "low": _f(row.get("low_price")),
+                    "volume": int(row.get("volume") or 0),
+                    "latest_time": row.get("update_time"),
+                }
+            finally:
+                qc.close()
         except Exception as e:
             if attempt < retries - 1:
                 time.sleep(1)
                 continue
-            raise RuntimeError(f"老虎美股行情失败 {symbol}: {e}") from e
+            raise RuntimeError(f"富途美股行情失败 {symbol}: {e}") from e
     return None
 
 
@@ -357,3 +365,7 @@ calc_entry_range = T.calc_entry_range
 check_price_in_range = T.check_price_in_range
 calc_position_size = T.calc_position_size
 parse_mode = T.parse_mode
+# 持仓期间极值（平仓过程指标素材，2026-08-05 立）：复用港股实现——按 symbol.replace('.','_')
+# 匹配盯盘 log（US.MU → monitor_log_US_MU_*_{mode}.csv）、逻辑与市场无关，返回
+# (raw_high, raw_low) 或 None（无盯盘 log）。
+calc_position_extremes_us = T.calc_position_extremes_tiger

@@ -44,10 +44,30 @@ def _status_str(o):
 _TERMINAL = ("Filled", "Cancelled", "Inactive", "Invalid", "Expired")
 
 
+def _parse_args(argv):
+    """解析位置参数并过滤 --mode（2026-08-05 立）：`--mode auto` 这类误传会把 `auto` 当
+    quantity 报 ValueError 耽误平仓（2026-08-03 MU 空单教训同款）。平仓脚本不连账户 equity、
+    --mode 无实际用途，直接忽略（含 `--mode` 后跟的值、`--mode=xxx` 两种写法）。"""
+    args = []
+    skip_next = False
+    for a in argv:
+        if skip_next:
+            skip_next = False
+            continue
+        if a == "--mode":
+            skip_next = True
+            continue
+        if a.startswith("--mode="):
+            continue
+        args.append(a)
+    return args
+
+
 def main():
-    symbol = sys.argv[1] if len(sys.argv) > 1 else None
-    direction = sys.argv[2] if len(sys.argv) > 2 else None
-    quantity = int(float(sys.argv[3])) if len(sys.argv) > 3 else None
+    argv = _parse_args(sys.argv[1:])
+    symbol = argv[0] if len(argv) > 0 else None
+    direction = argv[1] if len(argv) > 1 else None
+    quantity = int(float(argv[2])) if len(argv) > 2 else None
 
     if symbol and not symbol.startswith("HK."):
         print(json.dumps({"ok": False, "error": f"本脚本只处理港股（HK.xxx），收到 {symbol}"}))
@@ -104,6 +124,22 @@ def main():
         stp = o
         break
 
+    # 平仓过程指标素材（2026-08-05 立）：开仓价 = 持仓 cost_price、止损距 = |开仓价 − 活动
+    # 止损触发价|（M = 仓位 × 止损距、毛值，与复盘口径一致）。平仓成交后由
+    # _attach_process_metrics 原生补记 mfe_R / mae_R（复盘过程指标直接读、不必回拉历史 K）。
+    entry_price = None
+    stop_dist = None
+    try:
+        pos = U.get_open_position_tiger(config, symbol)
+        if pos and pos.get("cost_price"):
+            entry_price = float(pos["cost_price"])
+            if stp is not None:
+                aux = float(getattr(stp, "aux_price", 0) or 0)
+                if aux > 0:
+                    stop_dist = abs(entry_price - aux)
+    except Exception:
+        pass
+
     # ===== 主路径：有活动止损单 → modify 触发价 = 现价，让它触发 MO 平仓（无撤单 race）=====
     if stp is not None:
         stp_id = getattr(stp, "id", None)
@@ -116,7 +152,8 @@ def main():
             tc.modify_order(stp, aux_price=trig)
         except Exception as e:
             result_base["modify_failed_fallback"] = f"modify 触发价抛异常 {e}，回退「撤止损 + MO」"
-            _fallback_cancel_and_mo(config, symbol, close_side, quantity, result_base)
+            _fallback_cancel_and_mo(config, symbol, close_side, quantity, result_base,
+                                    direction, entry_price, stop_dist)
             sys.exit(0)
 
         # 等止损单触发 Sell/Buy MO 成交（触发价=现价，应立即触发）
@@ -129,12 +166,14 @@ def main():
             result_base.update({"ok": True, "order_id": stp_id, "fill_price": fill_price,
                                 "fill_price_source": fill_src, "method": "modify_stop_trigger（止损单触发 MO 平仓、无撤单 race）",
                                 "main_status": status})
+            _attach_process_metrics(result_base, config, symbol, direction, entry_price, stop_dist)
             print(json.dumps(result_base, ensure_ascii=False))
             sys.exit(0)
         else:
             # modify 后未触发（价格反向离开 / 券商要求穿越）→ fallback 撤止损 + MO
             result_base["modify_not_triggered_fallback"] = f"modify 触发价 {trig} 后止损单未触发（{status}），回退撤止损 + MO"
-            _fallback_cancel_and_mo(config, symbol, close_side, quantity, result_base)
+            _fallback_cancel_and_mo(config, symbol, close_side, quantity, result_base,
+                                    direction, entry_price, stop_dist)
             sys.exit(0)
 
     # ===== 无活动止损单 → 直接 MO 平仓（无止损单冲突、无 race）=====
@@ -158,10 +197,43 @@ def main():
     result_base.update({"ok": True, "order_id": order_id, "fill_price": fill_price,
                         "fill_price_source": fill_src, "method": "market（无活动止损单）",
                         "main_status": status})
+    _attach_process_metrics(result_base, config, symbol, direction, entry_price, stop_dist)
     print(json.dumps(result_base, ensure_ascii=False))
 
 
-def _fallback_cancel_and_mo(config, symbol, close_side, quantity, result_base):
+def _attach_process_metrics(result_base, config, symbol, direction, entry_price, stop_dist):
+    """平仓成交后原生补记过程指标 mfe_R / mae_R（2026-08-05 立，review-and-evaluation.md 数据约束
+    方案 b 落地）：从盯盘 log 取该标的当日采样极值近似持仓期间 high/low（日内策略当天开当天平，
+    当日 log 近似持仓期间；log 由 monitor_segment 按市场交易日 + 模式命名）。无 log / 缺
+    entry / stop_dist 则不加字段（复盘按缺失处理、跳过过程指标）。
+
+    口径与 review.py 一致：MFE_R = 有利方向最大幅度 ÷ 止损距（正）、MAE_R = −不利方向最大幅度
+    ÷ 止损距（负，越接近 0 防守越好）；做多 fav = high − entry、做空 fav = entry − low。
+    """
+    if not entry_price or not stop_dist or stop_dist <= 0:
+        return
+    try:
+        extremes = U.calc_position_extremes_tiger(symbol, mode=U.parse_mode())
+    except Exception:
+        return
+    if not extremes:
+        return
+    raw_high, raw_low = extremes
+    if direction == "long":
+        fav, adv = raw_high - entry_price, entry_price - raw_low
+    else:
+        fav, adv = entry_price - raw_low, raw_high - entry_price
+    result_base.update({
+        "entry_price": round(entry_price, 4),
+        "raw_high": raw_high, "raw_low": raw_low,
+        "mfe_R": round(max(fav, 0.0) / stop_dist, 3),
+        "mae_R": round(-max(adv, 0.0) / stop_dist, 3),
+        "process_metric_note": "持仓期间极值 = 当日盯盘 log 采样近似（日内当天开当天平）",
+    })
+
+
+def _fallback_cancel_and_mo(config, symbol, close_side, quantity, result_base,
+                            direction=None, entry_price=None, stop_dist=None):
     """fallback：撤止损单 + MO 平仓（modify 路径失败时兜底，回到原逻辑）。"""
     try:
         n, ids = U.cancel_all_stop_orders_tiger(config, symbol)
@@ -188,6 +260,8 @@ def _fallback_cancel_and_mo(config, symbol, close_side, quantity, result_base):
     result_base.update({"ok": True, "order_id": order_id, "fill_price": fill_price,
                         "fill_price_source": fill_src, "method": "fallback：cancel_stop + MO",
                         "main_status": status})
+    _attach_process_metrics(result_base, config, symbol, direction if direction else None,
+                            entry_price, stop_dist)
     print(json.dumps(result_base, ensure_ascii=False))
 
 

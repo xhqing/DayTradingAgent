@@ -4,8 +4,9 @@
 主单 LMT（控价、限价取整到美股 tick 0.01）+ 附加止损腿 OrderLeg('LOSS')（一次提交、主单成交才
 激活），再回查主单成交状态。开仓失败或主单未成交则撤主单、附加腿随之自动撤销，不残留裸止损。
 
-⏳ 实测状态（2026-08-05）：基于港股 open_position_tiger.py 解耦 + 美股适配；下单链路待美股盘中
-实测（白天盘外、晚上 21:30 开盘测）。
+✅ 实测状态（2026-08-05 美股盘中）：下单链路已 paper 端到端实测通过（SPY 2 股：LMT 主单
+Filled @773.68 + 附加止损腿 OrderLeg('LOSS') 激活为独立 STP 监控）。行情走富途 OpenD 单源
+（老虎美股无行情权限、get_stock_briefs 报 4000 permission denied）。
 
 用法：
   python3 open_position_tiger_us.py <symbol> <direction> <entry_ref> <stop_loss> <target> <quantity>

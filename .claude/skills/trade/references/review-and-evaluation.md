@@ -80,7 +80,7 @@ $$\text{回吐}_i:=\max(\mathrm{MFE}_i-R_i,\ 0)\geq 0.$$
 
 三者合一个完整故事：$\overline{\mathrm{MAE}}$ 看防守（浮亏峰值，越接近 0 越好）、$\overline{\mathrm{MFE}}$ 看进攻（行情给的机会，越大越好）、$\overline{\text{回吐}}$ 看出场效率（没拿住的浮盈，越小越好）、$\overline{\eta}$ 看锁利充分度（盈利单，越接近 1 越好）。
 
-**⚠️ 数据约束**：算 $\mathrm{MAE}/\mathrm{MFE}$ 需要每笔持仓期间的最高 / 最低价，而现有 signals 记录只有开仓价 + 平仓价两个端点、没有期间 high/low。两种落地：（a）复盘时按开 / 平仓时间戳（均精确到秒）回拉富途历史分钟 K，取该时间窗 max(high)/min(low)——历史样本可补算；（b）**推荐**——以后每笔平仓记录原生多写 `mfe_R`/`mae_R` 两个字段（盯盘时本就在采样价格、零额外成本），复盘直接读、不必每次回拉。历史 4 笔用（a）回补。
+**⚠️ 数据约束**：算 $\mathrm{MAE}/\mathrm{MFE}$ 需要每笔持仓期间的最高 / 最低价，而 signals / actions 记录只有开仓价 + 平仓价两个端点、没有期间 high/low。两种落地：（a）复盘时按开 / 平仓时间戳（均精确到秒）回拉富途历史分钟 K，取该时间窗 max(high)/min(low)——历史样本用此法补算；（b）**已落地（2026-08-05）**——平仓脚本（auto 模式 `close_position_tiger` / `close_position_tiger_us`）在成交后**自动输出** `mfe_R` / `mae_R`（+ `entry_price` / `raw_high` / `raw_low`，持仓期间极值取当日盯盘 log 采样近似），AI 转录 actions 记录时照抄；复盘把这两个字段补进 trades.csv 的 `raw_high` / `raw_low` 列（从 `entry_price` + mfe/mae_R × 止损距还原、或直接用脚本输出的 raw_high/raw_low）即能算过程指标、不必每次回拉历史 K。
 
 **复盘时逐项报告**：$N$（样本总量）；$p,\,q$（胜率 / 败率）；$R_W,\,R_L$（胜赔率 / 败赔率）；$\mathrm{EV}=pR_W+qR_L$ 及 $\mathrm{EV}\%$；$\overline{P}$（平均每单盈利金额）；**过程指标分盈亏单各报一组**（$\overline{\mathrm{MAE}},\ \overline{\mathrm{MFE}},\ \overline{\text{回吐}}$，盈利单加报 $\overline{\eta}$）；用户临时指定的其它分析。
 

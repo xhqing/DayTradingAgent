@@ -547,6 +547,50 @@ def get_today_orders_tiger(config):
 
 
 # ---------------------------------------------------------------------------
+# 持仓期间极值（平仓过程指标素材，2026-08-05 立）
+# ---------------------------------------------------------------------------
+
+def calc_position_extremes_tiger(symbol, mode="signal", project_root=None):
+    """从盯盘 log 取该标的当日采样极值（持仓期间 high/low 的近似），供平仓时原生记录
+    mfe_R / mae_R（review-and-evaluation.md「⚠️ 数据约束」方案 b 落地：复盘直接读、
+    不必每次回拉历史 K）。
+
+    读 `tmp/monitor_log_{SYM}_{YYYYMMDD}_{mode}.csv`（log 由 monitor_segment 按市场交易日
+    命名——港股北京日期、美股美东交易日，signal/auto 两会话分文件；SYM = 富途格式转下划线，
+    如 HK.00981 → HK_00981）。多个日期文件只取最新日期那个（当日）。
+
+    ⚠️ 近似：log 的 high/low 是行情快照的当日 high/low 列、且含开仓前时段（盘前采样点在
+    开盘价附近；日内策略当天开当天平，当日 log 近似持仓期间，误差可控）。无 log（未盯盘 /
+    停盯后平仓）返回 None，调用方按缺失处理、复盘跳过过程指标。
+    返回 (raw_high, raw_low) 或 None。
+    """
+    import csv
+    import glob
+    if project_root is None:
+        project_root = Path(__file__).resolve().parent.parent.parent.parent.parent
+    log_dir = Path(project_root) / "tmp"
+    sym_tag = str(symbol).replace(".", "_")  # HK.00981 → HK_00981（monitor_segment 的 log 命名）
+    files = sorted(glob.glob(str(log_dir / f"monitor_log_{sym_tag}_*_{mode}.csv")))
+    if not files:
+        return None
+    highs, lows = [], []
+    with open(files[-1]) as fh:  # 只取最新日期文件（当日；跨日残留旧文件排除）
+        for r in csv.DictReader(fh):
+            if r.get("symbol") != symbol:
+                continue
+            try:
+                if r.get("high") not in (None, ""):
+                    highs.append(float(r["high"]))
+                if r.get("low") not in (None, ""):
+                    lows.append(float(r["low"]))
+            except ValueError:
+                continue
+    if not highs or not lows:
+        return None
+    return max(highs), min(lows)
+
+
+# ---------------------------------------------------------------------------
 # 价格范围 / 仓位计算（纯函数）
 # ---------------------------------------------------------------------------
 
