@@ -1,22 +1,15 @@
 #!/usr/bin/env python3
-"""港股移动止损动作脚本（老虎证券模拟账户，港股默认账户）。
+"""美股移动止损动作脚本（老虎证券模拟账户，美股默认账户）。
 
-**优先 modify 现有活动 STP 单的 aux_price**（单步、无撤单 race）——2026-08-05 实测 modify 开仓
-附加止损单（OrderLeg('LOSS') 落成的独立 STP）aux_price 492→493 成功、status=Submitted，故移损
-不再需要「先撤旧 STP + 再下新 STP」两步。分支：
-  - 1 个活动 STP → modify aux_price（主路径，单步）
-  - 0 个活动 STP → 下新 STP（仓位无止损保护、补上）
-  - ≥2 个活动 STP → 撤多余保留 1 个再 modify（异常清理）
-  - modify 抛异常 → fallback「先下新 STP + 撤旧」（保证仓位有止损保护）
+**优先 modify 现有活动 STP 单的 aux_price**（单步、无撤单 race，同港股 move_stop_tiger 改造）。
+分支：1 个活动 STP → modify aux_price（主路径）；0 个 → 下新 STP（补保护）；≥2 个 → 撤多余
+保留 1 个再 modify；modify 抛异常 → fallback「先下新 STP + 撤旧」。触发价取整到美股 tick 0.01。
 
-量严格=持仓量（超持仓券商判失效）。触发价取整到港股 tick。
-
-✅ 实测状态（2026-08-05）：modify 附加止损单 aux_price 成功（腾讯 100 股、492→493、
-status=Submitted）。主路径 modify 验证通过。
+⏳ 实测状态（2026-08-05）：基于港股 move_stop_tiger.py 解耦 + 美股适配；待美股盘中实测。
 
 用法：
-  python3 move_stop_tiger.py <symbol> <direction> <new_stop_price> <quantity>
-    symbol          港股代码（HK.02800）
+  python3 move_stop_tiger_us.py <symbol> <direction> <new_stop_price> <quantity>
+    symbol          美股代码（US.MU）
     direction       long / short（持仓方向；fallback 下新 STP 时定 side）
     new_stop_price  新止损价
     quantity        持仓数量（严格=持仓量）
@@ -29,14 +22,16 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import trade_utils_tiger as U
+import trade_utils_tiger_us as U
 
 
 def _is_stop_order(o):
-    """订单是否为止损单（STP/STOP 类型）。"""
     otype = getattr(o, "order_type", None)
     otype_val = otype.value if hasattr(otype, "value") else str(otype)
-    return "STP" in str(otype_val).upper() or "STOP" in str(otype_val).upper()
+    upper = str(otype_val).upper()
+    legs = getattr(o, "order_legs", None) or []
+    return ("STP" in upper or "STOP" in upper or "TRAIL" in upper
+            or any(str(getattr(leg, "leg_type", "")).upper() == "LOSS" for leg in legs))
 
 
 def _status_str(o):
@@ -44,13 +39,12 @@ def _status_str(o):
     return status.value if hasattr(status, "value") else str(status)
 
 
-# 已终结状态（不再活动的订单，查活动 STP 时排除）
 _TERMINAL = ("Filled", "Cancelled", "Inactive", "Invalid", "Expired")
 
 
 def main():
     if len(sys.argv) < 5:
-        print("用法: python3 move_stop_tiger.py <symbol> <direction> <new_stop_price> <quantity>", file=sys.stderr)
+        print("用法: python3 move_stop_tiger_us.py <symbol> <direction> <new_stop_price> <quantity>", file=sys.stderr)
         sys.exit(1)
 
     symbol = sys.argv[1]
@@ -58,8 +52,8 @@ def main():
     new_stop_price = float(sys.argv[3])
     quantity = int(float(sys.argv[4]))
 
-    if not symbol.startswith("HK."):
-        print(json.dumps({"ok": False, "error": f"本脚本只处理港股（HK.xxx），收到 {symbol}"}))
+    if not symbol.startswith("US."):
+        print(json.dumps({"ok": False, "error": f"本脚本只处理美股（US.xxx），收到 {symbol}"}))
         sys.exit(1)
     if direction not in ("long", "short"):
         print(json.dumps({"ok": False, "error": f"direction 非法 '{direction}'"}))
@@ -71,32 +65,31 @@ def main():
         print(json.dumps({"ok": False, "error": f"老虎配置加载失败: {e}"}))
         sys.exit(1)
 
-    result_base = {"action": "move_stop_tiger", "market": "HK", "symbol": symbol, "direction": direction,
+    result_base = {"action": "move_stop_tiger_us", "market": "US", "symbol": symbol, "direction": direction,
                    "new_stop_price": new_stop_price, "quantity": quantity}
 
-    # 量校验：本策略规定止损量严格=持仓量（超持仓会被券商判失效）
+    # 量校验：止损量严格=持仓量（超持仓券商判失效）
     try:
-        pos = U.get_open_position_tiger(config, symbol)
+        pos = U.get_open_position_us(config, symbol)
         if pos is not None:
             held = pos["quantity"]
             if quantity > held:
-                result_base.update({"ok": False, "error": f"止损量 {quantity} 超过港股持仓量 {held}，券商判失效，拒绝提交"})
+                result_base.update({"ok": False, "error": f"止损量 {quantity} 超过美股持仓量 {held}，券商判失效，拒绝提交"})
                 print(json.dumps(result_base, ensure_ascii=False))
                 sys.exit(1)
             if quantity < held:
                 result_base["warning"] = f"止损量 {quantity} < 持仓量 {held}（策略规定严格相等）"
         else:
-            result_base["warning"] = "未读到港股持仓，按传入数量继续"
+            result_base["warning"] = "未读到美股持仓，按传入数量继续"
     except Exception as e:
         result_base["quantity_check_warning"] = f"持仓校验失败（继续）: {e}"
 
     tc = U.new_trade_client(config)
-    tick_sizes = U.get_tick_sizes_tiger(tc, symbol)
-    trig = U.round_to_tick_tiger(new_stop_price, tick_sizes)
-    target_sym = U.to_tiger_symbol(symbol)
+    trig = U.round_to_tick_us(new_stop_price)
+    target_sym = U.to_tiger_symbol_us(symbol)
     stop_side = "Sell" if direction == "long" else "Buy"
 
-    # 查当前活动 STP 单（该标的、止损类型、非终结状态）
+    # 查当前活动止损单（该标的、止损类型含 TRAIL、非终结状态）
     stp_orders = []
     for o in (tc.get_orders() or []):
         sym = str(getattr(getattr(o, "contract", None), "symbol", ""))
@@ -112,7 +105,7 @@ def main():
     if len(stp_orders) == 0:
         result_base["path"] = "no_active_stop → submit new STP"
         try:
-            stop_order_id = U.submit_stop_order_tiger(config, symbol, stop_side, quantity, trig)
+            stop_order_id = U.submit_stop_order_us(config, symbol, stop_side, quantity, trig)
         except Exception as e:
             result_base.update({"ok": False, "error": f"新止损单提交失败: {e}"})
             print(json.dumps(result_base, ensure_ascii=False))
@@ -128,7 +121,7 @@ def main():
         keep = stp_orders[0]
         for extra in stp_orders[1:]:
             try:
-                U.cancel_order_tiger(config, getattr(extra, "id", None))
+                U.cancel_order_us(config, getattr(extra, "id", None))
             except Exception as e:
                 result_base.setdefault("extra_cancel_warnings", []).append(str(e))
         stp_orders = [keep]
@@ -143,8 +136,8 @@ def main():
         # modify 抛异常 → fallback「先下新 STP + 撤旧」（保证仓位有止损保护）
         result_base["modify_failed_fallback"] = f"modify 抛异常 {e}，回退到「先下新 STP + 撤旧」"
         try:
-            new_id = U.submit_stop_order_tiger(config, symbol, stop_side, quantity, trig)
-            U.cancel_order_tiger(config, stp_id)
+            new_id = U.submit_stop_order_us(config, symbol, stop_side, quantity, trig)
+            U.cancel_order_us(config, stp_id)
             result_base.update({"ok": True, "stop_order_id": new_id, "trigger_price": trig,
                                 "stop_method": "fallback：先下新 STP + 撤旧（modify 失败）"})
             print(json.dumps(result_base, ensure_ascii=False))

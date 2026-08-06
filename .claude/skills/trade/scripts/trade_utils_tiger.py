@@ -1,23 +1,22 @@
 #!/usr/bin/env python3
 """港股交易工具库（老虎证券开放平台，港股默认账户）。
 
-与长桥（美股 `trade_utils.py` / 港股备选 `trade_utils_hk.py`）**解耦**（分而治之，2026-08-01
-用户立）：港股默认走老虎模拟账户，老虎单独一套、不 import 长桥模块。自包含：配置加载、港股
-symbol / lot_size / tick、行情、下单（开仓 LMT+附加止损、平仓 MKT、独立止损 STP）、持仓 /
-资产 / 订单查询、撤单、成交回查。
+港股默认账户即老虎（2026-08-05 起港美股均走老虎、不再有备选账户，见 CHANGELOG），本库自包含：
+配置加载、港股 symbol / lot_size / tick、行情、下单（开仓 LMT+附加止损、平仓 MKT、独立止损
+STP）、持仓 / 资产 / 订单查询、撤单、成交回查。
 
 ✅ 实测状态（2026-08-03 paper 三动作全链路开盘实测通过）：
 - ✅ 已实测：配置加载、paper 判定、港股 symbol 格式、lot_size / tick、资产 / 持仓 / 订单只读、
   行情，以及下单链路——开仓 LMT+附加止损腿（OrderLeg('LOSS') 落成独立 STP 单、主单成交后
-  HELD 监控）、平仓 MKT（Filled、avg_fill_price 真实成交价）、独立止损 STP（先新增后撤旧、
-  旧单可独立撤销）。
+  HELD 监控）、平仓 MKT（Filled、avg_fill_price 真实成交价）、独立止损 STP（modify aux_price
+  移损、旧单可独立撤销）。
 - 🔧 实测发现并修复 2 个 bug（2026-08-03）：① _make_order 的 order_type 传枚举对象致 place_order
   序列化失败（TypeError: Object of type OrderType is not JSON serializable）——须传字符串
   'LMT'/'MKT'/'STP'；② check_order_filled_tiger 直接 str(OrderStatus 枚举) 得
   'OrderStatus.FILLED'、'Filled' in 它恒 False → 已成交误判未成交并撤已成交单——须取
-  status.value（'Filled'）再判断。**券商行为只信直接实测，不能从长桥外推**——本模块订单语义已按实测落地。
+  status.value（'Filled'）再判断。**券商行为只信直接实测**——本模块订单语义已按实测落地。
 
-老虎相对长桥的差异点（本模块封装）：
+本模块要点：
 - **配置加载**：`TigerOpenClientConfig(props_path=...)` 构造（私钥自动从 properties 的
   private_key_pk1/pk8 读取）。⚠️ 不要用 `get_client_config(props_path=...)`——该函数会先
   硬读 `private_key_path` 参数（None 直接 TypeError，2026-08-02 实测复现），必须显式传
@@ -32,12 +31,12 @@ symbol / lot_size / tick、行情、下单（开仓 LMT+附加止损、平仓 MK
 - **价位 tick**：港交所价位表，从 get_contract.tick_sizes 取（实测返回完整区间表）。
 - **币种**：港股 HKD，equity 取 get_assets().summary.net_liquidation（currency 同源）。
 
-三个动作的订单类型（与长桥规范一致，券商语义不同）：
-- 开仓：主单 LMT + 附加止损腿 OrderLeg('LOSS', price)（老虎附加订单仅限价单支持；长桥是
-  LO + attached STOP_LOSS MIT，2026-08-02 源码确认 OrderLeg 对应）。
-- 移动止损：独立 STP 止损单（aux_price=触发价；长桥是 MIT），先下新再撤旧、量严格=持仓量。
-- 平仓：**先撤全部未触发止损单、再下 MKT 市价单**（2026-08-03 午后实测：老虎与长桥不同，
-  挂着的止损单占用持仓可平额度，Buy 平空单被拒「exceeds holdings」；先撤止损再平立即成交。
+三个动作的订单类型：
+- 开仓：主单 LMT + 附加止损腿 OrderLeg('LOSS', price)（老虎附加订单仅限价单支持）。
+- 移动止损：modify 现有活动 STP 单的 aux_price（2026-08-05 实测单步、无撤单 race；仅
+  fallback 才先下新再撤旧）、量严格=持仓量。
+- 平仓：**先撤全部未触发止损单、再下 MKT 市价单**（2026-08-03 午后实测：挂着的止损单占用
+  持仓可平额度，Buy 平空单被拒「exceeds holdings」；先撤止损再平立即成交。
   平仓脚本 close_position_tiger.py 已按此顺序实现）。
 """
 
@@ -160,7 +159,7 @@ def _tick_from_table(price, tick_sizes):
 
 def round_to_tick_tiger(price, tick_sizes=None):
     """把价格向下取整到港股 tick（限价单必须合 tick）。tick_sizes 缺失时 fallback 固定价位表
-    （与长桥 trade_utils_hk 同表，2025-08-04 调整版）。"""
+    （2025-08-04 调整版）。"""
     import math
     tick = _tick_from_table(price, tick_sizes)
     if not tick:
@@ -168,7 +167,7 @@ def round_to_tick_tiger(price, tick_sizes=None):
     return round(math.floor(price / tick) * tick, 6)
 
 
-# 港交所最小报价单位（价位表），2025-08-04 调整版（与长桥 trade_utils_hk 同表）
+# 港交所最小报价单位（价位表），2025-08-04 调整版
 # (价格上界 HKD, tick)；价格落在 (上一上界, 本上界] 用本 tick
 _HK_TICK_TABLE = [
     (0.25, 0.001),
@@ -240,19 +239,43 @@ def get_quote_tiger(config, symbol, retries=3):
 
 
 # ---------------------------------------------------------------------------
-# 权益（老虎港股账户 HKD，get_assets().summary.net_liquidation）
+# 权益（老虎账户净值。2026-08-05 实测确认：get_prime_assets(base_currency) 直接返回
+# 对应币种的账户净值——港股 base_currency='HKD'、美股 base_currency='USD'，无需外部汇率；
+# 见 CHANGELOG 2026-08-05「equity 口径修复」）
 # ---------------------------------------------------------------------------
 
-def load_equity_tiger(config=None):
-    """港股 equity = 老虎账户净值（summary.net_liquidation，HKD）。返回 (equity, currency)。
+def load_equity_tiger(config=None, base_currency=None):
+    """老虎账户净值。返回 (equity, currency)。
 
-    ⚠️ 2026-08-02 实测：当前实盘账户未开通交易/资产权限时，get_assets 返回 summary 全 0 且
+    - base_currency='HKD'（港股交易口径）：get_prime_assets(base_currency='HKD') 证券段
+      net_liquidation——全账户权益按实时汇率折算 HKD（2026-08-05 实测 7,819,536.41 HKD =
+      总净值 996,932.71 USD × 7.843595，汇率来自老虎自身 currency_assets[].forex_rate，
+      不依赖外部数据源）。
+    - base_currency='USD' / 不传（美股或兼容旧调用）：get_assets summary.net_liquidation
+      （USD，实测 996,932.71）。
+
+    ⚠️ 2026-08-02 实测：实盘账户未开通交易/资产权限时 get_assets 返回 summary 全 0 且
     timestamp=None（prime_assets 的 segments 为空）——净值取不到。此时返回 (None, currency)，
     调用方（open_position_tiger 自动算仓位）应拒绝下单，禁止用 0 净值算仓位 B。
-    paper 账户接入后应能取到真实净值。
+    paper 账户接入后能取到真实净值。
     """
     tc = new_trade_client(config)
     try:
+        if base_currency is not None:
+            # 按币种口径取净值（2026-08-05 修：港股 HKD / 美股 USD，与标的计价一致）
+            try:
+                pa = tc.get_prime_assets(base_currency=base_currency)
+                if pa and getattr(pa, "segments", None):
+                    for seg in pa.segments.values():
+                        nl = getattr(seg, "net_liquidation", None)
+                        if nl is not None:
+                            cur = getattr(seg, "currency", None) or base_currency
+                            return float(nl), str(cur)
+            except Exception as e:
+                print(f"⚠️ get_prime_assets(base_currency={base_currency}) 失败（{e}），回退 get_assets",
+                      file=sys.stderr)
+            return None, base_currency
+
         assets = tc.get_assets()
         if not assets:
             return None, "HKD"
@@ -277,7 +300,7 @@ def _make_order(tc, config, symbol, action, order_type, quantity,
                 limit_price=None, aux_price=None, order_legs=None):
     """创建订单对象（create_order）并提交（place_order）。返回全局订单 id。
 
-    action: 'BUY' / 'SELL'（老虎枚举是 BUY/SELL，与长桥 Buy/Sell 不同，注意转换）。
+    action: 'BUY' / 'SELL'（老虎订单动作枚举是 BUY/SELL 全大写）。
     order_type: 老虎 OrderType 枚举的**字符串值**（'LMT' / 'MKT' / 'STP'）——Order 构造函数
       原样存 order_type、place_order 序列化订单时 JSON 化该字段，传枚举对象会崩
       （TypeError: Object of type OrderType is not JSON serializable，2026-08-03 paper 实测发现）。
@@ -307,8 +330,8 @@ def submit_order_with_stop_tiger(config, symbol, side, quantity, submitted_price
     """开仓：主单 LMT + 附加止损腿 OrderLeg('LOSS', stop_loss_price)（一次提交）。
 
     side: 'Buy'（做多开仓）/ 'Sell'（做空开仓）——注意转老虎 'BUY'/'SELL'。
-    附加止损腿的方向与触发语义由券商按主单方向自动定（做多跌触发卖、做空涨触发买），
-    与长桥 attached STOP_LOSS 一致；腿 TIF 默认 DAY（日内策略当日有效；跨日场景待实测）。
+    附加止损腿的方向与触发语义由券商按主单方向自动定（做多跌触发卖、做空涨触发买）；
+    腿 TIF 默认 DAY（日内策略当日有效；跨日场景待实测）。
     返回全局订单 id。
     """
     from tigeropen.trade.domain.order import OrderLeg
@@ -348,10 +371,10 @@ def submit_market_order_tiger(config, symbol, side, quantity, retries=3):
 
 
 def submit_stop_order_tiger(config, symbol, side, quantity, trigger_price, retries=3):
-    """独立止损单 STP（移损用；长桥对应 MIT）。aux_price=触发价。
+    """独立止损单 STP（移损用）。aux_price=触发价。
 
     side 由调用方定（做多止损 Sell / 做空止损 Buy）；触发方向由券商按 trigger_price
-    相对现价自动判定（与长桥 MIT 一致，2026-08-01 实测）。触发后市价成交。
+    相对现价自动判定（2026-08-01 实测）。触发后市价成交。
     返回全局订单 id。
     """
     last_err = None
@@ -378,8 +401,8 @@ def submit_stop_order_tiger(config, symbol, side, quantity, trigger_price, retri
 def check_order_filled_tiger(config, order_id, timeout=8, poll_interval=2):
     """轮询订单成交状态（get_orders）。返回 (filled, fill_price, status_str)。
 
-    老虎状态值与长桥不同（2026-08-02 源码确认）：Filled / PartiallyFilled / Cancelled /
-    Inactive（已失效）/ Invalid（非法）等；长桥是 filled / cancelled / expired / dead / rejected。
+    老虎状态值（2026-08-02 源码确认）：Filled / PartiallyFilled / Cancelled /
+    Inactive（已失效）/ Invalid（非法）等。
 
     ⚠️ status 是 OrderStatus 枚举（OrderStatus.FILLED），必须取 .value（'Filled'）再判断——
     直接 str(枚举) 得 'OrderStatus.FILLED'，'Filled' in 它恒 False → 已成交误判未成交、
@@ -462,7 +485,7 @@ def cancel_order_tiger(config, order_id):
 
 
 def cancel_all_stop_orders_tiger(config, symbol, exclude_order_id=None):
-    """撤销指定港股标的的全部未触发止损单（平仓后防反向开仓；移损撤旧用）。
+    """撤销指定港股标的的全部未触发止损单（平仓后防反向开仓；移损 fallback 撤旧用）。
 
     两类止损都撤：
     - 独立止损单（order_type=STP，aux_price=触发价）——直接撤。
@@ -486,7 +509,7 @@ def cancel_all_stop_orders_tiger(config, symbol, exclude_order_id=None):
             if oid is None:
                 continue
             if exclude_order_id is not None and str(oid) == str(exclude_order_id):
-                continue  # 跳过刚下的新止损（移损「先新增后撤旧」保新止损）
+                continue  # 跳过刚下的新止损（移损 fallback「先下新再撤旧」保新止损）
             status = str(getattr(order, "status", ""))
             if any(s in status for s in ("Filled", "Cancelled", "Inactive", "Invalid",
                                          "PendingCancel")):
@@ -507,8 +530,24 @@ def cancel_all_stop_orders_tiger(config, symbol, exclude_order_id=None):
         pass
 
 
+def get_today_orders_tiger(config):
+    """查老虎当日订单列表（get_orders），供 monitor_segment 每轮采样提取最新止损价。
+
+    用户可能在券商 App 里手动新增止损单，最新止损价不能凭记忆，须每轮采样现查。
+    返回订单对象列表（含 order_type=STP 的止损单，触发价在 aux_price）或 []。
+    老虎订单对象字段（id / status / contract.symbol / order_type / aux_price /
+    order_legs）见 cancel_all_stop_orders_tiger。
+    """
+    tc = new_trade_client(config)
+    try:
+        return tc.get_orders() or []
+    except Exception as e:
+        print(f"⚠️ 老虎当日订单查询失败: {e}", file=sys.stderr)
+        return []
+
+
 # ---------------------------------------------------------------------------
-# 价格范围 / 仓位计算（纯函数，与长桥同逻辑、独立实现以解耦）
+# 价格范围 / 仓位计算（纯函数）
 # ---------------------------------------------------------------------------
 
 # 单边手续费率（2026-08-04 用户立：盯盘前瞻赔率改净口径，与复盘 review.py 同口径）。
@@ -599,3 +638,60 @@ def parse_mode(argv=None):
             m = a.split("=", 1)[1]
             return m if m in ("auto", "signal") else "signal"
     return "signal"
+
+
+def load_equity(mode='signal', project_root=None, base_currency='HKD'):
+    """按执行模式取当前 equity，返回 (equity, currency, source_str)。
+
+    - mode='auto'：老虎账户净值（港股 base_currency='HKD'、美股 base_currency='USD'，与
+      标的计价一致，见 load_equity_tiger）；查询失败 fallback signals/equity-log.csv
+      （标记非真实、需修复）。
+    - mode='signal'：读 signals/equity-log.csv 末行 equity_after（signal 模式不连账户、
+      靠累加值；无记录返回 config.risk.initial_equity）。
+
+    auto 模式 equity 必须是账户真实总资产（2026-07-31 用户立）；signal 模式因不碰账户、用
+    equity-log 累加假设盈亏（2026-08-01 双模式重构立，见 signal-mode.md「signal 模式权益更新」）。
+    2026-08-05 起港美股默认账户均为老虎，本函数随老虎脚本迁移至此（原在已删除的
+    trade_utils.py）。
+    """
+    import csv
+    import json
+    if project_root is None:
+        # trade_utils_tiger.py 在 .claude/skills/trade/scripts/，上五级 = 项目根（signals/equity-log.csv 在项目根 signals/）
+        project_root = Path(__file__).resolve().parent.parent.parent.parent.parent
+    # config.json 在 skill 根目录（scripts 上一级 = trade/）
+    config_path = Path(__file__).resolve().parent.parent / "config.json"
+    initial_equity = 100000.0
+    currency = "HKD"
+    try:
+        with open(config_path) as f:
+            risk = json.load(f).get("risk", {})
+        initial_equity = float(risk.get("initial_equity", 100000))
+        currency = risk.get("equity_currency", "HKD")
+    except Exception:
+        pass
+
+    def _read_equity_log():
+        log_path = Path(project_root) / "signals" / "equity-log.csv"
+        if not log_path.exists():
+            return None
+        with open(log_path) as f:
+            rows = [r for r in csv.DictReader(f) if not (r.get("date") or "").startswith("#")]
+        if not rows:
+            return None
+        return float(rows[-1]["equity_after"])
+
+    if mode == "signal":
+        eq = _read_equity_log()
+        if eq is None:
+            return initial_equity, currency, f"config initial_equity={initial_equity:.0f}（signal 模式、equity-log 无记录）"
+        return eq, currency, "signals/equity-log.csv 末行（signal 模式累加值）"
+
+    # mode == 'auto'：老虎账户（港股 HKD / 美股 USD，与标的计价一致）
+    eq, cur = load_equity_tiger(base_currency=base_currency)
+    if eq is None:
+        eq = _read_equity_log()
+        if eq is not None:
+            return eq, currency, f"equity-log.csv 末行（⚠️老虎账户查询失败（{base_currency} 口径），旧手动累加值、非真实，需修复）"
+        return initial_equity, base_currency, f"config initial_equity={initial_equity:.0f}（⚠️老虎查询失败且 equity-log 无记录，占位非真实）"
+    return eq, cur, f"老虎账户 get_prime_assets(base_currency={cur}) 证券段净值（默认账户）"

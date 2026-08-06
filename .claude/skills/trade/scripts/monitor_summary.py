@@ -20,7 +20,7 @@ SYMBOL = next((a for a in sys.argv[1:] if not a.startswith("-")), "HK.00981")
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", "..", "..", ".."))
 
-from trade_utils import parse_mode  # 模式标识：log 按 mode 分文件，signal/auto 两会话并行盯盘不互相污染
+from trade_utils_tiger import parse_mode  # 模式标识：log 按 mode 分文件，signal/auto 两会话并行盯盘不互相污染
 MODE = parse_mode()
 
 # log 日期按市场对应交易日（与 monitor_segment.py 的 trading_date_str 同口径）：港股用北京日期、

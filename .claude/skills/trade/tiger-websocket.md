@@ -1,6 +1,8 @@
 # 老虎 SDK WebSocket 实时推送
 
-老虎证券 PushClient 是港股实时行情的备用源（交叉验证；免费 Level2 主力是富途 OpenD，见 `futu-opend-level2.md`），突破长桥 CLI 的 sleep 轮询瓶颈。用途：早盘急涨急跌盯盘（呼应密采样需求）。
+老虎证券 PushClient 是港股实时行情的备用源（交叉验证；免费 Level2 主力是富途 OpenD，见 `futu-opend-level2.md`），WebSocket 毫秒级推送。用途：早盘急涨急跌盯盘（呼应密采样需求）。
+
+老虎**不只是数据源**：它同时是 auto 模式的模拟账户交易通道（港股、美股均默认用老虎开放平台模拟账户下单，见 `SKILL.md`「模式开关」与 `references/auto-mode.md`）。本文件只讲它的 WebSocket 行情用法；下单脚本见 `references/auto-mode.md`「交易动作脚本（老虎）」（`*_tiger.py` / `*_tiger_us.py`）。
 
 ## 能力（2026-07-03 实测验证链路通）
 
@@ -53,7 +55,7 @@ for _ in range(20):
     if connected[0]: break
 
 if connected[0]:
-    pc.subscribe_quote(['02800'])  # 港股代码本就是5位数字,老虎要求完整5位(长桥容忍省略前导0)
+    pc.subscribe_quote(['02800'])  # 港股代码本就是5位数字,老虎要求完整5位
     # 等推送...
     time.sleep(15)
     print(f'收到 {len(received)} 条')
@@ -66,16 +68,16 @@ pc.disconnect()
 
 - 老虎 TBNZ 账户**美股无行情权限**，WebSocket 只能订阅港股。
 - 港股 **Lv2 实测可用（✅ 2026-07-10 盘中实证）**：`get_quote_permission()` 返回 `hkStockQuoteLv2`（expire_at=-1，永久有效；A 股送 Lv1）。午市盘中实订 `subscribe_depth_quote(['02800','00700'])`，**25 秒收 24 条推送、0 错误，每条 `QuoteDepthData` 的 `ask`+`bid` 各 10 档**（盈富 ask 24.84→25.02、bid 24.82→24.64；腾讯 ask 462→463.8、bid 461.8→460），每档含 `price`/`volume`/`orderCount`，bid1 volume 实时跳动 → 真·实时流非缓存。**推翻「海外需购 hkStockQuoteLv2Global」推断**：TBNZ 的 `hkStockQuoteLv2` 实际已开通完整 10 档 depth（2026-07-10 盘中实订 `subscribe_depth_quote` 实证，见本节上文的 25 秒 24 条推送实测）。⚠️ depth 推送**未见经纪队列 broker id**（富途港股 Level2 有 broker；老虎 broker 队列若需另有接口，未测）。
-- 老虎仅作数据源，**未授权交易**（交易仍走长桥 CLI）。
+- **交易已授权（不再是「仅数据源」）**：老虎开放平台模拟账户是 auto 模式港股、美股默认下单账户（三动作脚本 `open_position_tiger*.py` / `close_position_tiger*.py` / `move_stop_tiger*.py`，见 `references/auto-mode.md`）。✅ 港股三动作 paper 实测通过（2026-08-03，腾讯 00700 开仓 → 移损 → 平仓全链路）；美股下单链路已接入（2026-08-05）、待盘中实测。⚠️ 行情与交易权限独立：**美股行情权限仍无**（见上，美股行情走富途单源），交易权限港美股均已授权。
 
-## 老虎 SDK 能力（长桥 CLI 2026-07-15 已撤销，盯盘走富途 + 老虎）
+## 老虎 SDK 能力
 
 | 维度 | 老虎 SDK |
 |---|---|
 | 实时性 | WebSocket 毫秒级推送 |
 | 港股 | ✅ Lv2 实测可用（2026-07-10 盘中：10 档 ask/bid，无经纪队列） |
 | 美股 | ❌ 无权限（走富途） |
-| 定位 | 港股 WebSocket 推送 + 富途的备份 |
+| 定位 | 港股 WebSocket 推送（富途的备份）+ 港美股模拟账户交易通道（auto 模式默认账户） |
 
 ## 同步行情查询速查（非 WebSocket，轮询式）
 

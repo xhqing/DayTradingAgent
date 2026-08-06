@@ -20,7 +20,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/env python3</string>
+        <string>/opt/homebrew/bin/python3</string>
         <string>/Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/monitor_watcher.py</string>
     </array>
 

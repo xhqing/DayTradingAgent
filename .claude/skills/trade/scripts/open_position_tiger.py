@@ -96,10 +96,12 @@ def main():
         print(json.dumps(result_base, ensure_ascii=False))
         sys.exit(1)
 
-    # 自动算仓位（quantity=0）：equity 取老虎账户净值、lot_size 从 get_contract 取真实每手股数
+    # 自动算仓位（quantity=0）：equity 取老虎账户净值（港股口径 HKD，与标的止损距同币种——
+    # 2026-08-05 修：原取 USD 净值直接当 HKD 用，B 被低估 ~7.8 倍；现 get_prime_assets
+    # base_currency='HKD' 直接取 HKD 净值）、lot_size 从 get_contract 取真实每手股数
     if quantity == 0:
         tc = U.new_trade_client(config)
-        equity, currency = U.load_equity_tiger(config)
+        equity, currency = U.load_equity_tiger(config, base_currency='HKD')
         if equity is None:
             result_base.update({"ok": False, "error": "老虎账户净值取不到（未开通交易/资产权限？），无法自动算仓位"})
             print(json.dumps(result_base, ensure_ascii=False))

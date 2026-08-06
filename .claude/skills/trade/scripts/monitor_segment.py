@@ -38,13 +38,13 @@ from datetime import datetime, timedelta
 
 from futu import OpenQuoteContext
 
-from trade_utils import parse_mode  # 模式标识：运行时 log 按 mode 分文件，signal/auto 两会话并行盯盘不互相污染
+from trade_utils_tiger import parse_mode  # 模式标识：运行时 log 按 mode 分文件，signal/auto 两会话并行盯盘不互相污染
 
-# 长桥止损单查询（模拟盘模式：每次采样获取最新止损单止损价）
-_LONGPORT_AVAILABLE = False
+# 老虎止损单查询（auto 模式：每次采样获取最新止损单止损价）
+_TIGER_AVAILABLE = False
 try:
-    from trade_utils import load_config, get_today_orders
-    _LONGPORT_AVAILABLE = True
+    from trade_utils_tiger import load_config, get_today_orders_tiger
+    _TIGER_AVAILABLE = True
 except ImportError:
     pass
 
@@ -71,7 +71,7 @@ def parse_targets(raw):
 
 
 def query_stop_prices(symbols):
-    """查询长桥模拟盘的当日订单，提取各标的最新的止损条件单止损价。
+    """查询老虎当日订单，提取各标的最新的止损条件单触发价（STP 单 aux_price）。
 
     返回 {symbol: stop_price} 字典。查不到或出错返回空字典。
     用户可能在券商 App 里手动添加止损单，所以每次采样都要查、不凭记忆。
@@ -79,25 +79,26 @@ def query_stop_prices(symbols):
     为什么放在采样脚本里：止损价是盯盘决策的关键输入（判断持仓止损触发、
     移损后新的止损位），必须与行情数据同步获取，不能事后单独查。
     """
-    if not _LONGPORT_AVAILABLE:
+    if not _TIGER_AVAILABLE:
         return {}
     try:
         config = load_config()
-        orders = get_today_orders(config)
+        orders = get_today_orders_tiger(config)
         result = {}
         for order in orders:
-            # 长桥 API 返回的订单对象属性：symbol, order_type, trigger_price, status, side
-            sym = getattr(order, "symbol", None)
+            # 老虎订单对象：contract.symbol（老虎格式，港股 5 位裸数字 / 美股裸代码）、
+            # order_type、aux_price（STP 止损触发价）、status
+            contract = getattr(order, "contract", None)
+            sym = getattr(contract, "symbol", None) if contract else None
             if sym is None:
                 continue
-            # 归一化标的代码（长桥可能返回不带前缀的代码）
             for s in symbols:
-                # 匹配：长桥返回 "US.MU" 或 "MU"，对比 symbols 列表中的 "US.MU"
+                # 匹配：订单返回 "02800" / "MU"，对比 symbols 列表中的 "HK.02800" / "US.MU"
                 if sym == s or sym == s.split(".")[-1]:
-                    trigger = getattr(order, "trigger_price", None)
-                    if trigger and float(trigger) > 0:
+                    aux = getattr(order, "aux_price", None)
+                    if aux and float(aux) > 0:
                         # 取最新的（后查询覆盖前面的）
-                        result[s] = float(trigger)
+                        result[s] = float(aux)
                     break
         return result
     except Exception:
@@ -266,7 +267,7 @@ def main():
                         tags.append(f"[↓破支撑{low}≤{st['dn']}]")
                 st["last_high"], st["last_low"] = high, low
 
-                # 止损价（长桥模拟盘当日止损条件单，查不到标 "-")
+                # 止损价（当日止损条件单，查不到标 "-")
                 sp = stop_prices.get(sym)
                 sp_str = f"{sp:.2f}" if sp is not None else "-"
 

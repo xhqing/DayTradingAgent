@@ -91,10 +91,10 @@
 - **分段采样盯盘（盯盘主力机制）** `python3 scripts/monitor_segment.py HK.00981:330:306,US.MU:950:890 40 10 --mode signal` — **后台跑**（`run_in_background`）、**一个进程同时采多只**（富途 `get_market_snapshot` 接受标的列表、一次批量返回，单进程批量比每只票各起一个进程更省更快——多标的并行靠单进程批量采样、**不靠多进程多 SubAgent**，理由见下「采样频率」）。**targets 格式 `SYM[:up[:dn]][,SYM[:up[:dn]]...]`**：逗号分隔多标的、冒号带各自关键位（阻力 up / 支撑 dn），不带冒号 = 只采样不检测突破（如 `HK.00981:330:306,HK.06809` 第二只只采样）。默认每段 **40 秒**、10 秒间隔 = 4 次采样，段结束自动触发 task-notification 通知 AI 读 **log 最近 N 行** + 分析 + 重启下一段；**每只票各写各的连续 log**（`tmp/monitor_log_{symbol}_{date}_{mode}.csv`，按标的 + 模式分文件、累积不丢——`--mode` 按 session 模式传（signal 默认 / auto 显式），signal/auto 两会话并行盯盘各写各的 log 不污染，2026-08-04 立；AI 分析读最近 N 行看买卖比/量比/价的连续序列 + 当日累计 high/low 定位箱体，**不靠记忆串联各段**；多标的各读各的 log，`monitor_summary.py` 仍按单标的调用、可并行发多条）；脚本内检测到破关键位立即退出、提前触发通知（突破响应 ~10 秒，详见下「突破即时响应」）。**盯盘持续性靠它**（替代 cron，详见下「采样频率」）。用户输入不打断采样（独立进程持续跑），仅可能在段间造成短暂空窗。
 - **全貌摘要·判行情性质** `python3 scripts/monitor_summary.py HK.00981 --mode signal` — 读累积 log（同 mode 的 `monitor_log_{symbol}_{date}_{mode}.csv`）输出**全貌摘要**：开/现/当日 high/low/振幅、箱体顶/底各测试几次、买卖比与量比的前半→后半演变、价格 4 段均价走势、**行情性质判别（震荡/多头/空头/中性）**。**判断「今天是震荡还是趋势」必须看全貌**（最近 N 分钟看不出，2026-07-22 教训：只看每段 4 点 → 判不出震荡市 → 用错框架）；AI 每次分析先跑它判行情 + 随时切换策略，再读 log 最近 N 行看即时。脚本已输出 VWAP（见下条）。
 - **标的分类** `python3 classify_hk_security.py 07709`（skill 根目录，下单前护栏必跑，详见 `references/account-tools.md`）。
-- **开仓** `python3 scripts/open_position.py US.MU long 950 940 970 0` — 6 要素：标的/方向/参考价/价格范围/数量/止损价（数量传 0 = 自动算仓位）；主单 + 附加止损一次提交（无裸奔空窗）；JSON 输出结果。
-- **平仓** `python3 scripts/close_position.py US.MU` — 一键平仓（**市价单 MO** 立即成交；不给方向/量则自动读持仓）；成功后撤销所有未触发 MIT 止损单（防反向开仓，属平仓动作的一部分）。
-- **移动止损** `python3 scripts/move_stop.py US.MU long 955 100` — 不删旧止损单，新增止损条件单。
-- **共用工具库** `python3 -c "from trade_utils import ..."` — 长桥 API 封装、价格范围计算（`calc_entry_range`）、仓位计算（`calc_position_size`）。
+- **开仓** `python3 scripts/open_position_tiger.py HK.00700 long 486 484 489.6 0`（美股用 `open_position_tiger_us.py US.MU ...`）— 6 要素：标的/方向/参考价/止损价/止盈目标/数量（数量传 0 = 自动算仓位）；主单 LMT + 附加止损腿一次提交（无裸奔空窗）；JSON 输出结果。
+- **平仓** `python3 scripts/close_position_tiger.py HK.00700`（美股用 `close_position_tiger_us.py`）— 一键平仓（不给方向/量则自动读持仓）；**主路径 = 把持仓止损单触发价 modify 为现价、止损单立即触发市价平仓**（无「撤止损 + 市价单」两步、无 race）；无活动止损单才直接市价单；modify 失败 / 未触发 fallback 撤止损 + 市价单。平仓后不残留未触发止损单。
+- **移动止损** `python3 scripts/move_stop_tiger.py HK.00700 long 484 100`（美股用 `move_stop_tiger_us.py`）— 把现有止损单触发价 modify 到新止损价、保留单个活动止损（港美同路径，2026-08-05 实测；无活动止损才补下新 STP、modify 失败 fallback 先下新再撤旧）。
+- **共用工具库** `python3 -c "from trade_utils_tiger import ..."` — 老虎 API 封装、价格范围计算（`calc_entry_range`）、仓位计算（`calc_position_size`）。
 - **记录交易动作** `cat <<'ACTION' | bash .claude/skills/trade/scripts/log_action.sh` — 写入 `actions/YYYY-MM-DD-<market>-actions.md`，内容经 stdin 传入，自动带时间戳。
 - **资金流 / 行情**：盯盘资金流走富途 `get_capital_flow`、盘口 `get_order_book`、快照 `get_market_snapshot`（见 `references/account-tools.md` 数据源分工总则）。
 - ⚠️ **富途符号格式 = `市场.代码` 前缀**（`HK.02800`/`US.SPY`），美股写裸 `SPY` 报 `format of code SPY is wrong`（实测）。写脚本统一用前缀格式。

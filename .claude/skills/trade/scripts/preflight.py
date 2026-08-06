@@ -66,7 +66,7 @@ print(f"📊 富途OpenD:11111 {'✅' if port_open(11111) else '❌(未登录/�
 import json as _json, os as _os, sys as _sys
 try:
     _sys.path.insert(0, _os.path.dirname(__file__))
-    from trade_utils import load_equity as _le, parse_mode as _pm
+    from trade_utils_tiger import load_equity as _le, parse_mode as _pm
     _mode = _pm()
     _cfg_path = _os.path.join(_os.path.dirname(__file__), '..', 'config.json')
     with open(_cfg_path) as _f:
@@ -83,7 +83,6 @@ except Exception as _e:
     print(f"💰 ⚠️ 读取 config/equity 失败({_e})，盘中算仓位前务必手动确认 risk.risk_fraction")
 
 # positions 检查已移除（2026-07-15 信号模式：假设执行、不查 positions，见 SKILL「信号模式总则」第 1 条）
-# 长桥 CLI token 检查已移除（2026-07-15 长桥 CLI 授权撤销、token 删除，盯盘数据走富途 + 老虎）
 
 # 防系统睡眠（2026-07-25 立 → 2026-07-27 修订：无条件自动启用，取代旧「检测电源 + 弹窗建议启用 keep-awake」）。
 # 根因：盯盘期间系统睡眠会暂停所有进程——富途 OpenD 的 get_market_snapshot 无 timeout、卡到 TCP 超时
