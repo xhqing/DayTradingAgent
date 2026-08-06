@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """序贯贝叶斯 P(EV>0) 折线图：按交易时间顺序逐笔累积，画点估计+下界+上界三条线。
-复用 review.py 的完整贝叶斯 NIG（t 后验）+ σ 不确定下敏感性区间算法。"""
-import csv, math, sys, os
+复用 review.py 的完整贝叶斯 NIG（t 后验）+ σ 不确定下敏感性区间算法。
+
+用法（2026-08-05 起支持 --date，不再手动改路径）：
+  python3 bayes_evolution.py                     # 自动找 reviews/ 下最新 *-trades.csv
+  python3 bayes_evolution.py --date 2026-08-04   # 指定复盘日期（读 reviews/2026-08-04-trades.csv、
+                                                 # 输出 reviews/2026-08-04-*.png）
+"""
+import csv, math, sys, os, glob, re
 from statistics import mean, stdev
 from scipy import stats as ss
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # 自身目录（scripts/），与 review.py 同目录
@@ -35,10 +41,44 @@ def _fee_per_side(symbol):
     if s.startswith('US.'): return 0.0003   # 3bps
     raise ValueError(f"未知市场前缀、无法定费率: {symbol!r}（只支持 HK. / US.）")
 
+def _resolve_date(argv=None):
+    """解析 --date YYYY-MM-DD；不传自动找 reviews/ 下最新 *-trades.csv（按文件名日期取最大）。
+
+    2026-08-05 立：此前路径与输出名硬编码 2026-08-04、每次复盘手动 sed 改两处（TODO
+    bayes_evolution.py 硬编码条目）。现在日期抽成变量、支持命令行参数，避免每次手改。
+    """
+    date = None
+    if argv:
+        i = 0
+        while i < len(argv):
+            a = argv[i]
+            if a == "--date" and i + 1 < len(argv):
+                date = argv[i + 1]
+                i += 2
+                continue
+            if a.startswith("--date="):
+                date = a.split("=", 1)[1]
+            i += 1
+    if date:
+        return date
+    cand = []
+    for p in glob.glob(os.path.join("reviews", "*-trades.csv")):
+        m = re.search(r"(\d{4}-\d{2}-\d{2})-trades\.csv$", os.path.basename(p))
+        if m:
+            cand.append((m.group(1), p))
+    if not cand:
+        raise SystemExit("未找到 reviews/*-trades.csv，请用 --date YYYY-MM-DD 指定")
+    cand.sort(key=lambda x: x[0])
+    return cand[-1][0]
+
+
+DATE = _resolve_date(sys.argv[1:])
+CSV_PATH = f"reviews/{DATE}-trades.csv"
+
 # 读累积 trades CSV（单一数据源，与 review.py 同源；每次复盘更新此 CSV）
 # R = 扣双边手续费后的净 R（与 review.py net 口径一致）
 trades = []
-with open('reviews/2026-08-04-trades.csv') as fh:
+with open(CSV_PATH) as fh:
     for r in csv.DictReader(fh):
         sign = 1 if r['direction'].strip().lower() in ('long', '做多') else -1
         entry, exit_, shares = float(r['entry_price']), float(r['exit_price']), float(r['shares'])
@@ -160,7 +200,7 @@ ax.legend(loc='lower right', fontsize=9)
 ax.grid(alpha=0.3)
 mark_end_single(ax, xs, ppos, val_fmt='{:.1f}')
 plt.tight_layout()
-out = 'reviews/2026-08-04-bayes-evolution.png'
+out = f'reviews/{DATE}-bayes-evolution.png'
 plt.savefig(out, dpi=120)
 print(f'\n✅ 图已存 {out}')
 
@@ -180,7 +220,7 @@ ax2.legend(loc='lower right', fontsize=9)
 ax2.grid(alpha=0.3)
 mark_end_single(ax2, ev_xs, ev_mean, unit='R', val_fmt='{:+.2f}')
 plt.tight_layout()
-out2 = 'reviews/2026-08-04-ev-evolution.png'
+out2 = f'reviews/{DATE}-ev-evolution.png'
 plt.savefig(out2, dpi=120)
 print(f'✅ 图已存 {out2}')
 
@@ -202,7 +242,7 @@ ax3.legend(loc='lower right', fontsize=9)
 ax3.grid(alpha=0.3)
 mark_end_single(ax3, wr_xs, wr_bayes, val_fmt='{:.1f}')
 plt.tight_layout()
-out3 = 'reviews/2026-08-04-winrate-evolution.png'
+out3 = f'reviews/{DATE}-winrate-evolution.png'
 plt.savefig(out3, dpi=120)
 print(f'✅ 图已存 {out3}')
 
@@ -235,7 +275,7 @@ ax4.legend(loc='lower right', fontsize=9, ncol=2)
 ax4.grid(alpha=0.3)
 mark_end_multi(ax4, pg_xs, ends4)
 plt.tight_layout(rect=[0, 0, 0.80, 1])
-out4 = 'reviews/2026-08-04-pg-evolution.png'
+out4 = f'reviews/{DATE}-pg-evolution.png'
 plt.savefig(out4, dpi=120)
 print(f'\n✅ 图已存 {out4}')
 
@@ -259,7 +299,7 @@ ax5.legend(loc='lower right', fontsize=9, ncol=2)
 ax5.grid(alpha=0.3)
 mark_end_multi(ax5, pg_xs, ends5)
 plt.tight_layout(rect=[0, 0, 0.80, 1])
-out5 = 'reviews/2026-08-04-psum40-evolution.png'
+out5 = f'reviews/{DATE}-psum40-evolution.png'
 plt.savefig(out5, dpi=120)
 print(f'✅ 图已存 {out5}')
 
@@ -288,7 +328,7 @@ ax6.legend(loc='lower right', fontsize=9, ncol=2)
 ax6.grid(alpha=0.3)
 mark_end_multi(ax6, pg_xs, ends6)
 plt.tight_layout(rect=[0, 0, 0.80, 1])
-out6 = f'reviews/2026-08-04-pg{int(TARGET*100):02d}-evolution.png'
+out6 = f'reviews/{DATE}-pg{int(TARGET*100):02d}-evolution.png'
 plt.savefig(out6, dpi=120)
 print(f'✅ 图已存 {out6}')
 
@@ -311,7 +351,7 @@ ax7.legend(loc='lower right', fontsize=9, ncol=2)
 ax7.grid(alpha=0.3)
 mark_end_multi(ax7, pg_xs, ends7)
 plt.tight_layout(rect=[0, 0, 0.80, 1])
-out7 = f'reviews/2026-08-04-psum40-{int(TARGET*100):02d}pct-evolution.png'
+out7 = f'reviews/{DATE}-psum40-{int(TARGET*100):02d}pct-evolution.png'
 plt.savefig(out7, dpi=120)
 print(f'✅ 图已存 {out7}')
 

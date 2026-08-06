@@ -9,6 +9,8 @@
 - PreToolUse（matcher Bash）：盘中调 snapshot.py/hot_list.py 但 monitor_segment 未在跑 →
   exit 2 阻断 + stderr 提醒「密采样走 monitor_segment，禁 snapshot/hot_list 替代」。
   （monitor_segment 在跑时的 snapshot 是开仓前正常刷新，不阻。）
+- PreToolUse（matcher Bash，A4）：盘中单条 Bash 命令含 ≥2 次 monitor_segment.py 调用
+  （&& 连跑多段）→ exit 2 阻断 + stderr 提醒「连跑 = 段间不分析 = 等效降频」。
 - Stop：盘中且回合结束 monitor_segment 未在跑 → stderr 提醒「盯盘期间必须保持
   monitor_segment 循环，立即重启」。
 
@@ -118,6 +120,18 @@ def main():
     if hook_type == "pretool":
         tool_input = payload.get("tool_input") or {}
         command = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
+        # A4（2026-08-05）：单条 Bash 命令连跑多个 monitor_segment（&& 串联）= 等效降频——
+        # 段间 AI 不醒来分析、段结束通知只在全部段跑完后触发一次，采样间隔被拉到几分钟。
+        # 密采样唯一合法循环 = 单段 40 秒 → 段结束通知唤醒 AI 分析 → 重启下一段。
+        if command.count("monitor_segment.py") >= 2:
+            msg = (
+                f"⚠️ 密采样守卫阻断：单条 Bash 命令出现 {command.count('monitor_segment.py')} 次 monitor_segment 调用"
+                f"（&& 连跑多段）。连跑 = 段间 AI 不醒来分析 = 等效降频，违反密采样规定（2026-08-05 教训："
+                f"AI 误把段结束进程归 0 当断链、用 && 连跑 4 段减少断链点，被用户纠正——段结束进程归 0 本就正常，"
+                f"连跑才是故障）。请改为单段调用，靠段结束通知驱动循环。"
+            )
+            print(msg, file=sys.stderr)
+            sys.exit(2)  # PreToolUse exit 2 = 阻断 + stderr 反馈给 AI
         target = ""
         if "snapshot.py" in command:
             target = "snapshot"
