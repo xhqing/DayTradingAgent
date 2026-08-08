@@ -72,11 +72,13 @@ try:
     with open(_cfg_path) as _f:
         _risk = _json.load(_f).get('risk', {})
     _frac = _risk.get('risk_fraction'); _fmax = _risk.get('f_max', _frac)
+    _lev = _risk.get('max_leverage', 10)
     _eq_now, _cur, _eq_src = _le(_mode)
     if _frac is not None and _eq_now is not None:
         _M = _frac * _eq_now
         print(f"💰 模式 {_mode} | 风险比例 {_frac*100:.1f}% × 当前 equity {_eq_now:,.2f} {_cur} = 单笔预算 B {_M:,.2f}（f_max 硬上限 {_fmax*100:.1f}%，max_loss 不得突破）")
         print(f"   equity 来源：{_eq_src}")
+        print(f"⚖️  开仓市值上限 = equity × {_lev} 倍杠杆 = {_eq_now * _lev:,.2f} {_cur}（权益 {_eq_now:,.0f} → 最高开仓 {_eq_now * _lev:,.0f} 市值；选仓位时 max_loss 与市值两约束同时满足）")
     else:
         print(f"💰 ⚠️ config 缺 risk_fraction，盘中算仓位前务必手动确认")
 except Exception as _e:

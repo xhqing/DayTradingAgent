@@ -6,6 +6,14 @@
 
 ### 新增
 
+- **信号模式盯盘开仓市值 10 倍杠杆上限（2026-08-08 用户立）**：开仓市值（= 数量 × 开仓价）不得超过 `equity × max_leverage`（config 默认 10 倍）——权益 10 万 → 最高开仓 100 万市值。与 f_max 是两套独立约束：f_max 限 max_loss（风险敞口）、max_leverage 限开仓市值（名义敞口），选仓位时两者同时满足。**改了什么**：
+  - [`config.json`](.codebuddy/skills/trade/config.json) / [`config.example.json`](.codebuddy/skills/trade/config.example.json) 新增 `risk.max_leverage: 10`（含注释）。
+  - [`scripts/trade_utils_tiger.py`](.codebuddy/skills/trade/scripts/trade_utils_tiger.py) `calc_position_size` 增加市值杠杆约束：新增可选参数 `entry_price` / `max_leverage`（max_leverage 缺省自动读 config），选仓位按「双约束上界」（max_loss 上界 = equity×f_max÷止损距、市值上界 = equity×max_leverage÷开仓价，取较小者）夹逼，cap 压下来时退到上限内最大整手档；不传 entry_price 时行为与旧版完全一致（向后兼容）。
+  - [`scripts/open_position_tiger.py`](.codebuddy/skills/trade/scripts/open_position_tiger.py) / [`scripts/open_position_tiger_us.py`](.codebuddy/skills/trade/scripts/open_position_tiger_us.py) 自动算仓位时传 `entry_price=entry_ref` 启用市值约束。
+  - [`scripts/preflight.py`](.codebuddy/skills/trade/scripts/preflight.py) / [`scripts/resume.py`](.codebuddy/skills/trade/scripts/resume.py) 输出「开仓市值上限 = equity × N 倍杠杆」。
+  - [`SKILL.md`](.codebuddy/skills/trade/SKILL.md) 硬性护栏第 1 条重写为「单笔预算与 max_loss + 开仓市值杠杆上限」+ 6 要素第 5 条 / 开仓前自查清单同步补市值检查；[`references/risk-management.md`](.codebuddy/skills/trade/references/risk-management.md)「选仓位」新增市值杠杆上限节；[`references/signal-mode.md`](.codebuddy/skills/trade/references/signal-mode.md) 信号模式 AI 职责边界 + signal 专属自查补市值上限。
+  - **为什么改**：用户要求信号模式盯盘加 10 倍杠杆开仓上限（权益 10 万 → 最高开 100 万市值），防止高杠杆标的（2x/3x ETF）或窄止损距下名义敞口失控。
+
 - **美股开仓主单改市价单 MKT（2026-08-07 盘中实测发现并修复）**：美股开仓脚本（`trade_utils_tiger_us.py` 的 `submit_order_with_stop_us` / `open_position_tiger_us.py`）主单此前一直是 LMT 限价单——港股版 2026-08-07 已改 MKT（MINIMAX 当日 5 次 LMT 开仓全 Invalid 教训），美股版未同步。2026-08-07 盘中实测复现：MU 做空开仓，LMT 主单挂 bid 859.27，价格快速下探（859.08→857.99）8 秒超时未成交、脚本撤单开仓失败——限价单 + 8 秒超时撤单与高波动盘口不匹配，市价单立即成交、附加止损腿同一次提交无裸奔空窗。**改了什么**：`submit_order_with_stop_us` 主单 `"LMT"` + `limit_price` 改为 `"MKT"`（`submitted_price` 参数保留作参考、不再作限价），docstring 记录实测案例；`open_position_tiger_us.py` 的 `lo_price` 注释与 `method` 输出字段同步改为 `market+attached_stop`。**为什么改**：与港股版同日改造对齐，消除高波动标的开仓错过成交的机制缺陷。
 
 - **复盘必含「港美股表现差异分析」步骤（2026-08-07 用户立）**：8-07 复盘后用户要求把港美股差异归因沉淀为复盘固定步骤——港美股同源样本、同一执行规范、仅市场不同，方向分化（港正 +0.544R / 美负 −0.287R）超出噪音范畴，不拆解归因就无法把「市场差异」与「策略错误」分开。**改了什么**：

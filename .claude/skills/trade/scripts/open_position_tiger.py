@@ -129,7 +129,8 @@ def main():
             print(json.dumps(result_base, ensure_ascii=False))
             sys.exit(1)
         stop_distance = abs(entry_ref - stop_loss)
-        quantity, max_loss, budget_B = U.calc_position_size(equity, 0.02, 0.10, stop_distance, lot_size)
+        quantity, max_loss, budget_B = U.calc_position_size(
+            equity, 0.02, 0.10, stop_distance, lot_size, entry_price=entry_ref)
         if quantity <= 0:
             result_base.update({"ok": False, "error": "仓位为 0（止损距太大或权益不足）"})
             print(json.dumps(result_base, ensure_ascii=False))

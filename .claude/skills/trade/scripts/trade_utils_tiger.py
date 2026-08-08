@@ -655,19 +655,53 @@ def check_price_in_range(direction, current_price, entry_ref, stop_loss, target,
     return in_range, range_low, range_high, odds_at_ref, odds_at_current
 
 
-def calc_position_size(equity, risk_fraction, f_max, stop_distance, lot_size):
-    """按 B = risk_fraction*equity、max_loss 上限 f_max*equity 选最接近 B 的 lot 离散仓位。"""
+def calc_position_size(equity, risk_fraction, f_max, stop_distance, lot_size,
+                       entry_price=None, max_leverage=None):
+    """按 B = risk_fraction*equity、max_loss 上限 f_max*equity 选最接近 B 的 lot 离散仓位。
+
+    2026-08-08 新增市值杠杆上限约束：开仓市值（= 数量 × 开仓价）不得超过 equity × max_leverage
+    （默认 10 倍，取 config.risk.max_leverage；权益 10 万 → 最高开 100 万市值）。与 f_max 是两套
+    独立约束——f_max 限 max_loss（风险敞口）、max_leverage 限开仓市值（名义敞口），候选档须同时
+    满足两者。
+
+    max_leverage=None 时回退读 skill config.json 的 risk.max_leverage（默认 10）；entry_price 传
+    参考价/开仓价（用作市值估算基准）。
+
+    双约束上界：max_loss 上界 = equity×f_max ÷ 止损距；市值上界 = equity×max_leverage ÷ 开仓价
+    （有 entry_price 时）。取两者较小者向下取整到整手 = ub_lot；目标档 center = min(按 B 算的
+    base 档, ub_lot)——cap 压下来则退到 ub_lot（市值/风险上限内的最大档），再在 center 附近
+    ±2 档里选实际 max_loss 最接近 B 的档（剔除超 cap 的档）。"""
+    import json
+    from pathlib import Path
+    if max_leverage is None:
+        try:
+            _cfg_path = Path(__file__).resolve().parent.parent / "config.json"
+            with open(_cfg_path) as _f:
+                max_leverage = float(json.load(_f).get("risk", {}).get("max_leverage", 10))
+        except Exception:
+            max_leverage = 10.0
     B = equity * risk_fraction
     max_loss_cap = equity * f_max
+    notional_cap = equity * max_leverage if entry_price else None
     raw = B / stop_distance if stop_distance > 0 else 0
     base = int(raw // lot_size) * lot_size
+    # 双约束上界（整手）
+    ub = max_loss_cap / stop_distance if stop_distance > 0 else float("inf")
+    if notional_cap is not None:
+        ub = min(ub, notional_cap / entry_price)
+    ub_lot = int(ub // lot_size) * lot_size
+    if ub_lot <= 0:
+        return 0, 0, B
+    center = min(base, ub_lot)
     candidates = []
-    for mult in [-1, 0, 1, 2]:
-        s = base + mult * lot_size
+    for mult in [-2, -1, 0, 1, 2]:
+        s = center + mult * lot_size
         if s <= 0:
             continue
         ml = s * stop_distance
         if ml > max_loss_cap:
+            continue
+        if notional_cap is not None and s * entry_price > notional_cap:
             continue
         candidates.append((s, ml))
     if not candidates:

@@ -167,12 +167,14 @@ try:
         risk = json.load(f).get("risk", {})
     frac = risk.get("risk_fraction")
     fmax = risk.get("f_max", frac)
+    lev = risk.get("max_leverage", 10)
     eq_now, cur, eq_src = _le(mode)
     if frac is not None and eq_now is not None:
         print(
             f"\n💰 模式 {mode} | 当前 equity {eq_now:,.2f} {cur} × {frac*100:.1f}% = 单笔预算 B {frac*eq_now:,.2f}"
             f"（f_max 硬上限 {fmax*100:.1f}%）| 来源：{eq_src}"
         )
+        print(f"⚖️  开仓市值上限 = equity × {lev} 倍杠杆 = {eq_now * lev:,.2f} {cur}（选仓位时 max_loss 与市值两约束同时满足）")
 except Exception as e:
     print(f"\n💰 ⚠️ 读 config/equity 失败（{e}）——执行前手动确认 B")
 
