@@ -33,6 +33,8 @@
 
 ⚠️ **f_max 硬上限（开仓前选仓位）**：按参考价选仓位时，选中的仓位其预估 max_loss 不得超过 `equity × config.risk.f_max`（f_max 当前 10%，是 f 的放大硬上限，preflight 输出「f_max 硬上限」）；若「最接近 B」那一档的 max_loss 已超 f_max 上限，**开仓前**退一档选更小的离散仓位。**f_max 是风控绝对红线，max_loss 可超 B 但不可超 equity × f_max**。
 
+⚠️ **开仓市值杠杆上限（2026-08-08 立）**：开仓市值 = 仓位 × 开仓价（参考价估算），**不得超过 `equity × config.risk.max_leverage`**（max_leverage 默认 10，即 10 倍杠杆——权益 10 万最高开 100 万市值）。**与 f_max 是两套独立约束**：f_max 限 max_loss（风险敞口）、max_leverage 限开仓市值（名义敞口），选仓位时**两者同时满足**——离散候选档里先剔除「max_loss > equity×f_max」或「市值 > equity×max_leverage」的档，再在剩余档里选最接近 B 的。若最接近 B 的那档超市值上限、退一档仍超，则继续退档直至 ≤ 上限；所有档都超（止损距过小导致原始仓位过大）则不开仓（仓位返回 0）。`trade_utils_tiger.calc_position_size` 已实现该约束（max_leverage=None 时自动读 config.risk.max_leverage）。
+
 ## 成交后超 f_max 的处理（拆两笔设两个止损单）
 
 开仓前用参考价选仓位，但实际成交价可能偏离参考价，导致**成交后按实际成交价重算的实际 max_loss 超 f_max**。此时**禁止减仓退档**（全局禁止主动减仓），改用**拆两笔、设两个止损单**的方式把有效 max_loss 压回 f_max 以内：

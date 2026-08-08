@@ -137,4 +137,5 @@ AI 调用脚本下单后，脚本 JSON 输出 order_id 和成交价，AI 据此�
 - [ ] **从脚本输出获取执行结果**：调用脚本下单后从 JSON 输出获取 order_id 和成交价（禁止用 `last_price` 冒充成交价——MU 事故教训）？
 - [ ] **价格范围校验**：开仓前，脚本自动检查当前价是否在价格范围内（公式见 `references/risk-management.md`「价格范围计算」）？超出则脚本拒绝并输出原因？
 - [ ] **成交后 max_loss 复核**：成交后按实际成交价重算实际 max_loss；若超 f_max，禁止减仓退档，改用拆两笔设两个止损单来压回 f_max 内（见 `references/risk-management.md`「成交后超 f_max 的处理」）？
+- [ ] **开仓市值 ≤ equity × max_leverage（10 倍杠杆上限）？** 开仓市值 = 量 × 开仓价，不得超过 equity × max_leverage（config.risk.max_leverage 默认 10，权益 10 万 → 最高开 100 万市值；自动算仓位脚本已内置该约束，与 f_max 两约束同时满足，见 `risk-management.md`「选仓位」）？（2026-08-08 立）
 - [ ] **交易动作记录**：下单成功后 `log_action.sh` 写入 `actions/` 目录？

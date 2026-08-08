@@ -10,6 +10,8 @@
     "_comment_equity": "初始权益。当前 equity = initial_equity + 累积已了结盈亏(港股直接 HKD、美股按当日汇率换算),每笔了结后更新。",
     "f_max": 0.10,
     "_comment_fmax": "风险比例硬上限:实际 max_loss 不得超过 equity×f_max(选仓位选最接近 B 的档、但 max_loss 不可超此上限)。当前 f_max 10% 远大于 risk_fraction f 2%(B=equity×2%),max_loss 上限=equity×10% 是 B 的 5 倍,给 lot_size 离散选档留足向上余量(选最接近 B 的档即可,很难触顶)。AI 不得自行突破。",
+    "max_leverage": 10,
+    "_comment_max_leverage": "开仓市值杠杆上限:开仓市值(=数量×开仓价)不得超过 equity×max_leverage。默认 10 倍——权益 10 万最高可开 100 万市值。与 f_max 是两套独立约束:f_max 限 max_loss(风险敞口)、max_leverage 限开仓市值(名义敞口),选仓位时两者同时满足。AI 不得自行突破。",
     "loss_limit_scope": "per_trade",
     "_comment_scope": "损失限额周期: per_trade=每笔独立无日累计上限; per_day=日累计上限。默认 per_trade。",
     "stop_loss_method": "technical",
