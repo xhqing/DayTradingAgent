@@ -111,7 +111,7 @@ def main():
                             "max_loss": round(max_loss, 2)})
     result_base["quantity"] = quantity
 
-    # 主单 LMT 价：做多取 ask（主动买）/做空取 bid（主动卖），取整到美股 tick 0.01
+    # 参考价（主单已改 MKT 市价单，此价仅作输出参考）：做多取 ask / 做空取 bid，取整到美股 tick 0.01
     if direction == "long":
         lo_price = quote["ask"] if quote.get("ask") else current_price
     else:
@@ -145,7 +145,7 @@ def main():
         fill_price = lo_price
         fill_src = "lo_price（成交均价缺失兜底）"
     result_base.update({"ok": True, "fill_price": fill_price, "fill_price_source": fill_src,
-                        "method": "limit+attached_stop",
+                        "method": "market+attached_stop",
                         "stop": f"attached LOSS @ {stop_loss}", "main_status": status})
     print(json.dumps(result_base, ensure_ascii=False))
 

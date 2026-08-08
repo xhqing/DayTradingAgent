@@ -326,10 +326,14 @@ def _make_order(tc, config, symbol, action, order_type, quantity,
 
 
 def submit_order_with_stop_tiger(config, symbol, side, quantity, submitted_price,
-                                 stop_loss_price, retries=3):
-    """开仓：主单 LMT + 附加止损腿 OrderLeg('LOSS', stop_loss_price)（一次提交）。
+                                 stop_loss_price, order_type="LMT", retries=3):
+    """开仓：主单（LMT 限价 / MKT 市价）+ 附加止损腿 OrderLeg('LOSS', stop_loss_price)（一次提交）。
 
     side: 'Buy'（做多开仓）/ 'Sell'（做空开仓）——注意转老虎 'BUY'/'SELL'。
+    order_type: 'LMT'（限价主单，limit_price=submitted_price）/'MKT'（市价主单，不传限价）。
+      2026-08-07 改：默认 'LMT' 改为由调用方显式传——高波动标的（如 MINIMAX）限价单 + 8 秒
+      超时撤单极易错过成交（当日 5 次开仓全部 Invalid），市价单开仓可立即成交；
+      MKT 主单 + LOSS 腿同一次提交，无「先开仓后挂止损」的裸奔空窗。
     附加止损腿的方向与触发语义由券商按主单方向自动定（做多跌触发卖、做空涨触发买）；
     腿 TIF 默认 DAY（日内策略当日有效；跨日场景待实测）。
     返回全局订单 id。
@@ -341,6 +345,8 @@ def submit_order_with_stop_tiger(config, symbol, side, quantity, submitted_price
             tc = new_trade_client(config)
             action = "BUY" if side == "Buy" else "SELL"
             legs = [OrderLeg("LOSS", stop_loss_price)]
+            if order_type == "MKT":
+                return _make_order(tc, config, symbol, action, "MKT", quantity, order_legs=legs)
             return _make_order(tc, config, symbol, action, "LMT", quantity,
                                limit_price=submitted_price, order_legs=legs)
         except Exception as e:
@@ -349,7 +355,7 @@ def submit_order_with_stop_tiger(config, symbol, side, quantity, submitted_price
                 time.sleep(0.5 * (attempt + 1))
                 continue
     raise RuntimeError(
-        f"老虎开仓（LMT+附加止损）提交失败 {symbol} {side} qty={quantity} "
+        f"老虎开仓（{order_type}+附加止损）提交失败 {symbol} {side} qty={quantity} "
         f"price={submitted_price} stop={stop_loss_price}: {last_err}"
     )
 
