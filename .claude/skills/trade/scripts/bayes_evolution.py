@@ -42,12 +42,14 @@ def _fee_per_side(symbol):
     raise ValueError(f"未知市场前缀、无法定费率: {symbol!r}（只支持 HK. / US.）")
 
 def _resolve_date(argv=None):
-    """解析 --date YYYY-MM-DD；不传自动找 reviews/ 下最新 *-trades.csv（按文件名日期取最大）。
+    """解析 --date YYYY-MM-DD（+可选 --suffix，如 -hk / -us，用于港美股分开出图）；
+    不传 --date 自动找 reviews/ 下最新 *-trades.csv（按文件名日期取最大，忽略 -hk/-us 后缀文件）。
 
-    2026-08-05 立：此前路径与输出名硬编码 2026-08-04、每次复盘手动 sed 改两处（TODO
-    bayes_evolution.py 硬编码条目）。现在日期抽成变量、支持命令行参数，避免每次手改。
+    2026-08-05 立：日期抽成变量、支持命令行参数，避免每次手改。
+    2026-08-07 立：支持 --suffix 分市场出图——读 reviews/{DATE}-trades{suffix}.csv、
+    输出 reviews/{DATE}{suffix}-*.png（如 --date 2026-08-07 --suffix -hk）。
     """
-    date = None
+    date, suffix = None, ""
     if argv:
         i = 0
         while i < len(argv):
@@ -58,22 +60,28 @@ def _resolve_date(argv=None):
                 continue
             if a.startswith("--date="):
                 date = a.split("=", 1)[1]
+            if a == "--suffix" and i + 1 < len(argv):
+                suffix = argv[i + 1]
+                i += 2
+                continue
+            if a.startswith("--suffix="):
+                suffix = a.split("=", 1)[1]
             i += 1
-    if date:
-        return date
-    cand = []
-    for p in glob.glob(os.path.join("reviews", "*-trades.csv")):
-        m = re.search(r"(\d{4}-\d{2}-\d{2})-trades\.csv$", os.path.basename(p))
-        if m:
-            cand.append((m.group(1), p))
-    if not cand:
-        raise SystemExit("未找到 reviews/*-trades.csv，请用 --date YYYY-MM-DD 指定")
-    cand.sort(key=lambda x: x[0])
-    return cand[-1][0]
+    if not date:
+        cand = []
+        for p in glob.glob(os.path.join("reviews", "*-trades.csv")):
+            m = re.search(r"(\d{4}-\d{2}-\d{2})-trades\.csv$", os.path.basename(p))
+            if m:
+                cand.append((m.group(1), p))
+        if not cand:
+            raise SystemExit("未找到 reviews/*-trades.csv，请用 --date YYYY-MM-DD 指定")
+        cand.sort(key=lambda x: x[0])
+        date = cand[-1][0]
+    return date, suffix
 
 
-DATE = _resolve_date(sys.argv[1:])
-CSV_PATH = f"reviews/{DATE}-trades.csv"
+DATE, SUFFIX = _resolve_date(sys.argv[1:])
+CSV_PATH = f"reviews/{DATE}-trades{SUFFIX}.csv"
 
 # 读累积 trades CSV（单一数据源，与 review.py 同源；每次复盘更新此 CSV）
 # R = 扣双边手续费后的净 R（与 review.py net 口径一致）
@@ -200,7 +208,7 @@ ax.legend(loc='lower right', fontsize=9)
 ax.grid(alpha=0.3)
 mark_end_single(ax, xs, ppos, val_fmt='{:.1f}')
 plt.tight_layout()
-out = f'reviews/{DATE}-bayes-evolution.png'
+out = f'reviews/{DATE}{SUFFIX}-bayes-evolution.png'
 plt.savefig(out, dpi=120)
 print(f'\n✅ 图已存 {out}')
 
@@ -220,7 +228,7 @@ ax2.legend(loc='lower right', fontsize=9)
 ax2.grid(alpha=0.3)
 mark_end_single(ax2, ev_xs, ev_mean, unit='R', val_fmt='{:+.2f}')
 plt.tight_layout()
-out2 = f'reviews/{DATE}-ev-evolution.png'
+out2 = f'reviews/{DATE}{SUFFIX}-ev-evolution.png'
 plt.savefig(out2, dpi=120)
 print(f'✅ 图已存 {out2}')
 
@@ -242,7 +250,7 @@ ax3.legend(loc='lower right', fontsize=9)
 ax3.grid(alpha=0.3)
 mark_end_single(ax3, wr_xs, wr_bayes, val_fmt='{:.1f}')
 plt.tight_layout()
-out3 = f'reviews/{DATE}-winrate-evolution.png'
+out3 = f'reviews/{DATE}{SUFFIX}-winrate-evolution.png'
 plt.savefig(out3, dpi=120)
 print(f'✅ 图已存 {out3}')
 
@@ -275,7 +283,7 @@ ax4.legend(loc='lower right', fontsize=9, ncol=2)
 ax4.grid(alpha=0.3)
 mark_end_multi(ax4, pg_xs, ends4)
 plt.tight_layout(rect=[0, 0, 0.80, 1])
-out4 = f'reviews/{DATE}-pg-evolution.png'
+out4 = f'reviews/{DATE}{SUFFIX}-pg-evolution.png'
 plt.savefig(out4, dpi=120)
 print(f'\n✅ 图已存 {out4}')
 
@@ -299,7 +307,7 @@ ax5.legend(loc='lower right', fontsize=9, ncol=2)
 ax5.grid(alpha=0.3)
 mark_end_multi(ax5, pg_xs, ends5)
 plt.tight_layout(rect=[0, 0, 0.80, 1])
-out5 = f'reviews/{DATE}-psum40-evolution.png'
+out5 = f'reviews/{DATE}{SUFFIX}-psum40-evolution.png'
 plt.savefig(out5, dpi=120)
 print(f'✅ 图已存 {out5}')
 
@@ -328,7 +336,7 @@ ax6.legend(loc='lower right', fontsize=9, ncol=2)
 ax6.grid(alpha=0.3)
 mark_end_multi(ax6, pg_xs, ends6)
 plt.tight_layout(rect=[0, 0, 0.80, 1])
-out6 = f'reviews/{DATE}-pg{int(TARGET*100):02d}-evolution.png'
+out6 = f'reviews/{DATE}{SUFFIX}-pg{int(TARGET*100):02d}-evolution.png'
 plt.savefig(out6, dpi=120)
 print(f'✅ 图已存 {out6}')
 
@@ -351,7 +359,7 @@ ax7.legend(loc='lower right', fontsize=9, ncol=2)
 ax7.grid(alpha=0.3)
 mark_end_multi(ax7, pg_xs, ends7)
 plt.tight_layout(rect=[0, 0, 0.80, 1])
-out7 = f'reviews/{DATE}-psum40-{int(TARGET*100):02d}pct-evolution.png'
+out7 = f'reviews/{DATE}{SUFFIX}-psum40-{int(TARGET*100):02d}pct-evolution.png'
 plt.savefig(out7, dpi=120)
 print(f'✅ 图已存 {out7}')
 

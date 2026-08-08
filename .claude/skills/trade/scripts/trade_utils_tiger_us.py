@@ -201,8 +201,11 @@ def _make_order_us(tc, config, symbol, action, order_type, quantity,
 
 def submit_order_with_stop_us(config, symbol, side, quantity, submitted_price,
                               stop_loss_price, retries=3):
-    """美股开仓：主单 LMT + 附加止损腿 OrderLeg('LOSS', stop_loss_price)。返回全局订单 id。
+    """美股开仓：主单 MKT 市价单 + 附加止损腿 OrderLeg('LOSS', stop_loss_price)。返回全局订单 id。
 
+    2026-08-07 主单改市价单（与港股版同日改造对齐）：高波动标的（MU 等）限价单 + 8 秒超时撤单
+    极易错过成交（22:08 实测：MU 做空 LMT 挂 bid 859.27、现价快速下探 8 秒内未成交被撤，开仓失败），
+    市价单立即成交、附加止损腿同一次提交无裸奔空窗。submitted_price 保留参数作参考（不再作限价）。
     附加止损腿方向与触发语义由券商按主单方向自动定（与港股一致）。"""
     from tigeropen.trade.domain.order import OrderLeg
     last_err = None
@@ -211,8 +214,7 @@ def submit_order_with_stop_us(config, symbol, side, quantity, submitted_price,
             tc = new_trade_client(config)
             action = "BUY" if side == "Buy" else "SELL"
             legs = [OrderLeg("LOSS", stop_loss_price)]
-            return _make_order_us(tc, config, symbol, action, "LMT", quantity,
-                                  limit_price=submitted_price, order_legs=legs)
+            return _make_order_us(tc, config, symbol, action, "MKT", quantity, order_legs=legs)
         except Exception as e:
             last_err = e
             if attempt < retries - 1:

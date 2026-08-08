@@ -234,7 +234,41 @@ def _attach_process_metrics(result_base, config, symbol, direction, entry_price,
 
 def _fallback_cancel_and_mo(config, symbol, close_side, quantity, result_base,
                             direction=None, entry_price=None, stop_dist=None):
-    """fallback：撤止损单 + MO 平仓（modify 路径失败时兜底，回到原逻辑）。"""
+    """fallback：撤止损单 + MO 平仓（modify 路径失败时兜底，回到原逻辑）。
+
+    ⚠️ 2026-08-07 事故修复：**下 MO 前必须先复查持仓**——modify 触发价=现价后，止损单可能
+    已实际触发成交（价格瞬时穿越触发价、轮询状态滞后误判「未触发」），此时持仓已被平；
+    若再撤止损 + MO 按原量平仓，会**超卖反向开仓**（实测复现：MINIMAX 平多 20 股 → 反向
+    开空 20 股，与 2026-08-03「撤止损+MO 反向开空 -36500」同根 race 的残留路径）。
+    修复：先查持仓——已空 → 只撤残留止损单、不下 MO；持仓剩余 < 原量 → MO 只平剩余量。
+    """
+    # 复查持仓：STP 可能已实际触发成交（轮询状态滞后），持仓已空/减少则不能按原量超卖
+    try:
+        pos = U.get_open_position_tiger(config, symbol)
+    except Exception:
+        pos = None
+    remaining = abs(pos.get("quantity", 0)) if pos else 0
+    if remaining == 0:
+        # 止损单已实际触发成交、仓位已平 → 只撤残留止损单（防残留单下次误触发）
+        try:
+            n, ids = U.cancel_all_stop_orders_tiger(config, symbol)
+            result_base["stop_orders_cancelled"] = n
+            if n > 0:
+                result_base["cancelled_order_ids"] = ids
+        except Exception as e:
+            result_base["stop_orders_cancelled_warning"] = f"撤止损单失败（需手动）: {e}"
+        result_base.update({
+            "ok": True,
+            "method": "fallback：持仓复查为空——止损单已实际触发成交平仓（轮询状态滞后误判），仅撤残留止损单、不下 MO",
+            "main_status": "Filled(by_stop)"})
+        _attach_process_metrics(result_base, config, symbol, direction if direction else None,
+                                entry_price, stop_dist)
+        print(json.dumps(result_base, ensure_ascii=False))
+        sys.exit(0)
+    if remaining < quantity:
+        result_base["quantity_adjusted"] = f"持仓剩余 {remaining} < 原量 {quantity}，MO 只平剩余量"
+        quantity = remaining
+
     try:
         n, ids = U.cancel_all_stop_orders_tiger(config, symbol)
         result_base["stop_orders_cancelled"] = n
