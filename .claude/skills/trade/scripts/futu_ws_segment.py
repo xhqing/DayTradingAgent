@@ -31,7 +31,7 @@ connection」）——2026-08-07 盘中实测：auto 会话占着老虎连接跑
 import os
 import sys
 import time
-import signal
+import threading
 from datetime import date
 
 from futu import OpenQuoteContext, SubType, TickerHandlerBase, RET_OK
@@ -126,48 +126,58 @@ def main():
     global broke
     broke = []
 
-    def hard_timeout(signum, frame):
+    def _run():
+        """实际盯盘流程（子线程执行）。主线程 join 超时兜底——Windows 的 Python 没有
+        SIGALRM/signal.alarm（2026-08-09 跨平台适配），改用 threading 实现等价硬超时：
+        订阅/主循环卡住时由主线程超时接管收尾退出。ctx 用模块级 global（超时路径也要访问）。"""
+        global ctx
+        ctx = OpenQuoteContext('127.0.0.1', 11111)
+        ctx.set_handler(TickerSink())
+        ret, err = ctx.subscribe(symbols, [SubType.TICKER] * len(symbols))
+        if ret != RET_OK:
+            print(f'>>> 订阅失败: {err}（检查 OpenD 行情权限）', flush=True)
+            ctx.close()
+            os._exit(2)
+        print(f'>>> 已订阅 TICKER {symbols}，每秒采样 {duration}s…', flush=True)
+
+        # 主循环：每秒写各标的 log（取该秒最后一条逐笔价）
+        t0 = time.time()
+        last_sec = None
+        while time.time() - t0 < duration:
+            cur_sec = time.strftime('%H:%M:%S')
+            if cur_sec != last_sec:
+                last_sec = cur_sec
+                for sym, d in seg.items():
+                    if d['last'] is None:
+                        continue
+                    # ts,code,last,bid,ask,买卖比空,量比空,high,low,额空,止损空
+                    with open(logs[sym], 'a') as f:
+                        f.write(f'{cur_sec},{sym},{d["last"]},,,,{d["high"]},{d["low"]},,\n')
+            time.sleep(0.2)
+
+        try:
+            ctx.unsubscribe(symbols, [SubType.TICKER] * len(symbols))
+        except Exception:
+            pass
+        ctx.close()
+        finish()
+
+    # 跨平台硬超时兜底：原 signal.SIGALRM 在 Windows 不存在，
+    # 改为主线程 join 子线程 + 超时强制收尾退出（行为等价：段卡住也会被强杀）。
+    worker = threading.Thread(target=_run, daemon=True)
+    worker.start()
+    worker.join(timeout=duration + 15)
+    if worker.is_alive():
+        print(f'>>> 段硬超时（{duration + 15}s 未正常结束），强制收尾退出', file=sys.stderr, flush=True)
         finish()
         if ctx is not None:
             try:
                 ctx.close()
             except Exception:
                 pass
-        sys.exit(0)
-
-    signal.signal(signal.SIGALRM, hard_timeout)
-    signal.alarm(duration + 15)
-
-    ctx = OpenQuoteContext('127.0.0.1', 11111)
-    ctx.set_handler(TickerSink())
-    ret, err = ctx.subscribe(symbols, [SubType.TICKER] * len(symbols))
-    if ret != RET_OK:
-        print(f'>>> 订阅失败: {err}（检查 OpenD 行情权限）')
-        ctx.close()
-        sys.exit(2)
-    print(f'>>> 已订阅 TICKER {symbols}，每秒采样 {duration}s…', flush=True)
-
-    # 主循环：每秒写各标的 log（取该秒最后一条逐笔价）
-    t0 = time.time()
-    last_sec = None
-    while time.time() - t0 < duration:
-        cur_sec = time.strftime('%H:%M:%S')
-        if cur_sec != last_sec:
-            last_sec = cur_sec
-            for sym, d in seg.items():
-                if d['last'] is None:
-                    continue
-                # ts,code,last,bid,ask,买卖比空,量比空,high,low,额空,止损空
-                with open(logs[sym], 'a') as f:
-                    f.write(f'{cur_sec},{sym},{d["last"]},,,,{d["high"]},{d["low"]},,\n')
-        time.sleep(0.2)
-
-    try:
-        ctx.unsubscribe(symbols, [SubType.TICKER] * len(symbols))
-    except Exception:
-        pass
-    ctx.close()
-    finish()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
 
 
 def finish():

@@ -46,15 +46,30 @@ mkdir -p "$SIGNALS_DIR"
 
 NOW="${NOW:-$(date "+%Y-%m-%d %H:%M:%S")}"
 
-# 响铃（type → 音色）
-case "$TYPE" in
-  open)  DEFAULT_SOUND="Glass" ;;      # 开仓/加仓：清脆叮
-  close) DEFAULT_SOUND="Hero" ;;       # 平仓/减仓：上扬号角
-  ts)    DEFAULT_SOUND="Submarine" ;;  # 移动止损：低沉咚
-  *)     DEFAULT_SOUND="Funk" ;;       # 兜底
+# 响铃（type → 音色；2026-08-09 跨平台适配：macOS 用系统音 afplay、
+# Windows 用 PowerShell 蜂鸣按频率/时长区分音色，语义与 macOS 音色一一对应）
+case "$(uname)" in
+  MINGW*|MSYS*|CYGWIN*)
+    # Windows：open=清脆高音(880Hz/200ms) close=上扬长音(1200Hz/400ms) ts=低沉(440Hz/300ms)
+    case "$TYPE" in
+      open)  _FREQ=880  _DUR=200 ;;
+      close) _FREQ=1200 _DUR=400 ;;
+      ts)    _FREQ=440  _DUR=300 ;;
+      *)     _FREQ=700  _DUR=200 ;;
+    esac
+    powershell -NoProfile -Command "[console]::Beep($_FREQ,$_DUR)" >/dev/null 2>&1 &
+    ;;
+  *)
+    case "$TYPE" in
+      open)  DEFAULT_SOUND="Glass" ;;      # 开仓/加仓：清脆叮
+      close) DEFAULT_SOUND="Hero" ;;       # 平仓/减仓：上扬号角
+      ts)    DEFAULT_SOUND="Submarine" ;;  # 移动止损：低沉咚
+      *)     DEFAULT_SOUND="Funk" ;;       # 兜底
+    esac
+    SOUND="${SOUND:-$DEFAULT_SOUND}"
+    afplay "/System/Library/Sounds/${SOUND}.aiff" 2>/dev/null &
+    ;;
 esac
-SOUND="${SOUND:-$DEFAULT_SOUND}"
-afplay "/System/Library/Sounds/${SOUND}.aiff" 2>/dev/null &
 
 # 记 ring-log（响铃时刻 = 下单基准，事后匹配响铃时刻价、判成交）
 LOG_FILE="$SIGNALS_DIR/ring-log.csv"

@@ -86,27 +86,61 @@ except Exception as _e:
 
 # positions 检查已移除（2026-07-15 信号模式：假设执行、不查 positions，见 SKILL「信号模式总则」第 1 条）
 
-# 防系统睡眠（2026-07-25 立 → 2026-07-27 修订：无条件自动启用，取代旧「检测电源 + 弹窗建议启用 keep-awake」）。
+# 防系统睡眠（2026-07-25 立 → 2026-07-27 修订：无条件自动启用，取代旧「检测电源 + 弹窗建议启用 keep-awake」；
+# 2026-08-09 跨平台适配：macOS 用 caffeinate -s、Windows 用 keepawake.py 常驻进程）。
 # 根因：盯盘期间系统睡眠会暂停所有进程——富途 OpenD 的 get_market_snapshot 无 timeout、卡到 TCP 超时
-# ~15 分钟才返回、整段采样空窗；claude-proxy、xpilot 同断。故盯盘预热（preflight）无条件启用
-# caffeinate -s（创建 PreventSystemSleep assertion、防合盖 Clamshell 与维护 Maintenance 两类系统级睡眠），
+# ~15 分钟才返回、整段采样空窗；claude-proxy、xpilot 同断。故盯盘预热（preflight）无条件启用防睡眠
+# （macOS：caffeinate -s 创建 PreventSystemSleep assertion、防合盖 Clamshell 与维护 Maintenance 两类系统级睡眠；
+# Windows：keepawake.py 调 SetThreadExecutionState ES_SYSTEM_REQUIRED 阻止自动睡眠，等价 caffeinate -s），
 # 不再询问开盖/合盖、不再弹窗建议「启用合盖盯盘」（keep-awake skill 已并入本流程、不再独立触发；
 # 开盖盯盘无所谓电池/电源、电池下合盖是硬件强制软件防不住但防空闲维护睡眠仍有效，故统一启用、不提醒）。
 # 停止盯盘时由 trade 停盯流程调 keep-awake/scripts/off.sh 解除。
-def _ensure_awake():
-    import subprocess as _sp, time as _t
-    if _sp.run(["pgrep", "-f", "caffeinate -s"], stdout=_sp.DEVNULL).returncode == 0:
-        print("☕ caffeinate -s 已在跑（盯盘防系统睡眠；停盯时自动解除）")
-        return
+def _proc_running(keyword):
+    """跨平台进程检测：macOS/Linux 用 pgrep，Windows 用 PowerShell CIM 按命令行匹配（无 pgrep）。"""
+    import subprocess as _sp
+    if _os.name == "nt":
+        ps = ("powershell", "-NoProfile", "-Command",
+              f"if (Get-CimInstance Win32_Process | Where-Object {{ $_.CommandLine -like '*{keyword}*' }}) {{ exit 0 }} else {{ exit 1 }}")
+    else:
+        ps = ("pgrep", "-f", keyword)
     try:
-        _sp.Popen(["caffeinate", "-s"], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
-        _t.sleep(0.5)
-        if _sp.run(["pgrep", "-f", "caffeinate -s"], stdout=_sp.DEVNULL).returncode == 0:
-            print("☕ caffeinate -s 已启动（盯盘防系统睡眠；停盯时自动解除）")
-        else:
-            print("⚠️ caffeinate 启动失败（盯盘期间注意别让系统睡眠）")
-    except Exception as _e:
-        print(f"⚠️ 启用防睡眠失败（{_e}）（盯盘期间注意别让系统睡眠）")
+        return _sp.run(ps, stdout=_sp.DEVNULL, timeout=15).returncode == 0
+    except Exception:
+        return False
+
+
+def _ensure_awake():
+    import subprocess as _sp, time as _t, sys as _sys
+    if _os.name == "nt":
+        # Windows：启动 keepawake.py 常驻进程（见 keep-awake/scripts/keepawake.py；用 sys.executable
+        # 启动同一解释器，避免「python3/python 命令名」的平台差异）
+        _kw = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..', '..', 'keep-awake', 'scripts', 'keepawake.py')
+        if _proc_running("keepawake.py"):
+            print("☕ keepawake.py 已在跑（盯盘防系统睡眠；停盯时自动解除）")
+            return
+        try:
+            _sp.Popen([_sys.executable, _kw], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+            _t.sleep(1)
+            if _proc_running("keepawake.py"):
+                print("☕ keepawake.py 已启动（盯盘防系统睡眠；停盯时自动解除）")
+            else:
+                print("⚠️ keepawake.py 启动失败（盯盘期间注意别让系统睡眠）")
+        except Exception as _e:
+            print(f"⚠️ 启用防睡眠失败（{_e}）（盯盘期间注意别让系统睡眠）")
+    else:
+        # macOS/Linux：caffeinate -s
+        if _proc_running("caffeinate -s"):
+            print("☕ caffeinate -s 已在跑（盯盘防系统睡眠；停盯时自动解除）")
+            return
+        try:
+            _sp.Popen(["caffeinate", "-s"], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+            _t.sleep(0.5)
+            if _proc_running("caffeinate -s"):
+                print("☕ caffeinate -s 已启动（盯盘防系统睡眠；停盯时自动解除）")
+            else:
+                print("⚠️ caffeinate 启动失败（盯盘期间注意别让系统睡眠）")
+        except Exception as _e:
+            print(f"⚠️ 启用防睡眠失败（{_e}）（盯盘期间注意别让系统睡眠）")
 
 _ensure_awake()
 

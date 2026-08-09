@@ -144,7 +144,8 @@ To actually run Victor, you need — outside this repo:
 - [Claude Code](https://claude.com/claude-code)
 - **Tiger** SDK (`tigeropen`) configured at `~/.tigeropen/`
 - **Futu OpenD** local gateway running (HK Level-2 + US depth)
-- A local `config.json` and `accounts.json` filled in from the `*.example.json` templates (accounts.json only needs the Tiger section); optionally copy `.claude/settings.local.example.json` → `.claude/settings.local.json` to pre-allow `python3` commands
+- A local `config.json` and `accounts.json` filled in from the `*.example.json` templates (accounts.json only needs the Tiger section); optionally copy `.claude/settings.local.example.json` → `.claude/settings.local.json` to add extra command pre-approvals
+- **Windows users** (scripts and guardrails are dual-platform since 2026-08-09): install Git for Windows (check "Add to PATH" during setup) and add Python 3 to PATH; where docs show `python3`, run `python` instead (both are pre-approved in `settings.json`)
 
 Without these, the repo still reads as a complete spec of *how* a disciplined trading agent should behave.
 
