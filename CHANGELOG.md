@@ -6,6 +6,11 @@
 
 ### 新增
 
+- **README 与 GitHub About 表述修订：去 harness 绑定、术语与市场范围修正（2026-08-09 用户立）**：用户指出公开表述的四个问题并定调——① About 页面不提 Claude Code（harness 工具不一定只使用它、也不一定永远都使用它）；② Agent 中文一律译「智能体」、不译「代理」；③ 不提「模拟账户」（自动模式涵盖模拟账户与实盘账户、信号模式与账户无关）；④ 市场范围不写死港美股（后续也会涉及 A 股）。**改了什么**：
+  - [`README.md`](README.md) / [`README_cn.md`](README_cn.md) 标题与 Markets 徽章由「HK / US Equities」改为「HK / US / A-Share Equities」；正文「built on Claude Code / 基于 Claude Code 构建」「Claude Code 激活 / 加载」等绑定表述全部改为中性「agent harness / 运行框架（harness）」；中文正文「agent」统一改「智能体」；署名项目名同步。市场细节描述（信号日志 HK / US 分记、交易时段、数据源范围）保留现状，A 股落地时再扩展。
+  - GitHub About：description 由「AI day-trading agent that auto-executes HK/US equity trades on paper accounts (built on Claude Code) | AI 日内交易代理，自动执行港股 / 美股模拟盘交易（基于 Claude Code 构建）」改为「AI day-trading agent that watches markets, emits structured trade signals, and auto-executes trades across HK / US / A-share equities | AI 日内交易智能体：覆盖港股 / 美股 / A 股，盯盘分析、输出结构化交易信号、自动执行交易」；topics 移除 `claude-code`、`paper-trading`，新增 `a-shares`。
+  - **为什么改**：公开定位描述不应绑定特定 harness、不应把 agent 译成「代理」、不应限定「模拟账户」（自动模式实为模拟 + 实盘双账户）、不应写死港美股——让公开形象与实际能力边界一致，也兼容未来更换 harness。
+
 - **信号模式盯盘开仓市值 10 倍杠杆上限（2026-08-08 用户立）**：开仓市值（= 数量 × 开仓价）不得超过 `equity × max_leverage`（config 默认 10 倍）——权益 10 万 → 最高开仓 100 万市值。与 f_max 是两套独立约束：f_max 限 max_loss（风险敞口）、max_leverage 限开仓市值（名义敞口），选仓位时两者同时满足。**改了什么**：
   - [`config.json`](.codebuddy/skills/trade/config.json) / [`config.example.json`](.codebuddy/skills/trade/config.example.json) 新增 `risk.max_leverage: 10`（含注释）。
   - [`scripts/trade_utils_tiger.py`](.codebuddy/skills/trade/scripts/trade_utils_tiger.py) `calc_position_size` 增加市值杠杆约束：新增可选参数 `entry_price` / `max_leverage`（max_leverage 缺省自动读 config），选仓位按「双约束上界」（max_loss 上界 = equity×f_max÷止损距、市值上界 = equity×max_leverage÷开仓价，取较小者）夹逼，cap 压下来时退到上限内最大整手档；不传 entry_price 时行为与旧版完全一致（向后兼容）。

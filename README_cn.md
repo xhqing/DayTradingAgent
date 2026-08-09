@@ -2,25 +2,25 @@
   <img src="assets/logo.svg" width="160" alt="Victor logo" />
 </p>
 
-<h1 align="center">Victor —— 港股 / 美股日内交易 Agent</h1>
+<h1 align="center">Victor —— 港股 / 美股 / A 股日内交易智能体</h1>
 
 <p align="center">
   <a href="LICENSE.md"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT" /></a>
-  <img src="https://img.shields.io/badge/markets-HK%20%2F%20US-16C784.svg" alt="Markets: HK / US" />
+  <img src="https://img.shields.io/badge/markets-HK%20%2F%20US%20%2F%20A-Share-16C784.svg" alt="Markets: HK / US / A-Share" />
   <img src="https://img.shields.io/badge/mode-signal-FF8C00.svg" alt="Mode: Signal" />
 </p>
 
 <p align="center">🌐 <a href="README.md">English</a></p>
 
-**Victor** 是一个港股 / 美股日内交易的 AI 执行 agent，基于 [Claude Code](https://claude.com/claude-code) 构建。它负责盯盘、分析标的、计算仓位与止损位、输出结构化交易信号——而每一笔订单都由人在券商 App 里手动执行。
+**Victor** 是一个港股 / 美股 / A 股日内交易的 AI 执行智能体。它负责盯盘、分析标的、计算仓位与止损位、输出结构化交易信号——而每一笔订单都由人在券商 App 里手动执行。
 
-> 这**不是**一个传统意义上的软件项目：没有可供 `npm install` 或 `cargo run` 的应用。**这个仓库本身就是 agent**——它的全部行为方式都由 `.claude/` 下的 skills 和 rules 塑造，Claude Code 加载它们，作为 Victor 的工作纪律。
+> 这**不是**一个传统意义上的软件项目：没有可供 `npm install` 或 `cargo run` 的应用。**这个仓库本身就是智能体**——它的全部行为方式都由 `.claude/` 下的 skills 和 rules 塑造，由运行框架（harness）加载，作为 Victor 的工作纪律。
 
 ---
 
 ## Victor 是谁？
 
-这个 agent 有一个拟人化的名字——**Victor**（维克多），一位负责港股 / 美股市场的日内交易执行助手。与其说 Victor 是一段程序，不如说它是一个**由规范塑造出来的"人格"**：它怎么思考、怎么行动——什么时候该空仓、止损该跟多紧、为什么绝不自己下单——全都写在仓库的 skills 和 rules 里，而不是写在应用代码里。
+这个智能体有一个拟人化的名字——**Victor**（维克多），一位负责港股 / 美股 / A 股市场的日内交易执行助手。与其说 Victor 是一段程序，不如说它是一个**由规范塑造出来的"人格"**：它怎么思考、怎么行动——什么时候该空仓、止损该跟多紧、为什么绝不自己下单——全都写在仓库的 skills 和 rules 里，而不是写在应用代码里。
 
 **Victor** 取"胜利者、征服者"之意，寄托对盈利交易的期许。但 Victor 的优势**并不**来自激进冒险，而来自事实的严谨与铁的纪律：
 
@@ -46,7 +46,7 @@
 
 ## Victor 如何工作
 
-当用户提出**盯盘、发信号、交易复盘、分析标的**时，Claude Code 激活 Victor，加载 `trade` skill 并运行其护栏。
+当用户提出**盯盘、发信号、交易复盘、分析标的**时，运行框架激活 Victor，加载 `trade` skill 并运行其护栏。
 
 **盯盘标准启动序列**（脚本在 `.claude/skills/trade/scripts/`）：
 
@@ -64,7 +64,7 @@
 
 ```
 DayTradingAgent/
-├── CLAUDE.md                      # 项目入口，指引 Claude 找到 rules 与 trade skill
+├── CLAUDE.md                      # 项目入口，指引运行框架找到 rules 与 trade skill
 ├── LICENSE.md                     # MIT
 ├── README.md                      # 英文 README
 ├── README_cn.md                   # 本文件（中文）
@@ -141,13 +141,13 @@ Victor 在发出任何信号前逐条自检（完整清单见 `SKILL.md`）：
 
 要让 Victor 真正跑起来，仓库之外还需要：
 
-- [Claude Code](https://claude.com/claude-code)
+- 一个智能体运行框架（harness）——加载本仓库 `.claude/` 下的 skills 与 rules 的运行时
 - **老虎** SDK（`tigeropen`）已配置在 `~/.tigeropen/`
 - **富途 OpenD** 本地网关在运行（港股 Level2 + 美股深度）
 - 从 `*.example.json` 模板填好本地的 `config.json` 和 `accounts.json`（accounts.json 只需 tiger 段）；可选：把 `.claude/settings.local.example.json` 复制为 `.claude/settings.local.json`，按需补充额外的命令预授权
 - **Windows 用户**（2026-08-09 起脚本与护栏双平台适配）：需安装 Git for Windows（安装时勾选 Add to PATH）+ Python 3 加入 PATH；本文档命令示例按 macOS 写 `python3`，Windows 上执行时用 `python`（`settings.json` 两套都已预授权）
 
-即便没有这些环境，本仓库仍是一份完整的「一个守纪律的交易 agent 应当如何行事」的规范说明。
+即便没有这些环境，本仓库仍是一份完整的「一个守纪律的交易智能体应当如何行事」的规范说明。
 
 ---
 
@@ -168,7 +168,7 @@ Victor 当前处于**信号模式**：AI 发信号、人执行——这套自 20
 本项目以 MIT 许可证开源，额外请求使用者在**使用、二次分发或基于本项目构建衍生作品**时，注明作者并引用项目地址：
 
 - **作者：** All Contributors
-- **项目：** Victor —— 港股 / 美股日内交易 Agent
+- **项目：** Victor —— 港股 / 美股 / A 股日内交易智能体
 - **地址：** https://github.com/xhqing/DayTradingAgent
 
 若你 Fork、引用代码或基于本仓库二次开发，请在文档 / README / 致谢中保留以上出处（作者、项目名、仓库地址）。

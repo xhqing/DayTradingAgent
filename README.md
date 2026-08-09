@@ -2,25 +2,25 @@
   <img src="assets/logo.svg" width="160" alt="Victor logo" />
 </p>
 
-<h1 align="center">Victor — Day-Trading Agent (HK / US Equities)</h1>
+<h1 align="center">Victor — Day-Trading Agent (HK / US / A-Share Equities)</h1>
 
 <p align="center">
   <a href="LICENSE.md"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT" /></a>
-  <img src="https://img.shields.io/badge/markets-HK%20%2F%20US-16C784.svg" alt="Markets: HK / US" />
+  <img src="https://img.shields.io/badge/markets-HK%20%2F%20US%20%2F%20A-Share-16C784.svg" alt="Markets: HK / US / A-Share" />
   <img src="https://img.shields.io/badge/mode-signal-FF8C00.svg" alt="Mode: Signal" />
 </p>
 
 <p align="center">🌐 <a href="README_cn.md">简体中文</a></p>
 
-**Victor** is a personified AI day-trading execution agent for Hong Kong and US equities, built on [Claude Code](https://claude.com/claude-code). It watches the market, analyzes tickers, computes position sizing and stop levels, and emits structured trading signals — while a human executes every order in the broker app.
+**Victor** is a personified AI day-trading execution agent for Hong Kong, US, and A-share equities. It watches the market, analyzes tickers, computes position sizing and stop levels, and emits structured trading signals — while a human executes every order in the broker app.
 
-> This is **not** a traditional software project. There is no application to `npm install` or `cargo run`. The repository *is* the agent: its entire behavior is shaped by the `skills` and `rules` under `.claude/`, which Claude Code loads as Victor's operating discipline.
+> This is **not** a traditional software project. There is no application to `npm install` or `cargo run`. The repository *is* the agent: its entire behavior is shaped by the `skills` and `rules` under `.claude/`, which the agent harness loads as Victor's operating discipline.
 
 ---
 
 ## Who is Victor?
 
-The agent is personified as **Victor** — a disciplined intraday trading execution assistant for the Hong Kong and US markets. Victor is less a program and more a **rule-shaped persona**: everything about how it thinks and acts — when to stay flat, how tightly to trail a stop, why it never places an order itself — is encoded in the skills and rules in this repo, not in application code.
+The agent is personified as **Victor** — a disciplined intraday trading execution assistant for the Hong Kong, US, and A-share markets. Victor is less a program and more a **rule-shaped persona**: everything about how it thinks and acts — when to stay flat, how tightly to trail a stop, why it never places an order itself — is encoded in the skills and rules in this repo, not in application code.
 
 The name **Victor** ("conqueror, winner") reflects the project's aspiration toward profitable trading. But Victor's edge does **not** come from reckless aggression. It comes from factual rigor and iron discipline:
 
@@ -46,7 +46,7 @@ The operating principle, in one line: **losing money on a trade is acceptable ri
 
 ## How Victor Works
 
-Victor is activated by Claude Code whenever the user asks to **watch the market, emit a signal, run a post-trade review, or analyze a ticker**. On activation it loads the `trade` skill and runs its guardrails.
+Victor is activated by the agent harness whenever the user asks to **watch the market, emit a signal, run a post-trade review, or analyze a ticker**. On activation it loads the `trade` skill and runs its guardrails.
 
 **Standard watch sequence** (scripts under `.claude/skills/trade/scripts/`):
 
@@ -64,7 +64,7 @@ When a setup meets the EV bar, Victor emits a signal as a table in the chat (emo
 
 ```
 DayTradingAgent/
-├── CLAUDE.md                      # Entry point — points Claude at the rules & trade skill
+├── CLAUDE.md                      # Entry point — points the harness at the rules & trade skill
 ├── LICENSE.md                     # MIT
 ├── README.md                      # This file (English)
 ├── README_cn.md                   # Chinese README
@@ -141,7 +141,7 @@ Victor self-checks these before emitting any signal (full list in `SKILL.md`):
 
 To actually run Victor, you need — outside this repo:
 
-- [Claude Code](https://claude.com/claude-code)
+- An AI agent harness — the runtime that loads this repo's `.claude/` skills and rules
 - **Tiger** SDK (`tigeropen`) configured at `~/.tigeropen/`
 - **Futu OpenD** local gateway running (HK Level-2 + US depth)
 - A local `config.json` and `accounts.json` filled in from the `*.example.json` templates (accounts.json only needs the Tiger section); optionally copy `.claude/settings.local.example.json` → `.claude/settings.local.json` to add extra command pre-approvals
@@ -168,7 +168,7 @@ Day trading involves substantial risk of loss. Victor emits analysis and signals
 This project is released under the MIT License, and you are additionally asked to **credit the author and cite the source** whenever you use, redistribute, or build upon it:
 
 - **Author:** All Contributors
-- **Project:** Victor — Day-Trading Agent (HK / US Equities)
+- **Project:** Victor — Day-Trading Agent (HK / US / A-Share Equities)
 - **Source:** https://github.com/xhqing/DayTradingAgent
 
 If you fork, reference, or derive from this repository, please retain this attribution — the author name, the project name, and the repository URL — in your documentation, README, or acknowledgements.
