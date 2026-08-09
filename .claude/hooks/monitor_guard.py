@@ -17,9 +17,11 @@
 局限（诚实）：AI 仍能 kill 进程或换别的方式绕过——本 hook 只提高绕过成本 + 暴露，
 不是 100% 银弹（详见 monitoring.md「2026-08-04 教训」多层防护说明）。
 
-用法（settings.json hooks 注册）：
-  PreToolUse matcher Bash → python3 .claude/hooks/monitor_guard.py pretool
-  Stop                    → python3 .claude/hooks/monitor_guard.py stop
+用法（settings.json hooks 注册，2026-08-09 起经跨平台 wrapper run_hook.sh——
+wrapper 内探测 python3/python 解释器、用 $CLAUDE_PROJECT_DIR 定位项目根，macOS/Windows 通吃）：
+  PreToolUse matcher Bash → bash $CLAUDE_PROJECT_DIR/.claude/hooks/run_hook.sh .claude/hooks/monitor_guard.py pretool
+  TaskStop                → bash $CLAUDE_PROJECT_DIR/.claude/hooks/run_hook.sh .claude/hooks/monitor_guard.py taskstop
+  Stop                    → bash $CLAUDE_PROJECT_DIR/.claude/hooks/run_hook.sh .claude/hooks/monitor_guard.py stop
 hook 接收 stdin JSON（tool_name/tool_input 等），exit 0 放行 / exit 2 阻断（PreToolUse）。
 """
 import sys
@@ -69,6 +71,20 @@ def in_trading_session(now=None):
     return in_hk_session(now) or in_us_session(now)
 
 
+def _proc_running(keyword):
+    """跨平台进程检测（2026-08-09 适配）：macOS/Linux 用 pgrep，Windows 用
+    PowerShell CIM 按命令行匹配（Windows 无 pgrep）。返回 bool。"""
+    if os.name == "nt":
+        ps = ("powershell", "-NoProfile", "-Command",
+              f"if (Get-CimInstance Win32_Process | Where-Object {{ $_.CommandLine -like '*{keyword}*' }}) {{ exit 0 }} else {{ exit 1 }}")
+    else:
+        ps = ("pgrep", "-f", keyword)
+    try:
+        return subprocess.run(ps, capture_output=True, timeout=15).returncode == 0
+    except Exception:
+        return False
+
+
 def monitor_segment_running(now=None):
     """monitor_segment 是否在跑：进程在 OR 近 STALE_SECONDS monitor_log 有更新。
 
@@ -76,15 +92,8 @@ def monitor_segment_running(now=None):
     """
     now = now or datetime.now()
     # ① 进程检查
-    try:
-        out = subprocess.run(
-            ["pgrep", "-f", "monitor_segment.py"],
-            capture_output=True, text=True, timeout=3,
-        )
-        if out.stdout.strip():
-            return True, "进程在跑"
-    except Exception:
-        pass
+    if _proc_running("monitor_segment.py"):
+        return True, "进程在跑"
     # ② monitor_log 近 STALE_SECONDS 有更新（段间循环 < 90 秒，5 分钟无更新 = 断了）
     try:
         if os.path.isdir(TMP_DIR):

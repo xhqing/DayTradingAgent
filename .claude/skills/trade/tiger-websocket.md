@@ -14,15 +14,16 @@
 ## 代码骨架
 
 ```python
-import time, signal, sys
+import time, threading, os, sys
 from tigeropen.tiger_open_config import TigerOpenClientConfig
 from tigeropen.push.push_client import PushClient
 
-# macOS 无 timeout 命令，用 SIGALRM 做硬超时防 WebSocket 挂起
-def handler(signum, frame):
-    print('>>> 硬超时触发，强制退出'); sys.exit(0)
-signal.signal(signal.SIGALRM, handler)
-signal.alarm(30)
+# 跨平台硬超时防 WebSocket 挂起（2026-08-09 适配：Windows 的 Python 没有
+# signal.SIGALRM，统一用 threading.Timer 兜底；段级完整实现见 scripts/ws_segment.py
+# ——子线程跑主流程 + 主线程 join 超时，卡住也能收尾退出）
+def handler():
+    print('>>> 硬超时触发，强制退出'); sys.stdout.flush(); os._exit(0)
+threading.Timer(30, handler).start()
 
 received = []
 connected = [False]
@@ -88,4 +89,4 @@ pc.disconnect()
 - `get_stock_briefs(['02800','00700'])`：港股 OHLCV+买一卖一+量。
 - `get_quote_permission()`：查行情权限，返回 `[{'name':权限名,'expire_at':时间戳}]`（-1=永久）。
 - ⚠️ **DataFrame 坑（2026-07-07 踩）**：`get_stock_briefs` 返回 **pandas DataFrame 不是对象列表**，用 `df['latest_price']` 取值，别用 `getattr(b,'latest_price')`（全 None）；`for b in df` 遍历的是列名。完整列：symbol/open/high/low/close/pre_close/latest_price/latest_time/ask_price/ask_size/bid_price/bid_size/volume/status/adj_pre_close/change/change_rate/amplitude。
-- macOS 无 `timeout` 命令，同步调用也用 `signal.SIGALRM` 硬超时防挂起。
+- 同步调用防挂起：macOS 无 `timeout` 命令、Windows 无 `signal.SIGALRM`——跨平台统一用 `threading.Timer` 兜底（示例见上方骨架；`handler` 里 `os._exit(0)` 才能从 timer 线程强杀主流程）。

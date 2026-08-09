@@ -144,7 +144,8 @@ Victor 在发出任何信号前逐条自检（完整清单见 `SKILL.md`）：
 - [Claude Code](https://claude.com/claude-code)
 - **老虎** SDK（`tigeropen`）已配置在 `~/.tigeropen/`
 - **富途 OpenD** 本地网关在运行（港股 Level2 + 美股深度）
-- 从 `*.example.json` 模板填好本地的 `config.json` 和 `accounts.json`（accounts.json 只需 tiger 段）；可选：把 `.claude/settings.local.example.json` 复制为 `.claude/settings.local.json`，预授权 `python3` 命令
+- 从 `*.example.json` 模板填好本地的 `config.json` 和 `accounts.json`（accounts.json 只需 tiger 段）；可选：把 `.claude/settings.local.example.json` 复制为 `.claude/settings.local.json`，按需补充额外的命令预授权
+- **Windows 用户**（2026-08-09 起脚本与护栏双平台适配）：需安装 Git for Windows（安装时勾选 Add to PATH）+ Python 3 加入 PATH；本文档命令示例按 macOS 写 `python3`，Windows 上执行时用 `python`（`settings.json` 两套都已预授权）
 
 即便没有这些环境，本仓库仍是一份完整的「一个守纪律的交易 agent 应当如何行事」的规范说明。
 

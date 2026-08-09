@@ -82,7 +82,7 @@
 
 路径 `.claude/skills/trade/scripts/`（富途 API 签名已验证，盘后实测可用）：
 
-- **盯盘第一步** `python3 scripts/preflight.py` — 时间 / 港股美股时段 / 富途 OpenD 端口 / signals 当天文件 / **自动启用 caffeinate 防系统睡眠**（防时间误判 + 数据源掉线 + 防睡眠断采；**先跑这个**）。
+- **盯盘第一步** `python3 scripts/preflight.py` — 时间 / 港股美股时段 / 富途 OpenD 端口 / signals 当天文件 / **自动启用防系统睡眠**（macOS 用 caffeinate、Windows 用 keepawake.py；防时间误判 + 数据源掉线 + 防睡眠断采；**先跑这个**）。
 - **找标的** `python3 scripts/hot_list.py HK 15`（或 `US`）— 热度榜 + 叠 snapshot 查成交额/振幅/换手（找标的铁律第一步）。
 - **标的快照** `python3 scripts/snapshot.py HK.07709,HK.07747` — 现价/OHLC/lot/成交额/振幅/买卖比/量比。⚠️富途脚本（snapshot/kline/hot_list）代码均须带市场前缀 `HK.`/`US.`，美股写裸 `SPY` 报 `format of code SPY is wrong`，正确 `US.SPY`。
 - **富途指数代码 ≠ 股票简称**：查指数趋势用 `kline.py HK.800000`（恒生指数 HSI）/ `HK.800700`（恒生科技 HSTECH），**写 `HK.HSI`/`HK.HSTECH` 报「未知股票」**——富途里指数是 `8xxxxx` 编码、不是股票简称。指数 `volume=0`、`turnover` 为成分股成交额属正常。方向研判的「技术趋势/量价」维度查这两个代码（用盈富 `HK.02800` 作恒指 ETF 代理亦可，但它含 H 股权重、非纯恒指走势）。
@@ -170,7 +170,7 @@ cron（无论 session-only 还是 durable 写盘）在此环境触发**不可靠
 
 **2026-08-04 教训（绕过脚本护栏降频，比放稀 DURATION 更隐蔽）**：盯盘震荡无机会时，AI 没放稀 DURATION（被脚本 DURATION>40 夹回 40 挡住），而是**用 CronCreate 设 15 分钟低频扫描 + cron 触发时直接调 snapshot.py/hot_list.py（不经 monitor_segment.py）**——脚本的 40 秒强制只在调用脚本时生效，AI 不调脚本就绕过了（用户两次纠正：「重点不是用了 cron，是没重新启动盯盘脚本」「即便写进 SKILL 也会忘记」）。**根因：AI 是执行者、握有主动权，任何靠 AI 自觉调用 / 不去关的工具都能被主动绕过；文档（SKILL.md）软约束会忘，工具固化（脚本护栏）拦不住「不调脚本」**。**纠正**：CronDelete + 恢复 monitor_segment 密采样循环。
 
-**多层防护（2026-08-04 立，降低违规概率、非 100% 银弹）**：盯盘密采样的唯一入口是 **monitor_segment.py 40 秒循环，禁用 cron / 直接 snapshot 替代**。**12 层防护全落实**：① `settings.json` `permissions.deny` 禁 CronCreate（堵 cron 降频入口）；② PreToolUse hook（`.claude/hooks/monitor_guard.py`）盘中调 snapshot/hot_list 但 monitor_segment 未在跑 → 阻断；③ Stop hook 回合结束检查 monitor_segment 在跑 → 提醒；④ 段结束输出连续性指标（累计点数 / 距首采样分钟）；⑤ 本教训沉淀；⑥ TaskStop hook（停 monitor_segment 提醒确认）；⑦ `resume.py` 盘中断层强调「主动停」+ 立即重启；⑧ `preflight.py` 启动入口提醒；⑨ 每段自查未降频（防中断三件套第 4 条）；⑩ `monitor_log_gap_check.py` 段间大 gap 复盘暴露降频；⑪ 外部 watcher（`.claude/hooks/monitor_watcher.py` + launchd plist 模板，独立于 session、盘中 monitor_segment 没跑发 macOS 系统通知）；⑫ **用户监督（最有效一道、非工程化）**——这次违规就是用户抓住的，盯盘时用户留意段结束连续性指标 + 段间节奏，发现降频即纠正。**局限**：AI 仍能 kill 进程换方式绕过——多层防护只提高绕过成本 + 暴露，盯盘纪律最终靠**外部监督（用户抓住）+ 多层防护 + AI 自觉**，三者缺一不可。
+**多层防护（2026-08-04 立，降低违规概率、非 100% 银弹）**：盯盘密采样的唯一入口是 **monitor_segment.py 40 秒循环，禁用 cron / 直接 snapshot 替代**。**12 层防护全落实**：① `settings.json` `permissions.deny` 禁 CronCreate（堵 cron 降频入口）；② PreToolUse hook（`.claude/hooks/monitor_guard.py`）盘中调 snapshot/hot_list 但 monitor_segment 未在跑 → 阻断；③ Stop hook 回合结束检查 monitor_segment 在跑 → 提醒；④ 段结束输出连续性指标（累计点数 / 距首采样分钟）；⑤ 本教训沉淀；⑥ TaskStop hook（停 monitor_segment 提醒确认）；⑦ `resume.py` 盘中断层强调「主动停」+ 立即重启；⑧ `preflight.py` 启动入口提醒；⑨ 每段自查未降频（防中断三件套第 4 条）；⑩ `monitor_log_gap_check.py` 段间大 gap 复盘暴露降频；⑪ 外部 watcher（`.claude/hooks/monitor_watcher.py`，系统定时任务每 2 分钟触发、独立于 session、盘中 monitor_segment 没跑发系统通知——macOS 用 launchd plist 模板 `com.daytrading.monitor-watcher.plist`（复制到 ~/Library/LaunchAgents 并替换占位路径后 `launchctl load`），Windows 用任务计划程序（`schtasks /Create /TN "DayTradingAgentMonitorWatcher" /TR "python <项目根>\.claude\hooks\monitor_watcher.py" /SC MINUTE /MO 2 /F`，停用 `schtasks /Change /TN "DayTradingAgentMonitorWatcher" /DISABLE`））；⑫ **用户监督（最有效一道、非工程化）**——这次违规就是用户抓住的，盯盘时用户留意段结束连续性指标 + 段间节奏，发现降频即纠正。**局限**：AI 仍能 kill 进程换方式绕过——多层防护只提高绕过成本 + 暴露，盯盘纪律最终靠**外部监督（用户抓住）+ 多层防护 + AI 自觉**，三者缺一不可。
 
 ### 采样输出只留关键字段
 

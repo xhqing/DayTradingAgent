@@ -2,17 +2,29 @@
   "permissions": {
     "allow": [
       "Bash(python3 .claude/skills/trade/scripts/preflight.py *)",
+      "Bash(python .claude/skills/trade/scripts/preflight.py *)",
       "Bash(python3 .claude/skills/trade/scripts/hot_list.py *)",
+      "Bash(python .claude/skills/trade/scripts/hot_list.py *)",
       "Bash(python3 .claude/skills/trade/scripts/snapshot.py *)",
+      "Bash(python .claude/skills/trade/scripts/snapshot.py *)",
       "Bash(python3 .claude/skills/trade/scripts/kline.py *)",
+      "Bash(python .claude/skills/trade/scripts/kline.py *)",
       "Bash(python3 .claude/skills/trade/scripts/monitor.py *)",
+      "Bash(python .claude/skills/trade/scripts/monitor.py *)",
       "Bash(python3 .claude/skills/trade/scripts/monitor_segment.py *)",
+      "Bash(python .claude/skills/trade/scripts/monitor_segment.py *)",
       "Bash(python3 .claude/skills/trade/scripts/monitor_summary.py *)",
+      "Bash(python .claude/skills/trade/scripts/monitor_summary.py *)",
       "Bash(python3 .claude/skills/trade/scripts/resume.py *)",
+      "Bash(python .claude/skills/trade/scripts/resume.py *)",
       "Bash(python3 .claude/skills/trade/scripts/capital.py *)",
+      "Bash(python .claude/skills/trade/scripts/capital.py *)",
       "Bash(python3 .claude/skills/trade/scripts/review.py *)",
+      "Bash(python .claude/skills/trade/scripts/review.py *)",
       "Bash(python3 .claude/skills/trade/scripts/bayes_evolution.py *)",
+      "Bash(python .claude/skills/trade/scripts/bayes_evolution.py *)",
       "Bash(python3 .claude/skills/trade/classify_hk_security.py *)",
+      "Bash(python .claude/skills/trade/classify_hk_security.py *)",
       "Bash(bash .claude/skills/trade/scripts/alert.sh *)",
       "Bash(bash .claude/skills/keep-awake/scripts/off.sh *)",
       "Bash(bash .claude/skills/keep-awake/scripts/on.sh *)"
@@ -26,20 +38,20 @@
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/monitor_guard.py pretool" }
+          { "type": "command", "command": "bash $CLAUDE_PROJECT_DIR/.claude/hooks/run_hook.sh .claude/hooks/monitor_guard.py pretool" }
         ]
       },
       {
         "matcher": "TaskStop",
         "hooks": [
-          { "type": "command", "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/monitor_guard.py taskstop" }
+          { "type": "command", "command": "bash $CLAUDE_PROJECT_DIR/.claude/hooks/run_hook.sh .claude/hooks/monitor_guard.py taskstop" }
         ]
       }
     ],
     "Stop": [
       {
         "hooks": [
-          { "type": "command", "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/monitor_guard.py stop" }
+          { "type": "command", "command": "bash $CLAUDE_PROJECT_DIR/.claude/hooks/run_hook.sh .claude/hooks/monitor_guard.py stop" }
         ]
       }
     ]

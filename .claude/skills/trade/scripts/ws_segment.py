@@ -27,7 +27,7 @@
 import os
 import sys
 import time
-import signal
+import threading
 from datetime import datetime, date
 
 from tigeropen.tiger_open_config import TigerOpenClientConfig
@@ -124,39 +124,50 @@ def main():
     def on_kickout(frame):
         print(f'>>> 被踢出: {frame}', flush=True)
 
-    def hard_timeout(signum, frame):
-        finish()
-        sys.exit(0)
-
-    signal.signal(signal.SIGALRM, hard_timeout)
-    signal.alarm(duration + 15)
-
+    # connected 放在 main 作用域（on_connect 回调闭包引用它；_run 子线程也引用同一列表）
     connected = [False]
-    cfg = TigerOpenClientConfig(props_path=_PROPS)
-    protocol, host, port = cfg.socket_host_port
-    pc = PushClient(host, port, use_ssl=(protocol == 'ssl'))
-    pc.quote_changed = on_quote
-    pc.connect_callback = on_connect
-    pc.disconnect_callback = on_disconnect
-    pc.error_callback = on_error
-    pc.kickout_callback = on_kickout
-    pc.connect(cfg.tiger_id, cfg.private_key)
-    for _ in range(20):
-        time.sleep(0.5)
-        if connected[0]:
-            break
-    if not connected[0]:
-        print('>>> 连接失败（检查 ~/.tigeropen/ 配置与网络）')
-        sys.exit(2)
-    pc.subscribe_quote(tiger_syms)
-    print(f'>>> 已订阅 {tiger_syms}，每秒采样 {duration}s…', flush=True)
 
-    t0 = time.time()
-    while time.time() - t0 < duration:
-        time.sleep(0.2)
-    pc.unsubscribe_quote(tiger_syms)
-    pc.disconnect()
-    finish()
+    def _run():
+        """实际盯盘流程（子线程执行）。主线程 join 超时兜底——Windows 的 Python 没有
+        SIGALRM/signal.alarm（2026-08-09 跨平台适配），改用 threading 实现等价硬超时：
+        connect/subscribe 卡住时由主线程超时接管收尾退出。"""
+        cfg = TigerOpenClientConfig(props_path=_PROPS)
+        protocol, host, port = cfg.socket_host_port
+        pc = PushClient(host, port, use_ssl=(protocol == 'ssl'))
+        pc.quote_changed = on_quote
+        pc.connect_callback = on_connect
+        pc.disconnect_callback = on_disconnect
+        pc.error_callback = on_error
+        pc.kickout_callback = on_kickout
+        pc.connect(cfg.tiger_id, cfg.private_key)
+        for _ in range(20):
+            time.sleep(0.5)
+            if connected[0]:
+                break
+        if not connected[0]:
+            print('>>> 连接失败（检查 ~/.tigeropen/ 配置与网络）', flush=True)
+            os._exit(2)
+        pc.subscribe_quote(tiger_syms)
+        print(f'>>> 已订阅 {tiger_syms}，每秒采样 {duration}s…', flush=True)
+
+        t0 = time.time()
+        while time.time() - t0 < duration:
+            time.sleep(0.2)
+        pc.unsubscribe_quote(tiger_syms)
+        pc.disconnect()
+        finish()
+
+    # 跨平台硬超时兜底：原 signal.SIGALRM 在 Windows 不存在，
+    # 改为主线程 join 子线程 + 超时强制收尾退出（行为等价：段卡住也会被强杀）。
+    worker = threading.Thread(target=_run, daemon=True)
+    worker.start()
+    worker.join(timeout=duration + 15)
+    if worker.is_alive():
+        print(f'>>> 段硬超时（{duration + 15}s 未正常结束），强制收尾退出', file=sys.stderr, flush=True)
+        finish()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
 
 
 def finish():
