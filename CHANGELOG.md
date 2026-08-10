@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### 变更
+
+- **README 与 windows-support 分支同步（2026-08-10）**：用户要求把 README 内容同步为 windows-support 分支的版本。**为什么改**：windows-support 分支含 3 个 main 没有的提交（Windows 平台支持、README 扩展港美股 → 港美A股、徽章调整），其中文档部分尚未回到 main，用户要求先同步 README。**改了什么**：[`README.md`](README.md) / [`README_cn.md`](README_cn.md) 与 windows-support 分支逐字对齐——① 标题与正文市场范围「港股 / 美股」→「港股 / 美股 / A 股」（markets 徽章同步更新）；② 徽章区新增 mode-auto 徽章；③ 「Claude Code 加载 / 激活」措辞改为「智能体运行框架（harness）」；④ 前置条件新增「Windows 用户」条目（2026-08-09 起脚本与护栏双平台适配、`python3` → `python` 说明）；⑤ 署名区项目名同步。**边界**：Windows 适配与 A 股能力的代码实现仍在 windows-support 分支（main 代码未合并），README 同步后 main 上文档暂时超前于实际代码——README 同步本身不改变 main 分支功能。
+
 ### 移除
 
 - **撤销密采样外部 watcher 系统通知（2026-08-10 用户立）**：盘中盯盘时系统右上角横幅 + 响铃频繁误报「盘中 monitor_segment 未在跑！密采样可能被停/降频」，每次提示时实际都在正常密采样。**根因**：港股密采样自 2026-08-07 起改用 `ws_segment.py`（老虎 WebSocket 每秒推送），watcher 仍只 `pgrep -f monitor_segment.py`——港股盯盘跑 ws_segment 时必然误判「monitor_segment 未在跑」→ 发系统通知（osascript 横幅 + Basso 响铃）误报。用户立令撤销该提示功能。**改了什么**：① 卸载 launchd 服务 `com.daytrading.monitor-watcher`（`launchctl unload`，已验证从 `launchctl list` 移除）；② 删除本机部署文件 `~/Library/LaunchAgents/com.daytrading.monitor-watcher.plist`（不删则重启机器后 launchd 自动重新加载、功能复活）；③ 删除项目内 [`.claude/hooks/monitor_watcher.py`](.claude/hooks/monitor_watcher.py) 与 [`.claude/hooks/com.daytrading.monitor-watcher.plist`](.claude/hooks/com.daytrading.monitor-watcher.plist)（git 跟踪文件，删除后由用户 /commit 确认）；④ [`.claude/skills/trade/SKILL.md`](.claude/skills/trade/SKILL.md) 清理两处引用——preflight 启动序列去掉「启动盯盘同时 launchctl load watcher」、「停盯总结」段删除「密采样 watcher 随盯盘开关」整段（启动 load / 停盯 unload 动作随功能撤销一并废止）；⑤ [`.claude/skills/trade/references/monitoring.md`](.claude/skills/trade/references/monitoring.md)「多层防护」12 层 → 11 层（删原第⑪层外部 watcher、原⑫用户监督改⑪），附撤销原因说明。**为什么改**：watcher 的检测逻辑与当前采样体系脱节（只认 monitor_segment、不认 ws_segment/futu_ws_segment），误报已失去「外部监督」价值且扰民；外部系统通知防线的空缺由「用户监督」层覆盖（盯盘时用户留意段结束连续性指标 + 段间节奏）。触发：用户「盘中盯盘的时候系统右上角的横幅加响铃的疑似没有密采样的提示功能撤销掉，每次提示我看都在正常密采样」。
