@@ -6,6 +6,10 @@
 
 ### 新增
 
+- **README 徽章：修复 Markets 徽章 404 + 新增 Mode Auto 徽章（2026-08-09）**：上一条「README 表述修订」把 Markets 徽章改为「HK / US / A-Share」，但 `A-Share` 里的连字符未转义——shields.io 静态徽章按 `-` 分段解析（label-message-color），message 内裸 `-` 破坏三段结构，实际渲染为「404: badge not found」（实测确认）。**改了什么**：
+  - [`README.md`](README.md) / [`README_cn.md`](README_cn.md) 徽章行：Markets 徽章 URL 中 `A-Share` 改为 `A--Share`（双连字符转义字面 `-`，渲染恢复正常「markets: HK / US / A-Share」）；新增 `mode-auto-2ECC71` 徽章（Mode: Auto，绿色），与 Mode: Signal 并排——README 一眼可见信号模式与自动交易模式两种执行模式。
+  - **为什么改**：徽章 404 是上一轮表述修订引入的渲染缺陷，逐 URL 实测定位并修复；补 mode-auto 徽章让公开展示与项目实际能力（信号模式 + 自动交易模式双模式）一致。
+
 - **README 与 GitHub About 表述修订：去 harness 绑定、术语与市场范围修正（2026-08-09 用户立）**：用户指出公开表述的四个问题并定调——① About 页面不提 Claude Code（harness 工具不一定只使用它、也不一定永远都使用它）；② Agent 中文一律译「智能体」、不译「代理」；③ 不提「模拟账户」（自动模式涵盖模拟账户与实盘账户、信号模式与账户无关）；④ 市场范围不写死港美股（后续也会涉及 A 股）。**改了什么**：
   - [`README.md`](README.md) / [`README_cn.md`](README_cn.md) 标题与 Markets 徽章由「HK / US Equities」改为「HK / US / A-Share Equities」；正文「built on Claude Code / 基于 Claude Code 构建」「Claude Code 激活 / 加载」等绑定表述全部改为中性「agent harness / 运行框架（harness）」；中文正文「agent」统一改「智能体」；署名项目名同步。市场细节描述（信号日志 HK / US 分记、交易时段、数据源范围）保留现状，A 股落地时再扩展。
   - GitHub About：description 由「AI day-trading agent that auto-executes HK/US equity trades on paper accounts (built on Claude Code) | AI 日内交易代理，自动执行港股 / 美股模拟盘交易（基于 Claude Code 构建）」改为「AI day-trading agent that watches markets, emits structured trade signals, and auto-executes trades across HK / US / A-share equities | AI 日内交易智能体：覆盖港股 / 美股 / A 股，盯盘分析、输出结构化交易信号、自动执行交易」；topics 移除 `claude-code`、`paper-trading`，新增 `a-shares`。
