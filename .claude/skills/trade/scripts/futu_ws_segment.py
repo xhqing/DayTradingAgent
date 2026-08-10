@@ -113,7 +113,7 @@ def main():
     symbols = [t[0] for t in targets]
     # 每标的 log 文件
     for sym in symbols:
-        code = sym.split('.')[-1]
+        code = sym.replace('.', '_')  # HK.00100 -> HK_00100（对齐 monitor_segment 命名，monitor_summary/monitor_guard 才能识别）
         fname = f'monitor_log_{code}_{TODAY}_{MODE}.csv'
         logs[sym] = os.path.join(TMP, fname)
     os.makedirs(TMP, exist_ok=True)

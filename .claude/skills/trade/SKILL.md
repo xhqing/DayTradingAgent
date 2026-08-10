@@ -114,7 +114,7 @@ AI 用富途 OpenD / 老虎 SDK（盯盘行情数据主力，Level2 盘口 / 经
 
 盯盘标准启动序列：**`preflight` → 方向研判 → `hot_list` 找标的 → `static` + `classify` 核实标的 → `snapshot` + `kline` 分析 → `monitor_segment` 密采样盯盘 → 段结束通知驱动循环 → 撞上终止边界或用户喊停 → 停盯总结**。
 
-1. **preflight**（`scripts/preflight.py`）：时间 / 港股美股时段 / 富途 OpenD 端口 / 当日交易记录文件（auto 读 `actions/`、signal 读 `signals/`）+ equity / 自动启用 caffeinate 防系统睡眠。**先跑这个**。**启动盯盘同时 `launchctl load .claude/hooks/com.daytrading.monitor-watcher.plist` 开启密采样 watcher**（停盯时 unload，见「停盯总结·密采样 watcher 随盯盘开关」）。
+1. **preflight**（`scripts/preflight.py`）：时间 / 港股美股时段 / 富途 OpenD 端口 / 当日交易记录文件（auto 读 `actions/`、signal 读 `signals/`）+ equity / 自动启用 caffeinate 防系统睡眠。**先跑这个**。
 2. **方向研判**（盯盘第一步定当日基调）：五维度（宏观基调 / 技术趋势 / 量价 / 资金流 / 事件催化）独立打分 + 位置评估（当前价在大趋势的上沿超买 / 下沿超跌 / 中段），产出「今日偏多 / 偏空 / 中性震荡」+ 盘中方向假设。
 3. **hot_list**（`scripts/hot_list.py HK 15`）：热度榜 + 叠 snapshot 查成交额 / 振幅 / 换手，找标的铁律第一步——不许凭关注列表或 AI 记忆直接定标的。
 4. **核实标的**：`snapshot` + `classify_hk_security.py` 查代码真身与类型（etf / stock / reit）。
@@ -137,8 +137,6 @@ AI 用富途 OpenD / 老虎 SDK（盯盘行情数据主力，Level2 盘口 / 经
 ## 停盯总结（盯盘结束即时小结）
 
 **停盯第一个动作——解除防睡眠**：盯盘预热（preflight）已自动启用 `caffeinate -s` 防系统睡眠（无论开盖合盖、不询问），故停止盯盘时（用户喊停 / AI 仅在快休市或收盘时才自主停——其余时段持续盯、不收尾）AI **必须自己**跑 `bash .claude/skills/keep-awake/scripts/off.sh` 解除防睡眠。用户**不会**主动说「解除防睡眠」——AI 自主在停止盯盘时收尾，避免长期持 `PreventSystemSleep` assertion。
-
-**密采样 watcher 随盯盘开关（启动开启 / 停盯关闭）**：`references/monitoring.md` 多层防护第⑪层的外部 watcher（`.claude/hooks/monitor_watcher.py` + `.claude/hooks/com.daytrading.monitor-watcher.plist`，launchd 定时触发、独立于 session、盘中 monitor_segment 没跑时发 macOS 系统通知）需随盯盘开关——**开始盯盘时 AI 跑 `launchctl load .claude/hooks/com.daytrading.monitor-watcher.plist` 开启**、**停止盯盘时 AI 跑 `launchctl unload .claude/hooks/com.daytrading.monitor-watcher.plist` 关闭**（2026-08-04 用户立：以后开始盯盘开启 watcher、停止盯盘关闭 watcher，都这样做）。用户**不会**主动说「开 / 关 watcher」——AI 自主在启动盯盘时 load、停盯时 unload（与解除防睡眠、停盯总结并列收尾）。不关闭 = 盯盘已停但 watcher 仍定时检查 + 发通知，空转扰民。
 
 盯盘结束时，AI 主动给一份**当日小结**，区别于复盘分析（见 `references/review-and-evaluation.md`，由用户指令触发、更详细）。**停盯总结必含每笔的赔率三阶段（初始预期 / 修正预期 / 实际落地）**，不只是盈亏金额：
 
