@@ -77,17 +77,34 @@ def main():
     tiger_syms = [s.split('.')[-1] for s in symbols]
     # 每标的 log 文件
     for sym in symbols:
-        code = sym.split('.')[-1]
+        code = sym.replace('.', '_')  # HK.00100 -> HK_00100（对齐 monitor_segment 命名，monitor_summary/monitor_guard 才能识别）
         fname = f'monitor_log_{code}_{TODAY}_{MODE}.csv'
         logs[sym] = os.path.join(TMP, fname)
     os.makedirs(TMP, exist_ok=True)
+
+    # 写表头（对齐 monitor_segment 列名，monitor_summary / csv.DictReader 才能解析）
+    for sym in symbols:
+        if not os.path.exists(logs[sym]):
+            with open(logs[sym], 'w') as f:
+                f.write('time,symbol,last,bid,ask,ratio,vr,high,low,turnover_yi,stop_price\n')
 
     print(f'=== WebSocket 每秒采样 {symbols} duration={duration}s 开始 {time.strftime("%H:%M:%S")} ===')
     for t in targets:
         print(f'    {t[0]}: 阻力up={t[1]} 支撑dn={t[2]} | log={logs[t[0]]}')
 
-    # 每标的：本段记录 + 段高/段低
-    seg.update({sym: {'points': [], 'high': None, 'low': None, 'last': None} for sym in symbols})
+    # 每标的：本段记录 + 段高/段低（跨段累计：初始化自 log 末行的当日 high/low，保证全貌连续）
+    for sym in symbols:
+        prev_high, prev_low = None, None
+        try:
+            with open(logs[sym]) as f:
+                lines = [l.rstrip('\n') for l in f if l.strip()]
+            if len(lines) > 1:  # 跳过表头
+                cols = lines[-1].split(',')
+                if len(cols) >= 9 and cols[7] not in ('', 'None'):
+                    prev_high, prev_low = float(cols[7]), float(cols[8])
+        except Exception:
+            pass
+        seg[sym] = {'points': [], 'high': prev_high, 'low': prev_low, 'last': None}
     global broke
     broke = []
 
@@ -107,9 +124,9 @@ def main():
         if last is not None:
             d['high'] = last if d['high'] is None else max(d['high'], last)
             d['low'] = last if d['low'] is None else min(d['low'], last)
-        # 写 log（append 行）
+        # 写 log（append 行；high/low 用段内累计值——老虎 frame 无 highPrice/lowPrice 字段）
         with open(logs[sym], 'a') as f:
-            f.write(f'{ts},{sym},{last},{bid},{ask},,,{high},{low},,\n')
+            f.write(f'{ts},{sym},{last},{bid},{ask},,,{d["high"]},{d["low"]},,\n')
 
     def on_connect(frame):
         connected[0] = True
