@@ -6,6 +6,8 @@
 
 ### 新增
 
+- **同步 main 分支 TODO：信号模式飞书 CLI 发信号 + 多会话并发盯盘（2026-08-11）**：main 分支 2026-08-11 新增待办「信号模式支持飞书 CLI 发信号 + 多会话并发盯盘」（记录：2026-08-11 13:21）——① 信号模式下通过飞书 CLI 把交易信号发到飞书（除会话内输出外再推送，提升信号可达性）；② 支持同时开多个信号模式盯盘会话（信号归属 / 记录去重待设计）。该待办属交易执行机制范畴、windows-support 分支同样适用；两分支已各自分叉演进、暂不整体合并，故仅单向同步这一条待办。**改了什么**：[`TODO.md`](TODO.md)「代码 / 机制」节 00100 条目后插入该飞书条目（文本与 main 分支一致）；本次同步本身记入本 CHANGELOG。**为什么改**：避免 windows-support 分支的待办清单与 main 分叉遗漏，保持两分支对未决事项的认知一致。
+
 - **README 徽章：修复 Markets 徽章 404 + 新增 Mode Auto 徽章（2026-08-09）**：上一条「README 表述修订」把 Markets 徽章改为「HK / US / A-Share」，但 `A-Share` 里的连字符未转义——shields.io 静态徽章按 `-` 分段解析（label-message-color），message 内裸 `-` 破坏三段结构，实际渲染为「404: badge not found」（实测确认）。**改了什么**：
   - [`README.md`](README.md) / [`README_cn.md`](README_cn.md) 徽章行：Markets 徽章 URL 中 `A-Share` 改为 `A--Share`（双连字符转义字面 `-`，渲染恢复正常「markets: HK / US / A-Share」）；新增 `mode-auto-2ECC71` 徽章（Mode: Auto，绿色），与 Mode: Signal 并排——README 一眼可见信号模式与自动交易模式两种执行模式。
   - **为什么改**：徽章 404 是上一轮表述修订引入的渲染缺陷，逐 URL 实测定位并修复；补 mode-auto 徽章让公开展示与项目实际能力（信号模式 + 自动交易模式双模式）一致。
