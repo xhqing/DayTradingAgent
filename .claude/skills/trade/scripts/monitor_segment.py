@@ -71,13 +71,19 @@ def parse_targets(raw):
 
 
 def query_stop_prices(symbols):
-    """查询老虎当日订单，提取各标的最新的止损条件单触发价（STP 单 aux_price）。
+    """查询老虎当日订单，提取各标的最新的**活动**止损条件单触发价（STP 单 aux_price）。
 
     返回 {symbol: stop_price} 字典。查不到或出错返回空字典。
     用户可能在券商 App 里手动添加止损单，所以每次采样都要查、不凭记忆。
 
     为什么放在采样脚本里：止损价是盯盘决策的关键输入（判断持仓止损触发、
     移损后新的止损位），必须与行情数据同步获取，不能事后单独查。
+
+    ⚠️ 2026-08-11 修复：此前不过滤订单状态、匹配到第一个订单即 break，会取到
+    已作废批次（开仓前 Invalid 的测试单 STP @846 EXPIRED）的触发价、全天显示旧止损
+    （LITE 实测 846 恒不更新、与实际移损 840→836 脱节）。现在只认活动状态
+    （排除 Filled/Cancelled/Expired/Inactive/Invalid 等已结束订单）的 STP 单；
+    同标的多个活动止损单时取 order_id 最大的（提交最晚、最新）那个。
     """
     if not _TIGER_AVAILABLE:
         return {}
@@ -94,13 +100,27 @@ def query_stop_prices(symbols):
                 continue
             for s in symbols:
                 # 匹配：订单返回 "02800" / "MU"，对比 symbols 列表中的 "HK.02800" / "US.MU"
-                if sym == s or sym == s.split(".")[-1]:
-                    aux = getattr(order, "aux_price", None)
-                    if aux and float(aux) > 0:
-                        # 取最新的（后查询覆盖前面的）
-                        result[s] = float(aux)
+                if sym != s and sym != s.split(".")[-1]:
+                    continue
+                # 只认止损条件单（STP；开仓附加止损腿在订单列表里同为独立 STP 单）
+                ot = getattr(order, "order_type", None)
+                if ot is None or "STP" not in str(ot):
                     break
-        return result
+                # 只认活动状态：排除已成交 / 已撤 / 已过期 / 无效 / 停用等已结束订单
+                st_obj = getattr(order, "status", None)
+                st = st_obj.value if hasattr(st_obj, "value") else str(st_obj)
+                if any(k in st for k in ("Filled", "Cancelled", "Expired", "Inactive", "Invalid")):
+                    break
+                aux = getattr(order, "aux_price", None)
+                if not aux or float(aux) <= 0:
+                    break
+                # 同标的多个活动止损单：取 order_id 最大的（提交最晚 = 最新）
+                oid = int(getattr(order, "id", 0) or 0)
+                cur = result.get(s)
+                if cur is None or oid > cur[1]:
+                    result[s] = (float(aux), oid)
+                break
+        return {s: v[0] for s, v in result.items()}
     except Exception:
         return {}
 
