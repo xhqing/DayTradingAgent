@@ -6,7 +6,28 @@
 
 ### 变更
 
-- **README 与 windows-support 分支同步（2026-08-10）**：用户要求把 README 内容同步为 windows-support 分支的版本。**为什么改**：windows-support 分支含 3 个 main 没有的提交（Windows 平台支持、README 扩展港美股 → 港美A股、徽章调整），其中文档部分尚未回到 main，用户要求先同步 README。**改了什么**：[`README.md`](README.md) / [`README_cn.md`](README_cn.md) 与 windows-support 分支逐字对齐——① 标题与正文市场范围「港股 / 美股」→「港股 / 美股 / A 股」（markets 徽章同步更新）；② 徽章区新增 mode-auto 徽章；③ 「Claude Code 加载 / 激活」措辞改为「智能体运行框架（harness）」；④ 前置条件新增「Windows 用户」条目（2026-08-09 起脚本与护栏双平台适配、`python3` → `python` 说明）；⑤ 署名区项目名同步。**边界**：Windows 适配与 A 股能力的代码实现仍在 windows-support 分支（main 代码未合并），README 同步后 main 上文档暂时超前于实际代码——README 同步本身不改变 main 分支功能。
+- **watcher 参数再修正：无输出间隔 = 采样段 40s，阈值 50s / 间隔 10s（2026-08-11 用户纠正）**：上一轮定参（阈值 35s / 间隔 25s）把「分析时间」误当成「无输出时间间隔」——用户纠正：**25s 是最大分析时间，不是没有输出内容的时间间隔**；「无输出内容的时间间隔」= 采样段运行的时长（采样脚本跑 40s 期间 AI 回合结束、jsonl 停更、无输出），正常最少 ≈ 40s（40s 采样段 + 段启动开销）。**为什么改**：阈值 35s < 正常无输出 40s，会把正常采样段误报为中断（严重误报源）。**改了什么**：
+  - [`.claude/hooks/monitor_watcher.py`](.claude/hooks/monitor_watcher.py) 判定阈值 `STALE_SECONDS` 35 → **50s**（> 正常无输出 40s+，留 ~10s 余量防误报正常采样段；注释重写概念依据——无输出间隔 = 采样段时长，分析时间不作依据）。
+  - [`.claude/hooks/com.daytrading.monitor-watcher.plist`](.claude/hooks/com.daytrading.monitor-watcher.plist) 检查间隔 `StartInterval` 25 → **10s** → 最坏检测延迟 = 阈值 + 间隔 = 50 + 10 = **60s**，恰好满足「真实中断 ≤ 60s」。已重新部署 + `launchctl unload/load`，实测生效（`plutil` 提取 StartInterval=10）。
+  - [`.claude/skills/trade/references/monitoring.md`](.claude/skills/trade/references/monitoring.md)「多层防护」⑪ 恢复说明参数同步为 50s / 10s + 概念澄清。
+  - 测试：边界实测通过（停更 40s 正常不报 / 49s 正常 / 51s 中断 / 60s 中断；阈值语义 `> 50` 才报）。
+
+- **watcher 参数数据实测定参 + 仅港股守护（2026-08-11 用户立）**：在恢复 watcher（按会话独立守护）基础上，用户指出两点：① 真实中断检测延迟 = 检查间隔 + 判定阈值，要求**真实中断 ≤ 60s**（原 120s 间隔 + 60s 阈值最坏 180s 太长）；② **美股时段不守护**——美股盘中（夏令时北京 21:30-次日 04:00）用户在休息、不希望被打扰。**为什么改**：先做数据分析——实测今日盯盘 log（`tmp/monitor_log_HK_09988_20260811_signal.csv`）段间分析间隙（采样段结束 → AI 分析 → 重启下一段）166 个：均值 9.3s、中位数 9s、最大 25s（另有 1 个 533s = 09:46 断链的真中断形态，与正常间隙完全可分）。**改了什么**：
+  - [`.claude/hooks/monitor_watcher.py`](.claude/hooks/monitor_watcher.py) 判定阈值 `STALE_SECONDS` 60 → **35s**（> 最大正常间隙 25s，留 10s 余量防误报正常分析间隙；注释写明数据依据）；时段判断改为**仅港股盘中**（09:30-12:00 / 13:00-16:00），删美股时段（美股不守护）。（注：本轮参数 35s/25s 随后被下一条「阈值 50s / 间隔 10s」修正——35s 误把分析时间当无输出间隔。）
+  - [`.claude/hooks/com.daytrading.monitor-watcher.plist`](.claude/hooks/com.daytrading.monitor-watcher.plist) 检查间隔 `StartInterval` 120 → **25s**。已重新部署 + `launchctl unload/load`，实测生效。
+  - [`.claude/skills/trade/references/monitoring.md`](.claude/skills/trade/references/monitoring.md)「多层防护」⑪ 恢复说明同步。
+  - 测试：时段判断全场景实测通过（港股盘中 True / 午休 False / 午市 True / 美股时段 22:00 与凌晨 03:00 False）。
+
+- **恢复密采样外部 watcher：按会话独立守护 + 60 秒判据（2026-08-11 用户立）**：恢复 2026-08-10 撤销的 launchd 外部守护 watcher（`com.daytrading.monitor-watcher`），判定逻辑重写。**为什么改**：用户指出旧逻辑两个缺陷——① 只 `pgrep monitor_segment.py`、不认 ws_segment / futu_ws_segment（2026-08-10 撤销的根因）；② 更本质：检查瞬间若正好是「段结束 → AI 分析 → 重启下一段」的间隙，采样进程短暂不存在，只看进程必然把正常节奏误判为中断。用户立新逻辑：**按会话独立守护**（盯盘会话可能不止一个，会话 A 中断不能被会话 B 活跃掩盖）+ **60 秒判据**（正常无输出 ≈ 采样 40 秒，给 20 秒冗余，超 60 秒无输出 = 大概率中断）。**改了什么**：
+  - [`.claude/hooks/monitor_watcher.py`](.claude/hooks/monitor_watcher.py) 重写为**注册制 + 按会话判定**：只检查 `tmp/monitor_sessions.txt` 注册列表里的盯盘会话（每行一个 `CLAUDE_CODE_SESSION_ID`），对每个会话独立判定其 jsonl（`~/.claude/projects/<项目>/<session_id>.jsonl`）停更 > 60 秒 → 该会话中断 → 系统通知（合并所有中断会话为一条）；停更 ≤ 60 秒 → 正常。**不查采样进程**（采样进程不区分会话；jsonl 停更 > 60s 已覆盖全部中断形态，连跑多段违规也会被报）。
+  - **注册**：[`scripts/preflight.py`](.claude/skills/trade/scripts/preflight.py) 末尾新增自动注册——盯盘启动必跑 preflight，把本会话 `CLAUDE_CODE_SESSION_ID` 写入 `tmp/monitor_sessions.txt`（去重），零额外负担；**注销**：新建 [`scripts/monitor_unregister.sh`](.claude/skills/trade/scripts/monitor_unregister.sh)，停盯收尾从注册文件移除本会话（正常停盯不误报）。
+  - [`SKILL.md`](.claude/skills/trade/SKILL.md)「停盯第一个动作」改为「解除防睡眠 + 注销盯盘会话」（跑 off.sh + monitor_unregister.sh）。
+  - [`.claude/hooks/com.daytrading.monitor-watcher.plist`](.claude/hooks/com.daytrading.monitor-watcher.plist) 恢复（launchd 每 120 秒触发、RunAtLoad、盘外自动跳过），已部署 `~/Library/LaunchAgents/` + `launchctl load` 加载，实测 `launchctl kickstart` 退出码 0。
+  - [`.claude/skills/trade/references/monitoring.md`](.claude/skills/trade/references/monitoring.md)「多层防护」⑪ 撤销记录追加 2026-08-11 恢复说明（按会话 + 60s 内容）。
+  - 测试：完整闭环实测通过（preflight 自动注册 → 活跃会话判定正常 → 设 jsonl 停更 120s 判中断 → 注销后不再守护；多会话独立判定——活跃会话不报、停更会话报出）。另修两处脚本 bug：注册文件路径多算一层（写错到 `.claude/tmp/`）、`$变量` 后跟中文标点被 bash 破坏（改 `${变量}` 花括号写法）。
+
+- **修复 monitor_segment 止损价查询取到已作废订单（2026-08-11）**：[`scripts/monitor_segment.py`](.claude/skills/trade/scripts/monitor_segment.py) 的 `query_stop_prices` 此前不过滤订单状态、匹配到第一个订单即 break——8-10 美股盯盘实测：监控 log 的 `stop_price` 列全天显示 846.00（开仓前作废测试单 STP @846 Invalid 的触发价），实际止损已先后移损到 840 / 836，stop_price 列与实际完全脱节（依赖该列判断止损位会误判）。**为什么改**：8-11 用户问「第一笔是否触发止损」排查时定位到该 bug（用户观察到分钟K穿越 840，与 log 显示止损 846 不一致）。**改了什么**：只认**活动状态**（排除 Filled / Cancelled / Expired / Inactive / Invalid 等已结束订单）的 STP 单；同标的多个活动止损单时取 order_id 最大（提交最晚 = 最新）的那个；匹配逻辑从「匹配即 break」改为「匹配 + 状态/类型/触发价校验全部通过才 break」。实测验证：真实账户数据下 LITE 已无活动止损单 → 返回空（修复前会返回已结束单的 846）；模拟「活动 840 + 已结束 836/846 并存」→ 正确返回 840；模拟「双活动单」→ 取 id 大者。
+- **美股富途逐笔每秒采样实测 + 排进盯盘流程（2026-08-11）**：排查过程中盘外实测富途 OpenD `subscribe(['US.LITE'], [TICKER])` 返回 ret=0、收到逐笔回调（收盘最后一笔 16:00:01 813.51）——富途**接受美股 TICKER 逐笔订阅**，机制上美股可用 `futu_ws_segment.py` 做逐笔每秒采样（此前美股密采样用 10 秒快照，只因「美股无老虎行情权限」的妥协，不是最优）。**为什么改**：用户要求「把实测排进下次美股盯盘流程」——让美股密采样升级为每秒采样（对齐「密采样每秒一个价格」规矩）有据可依、不用每次临场摸索。**改了什么**：[`references/monitoring.md`](.claude/skills/trade/references/monitoring.md)「每秒采样」节美股条目追加「美股逐笔每秒采样（2026-08-11 实测可用，待盘中验证后转正）」——每次美股盯盘启动必做一次逐笔实测（subscribe 候选标的 TICKER 验证返回 0 + 跑一段 futu_ws_segment.py 看推送是否每秒稳定有点），实测稳定则升级为逐笔每秒采样、否则维持 10 秒快照兜底并记录；[`SKILL.md`](.claude/skills/trade/SKILL.md) 硬性护栏第 8 条美股采样句同步挂上「启动做逐笔实测、稳定则升级」的说明。
 
 ### 移除
 

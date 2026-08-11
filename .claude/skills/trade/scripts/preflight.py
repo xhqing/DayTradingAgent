@@ -113,3 +113,27 @@ _ensure_awake()
 # D12（2026-08-04）：盯盘启动密采样入口提醒——防 AI 用 cron / 直接 snapshot 绕过 monitor_segment 降频
 # （2026-08-04 教训，多层防护见 monitoring.md「不因市况降频」节 + .claude/hooks/monitor_guard.py）。
 print("🔒 密采样提醒：盯盘密采样唯一入口是 monitor_segment.py 40 秒循环，禁用 cron / 直接 snapshot 替代。")
+
+# 盯盘会话注册（2026-08-11 立）：把本会话 CLAUDE_CODE_SESSION_ID 写入 tmp/monitor_sessions.txt，
+# 纳入密采样守护 watcher（launchd 每 120 秒）的守护范围——watcher 对该会话 jsonl 停更 > 60 秒
+# 判中断、发系统通知提醒用户唤醒 AI。preflight 是盯盘启动必跑脚本，注册动作放这里零额外负担；
+# 停盯时由 trade 停盯流程调 scripts/monitor_unregister.sh 注销（正常停盯不被误报）。
+def _register_monitor_session():
+    import os as _os
+    _sid = _os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    if not _sid:
+        return  # 非 Claude Code 会话内（如手动跑脚本）→ 跳过
+    _root = _os.path.abspath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "..", "..", ".."))
+    _reg = _os.path.join(_root, "tmp", "monitor_sessions.txt")
+    try:
+        _os.makedirs(_os.path.dirname(_reg), exist_ok=True)
+        _exists = _os.path.isfile(_reg) and _sid in open(_reg).read().splitlines()
+        if not _exists:
+            with open(_reg, "a") as _f:
+                _f.write(_sid + "\n")
+        print(f"👀 盯盘会话已注册（密采样 watcher 守护；停盯时自动注销）")
+    except Exception as _e:
+        print(f"⚠️ 盯盘会话注册失败（{_e}），watcher 不守护本会话")
+
+
+_register_monitor_session()
