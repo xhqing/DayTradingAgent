@@ -47,8 +47,11 @@ _TERMINAL = ("Filled", "Cancelled", "Inactive", "Invalid", "Expired")
 def _parse_args(argv):
     """解析位置参数并过滤 --mode（2026-08-05 立）：`--mode auto` 这类误传会把 `auto` 当
     quantity 报 ValueError 耽误平仓（2026-08-03 MU 空单教训同款）。平仓脚本不连账户 equity、
-    --mode 无实际用途，直接忽略（含 `--mode` 后跟的值、`--mode=xxx` 两种写法）。"""
+    --mode 无实际用途，直接忽略（含 `--mode` 后跟的值、`--mode=xxx` 两种写法）。
+    2026-08-12 立：同时解析 --account live/paper（实盘备选账户；返回 (位置参数, account)）。
+    ⚠️ --account live（实盘）= 真钱，AI 调用前须已征得用户明确同意。"""
     args = []
+    account = None
     skip_next = False
     for a in argv:
         if skip_next:
@@ -59,12 +62,18 @@ def _parse_args(argv):
             continue
         if a.startswith("--mode="):
             continue
+        if a == "--account":
+            skip_next = True
+            continue
+        if a.startswith("--account="):
+            account = a.split("=", 1)[1].lower()
+            continue
         args.append(a)
-    return args
+    return args, account
 
 
 def main():
-    argv = _parse_args(sys.argv[1:])
+    argv, account = _parse_args(sys.argv[1:])
     symbol = argv[0] if len(argv) > 0 else None
     direction = argv[1] if len(argv) > 1 else None
     quantity = int(float(argv[2])) if len(argv) > 2 else None
@@ -72,9 +81,12 @@ def main():
     if symbol and not symbol.startswith("HK."):
         print(json.dumps({"ok": False, "error": f"本脚本只处理港股（HK.xxx），收到 {symbol}"}))
         sys.exit(1)
+    if account not in (None, "live", "paper"):
+        print(json.dumps({"ok": False, "error": f"--account 必须是 live/paper，收到 '{account}'"}))
+        sys.exit(1)
 
     try:
-        config = U.load_config()
+        config = U.load_config(account=account)
     except Exception as e:
         print(json.dumps({"ok": False, "error": f"老虎配置加载失败: {e}"}))
         sys.exit(1)
@@ -157,7 +169,7 @@ def main():
             sys.exit(0)
 
         # 等止损单触发 Sell/Buy MO 成交（触发价=现价，应立即触发）
-        filled, fill_price, status = U.check_order_filled_tiger(config, stp_id, timeout=12)
+        filled, fill_price, status, _reason = U.check_order_filled_tiger(config, stp_id, timeout=12)
         if filled:
             fill_src = "avg_fill_price"
             if fill_price is None:
@@ -185,7 +197,7 @@ def main():
         print(json.dumps(result_base, ensure_ascii=False))
         sys.exit(1)
 
-    filled, fill_price, status = U.check_order_filled_tiger(config, order_id, timeout=8)
+    filled, fill_price, status, _reason = U.check_order_filled_tiger(config, order_id, timeout=8)
     if not filled:
         result_base.update({"ok": False, "error": f"平仓 MKT 未成交（{status}）", "order_id": order_id})
         print(json.dumps(result_base, ensure_ascii=False))
@@ -282,7 +294,7 @@ def _fallback_cancel_and_mo(config, symbol, close_side, quantity, result_base,
         result_base.update({"ok": False, "error": f"fallback MO 提交失败: {e}"})
         print(json.dumps(result_base, ensure_ascii=False))
         sys.exit(1)
-    filled, fill_price, status = U.check_order_filled_tiger(config, order_id, timeout=8)
+    filled, fill_price, status, _reason = U.check_order_filled_tiger(config, order_id, timeout=8)
     if not filled:
         result_base.update({"ok": False, "error": f"fallback MO 未成交（{status}）", "order_id": order_id})
         print(json.dumps(result_base, ensure_ascii=False))

@@ -16,6 +16,11 @@ Filled @773.68 + 附加止损腿 OrderLeg('LOSS') 激活为独立 STP 监控）�
     stop_loss   止损价（附加止损腿触发价）
     target      目标止盈价
     quantity    开仓股数（0=自动算仓位：lot_size 从 get_contract 取、美股默认 1）
+
+下单失败自动降档重试（2026-08-11 立，00100 待办，同港股 open_position_tiger）：目标量被拒
+（Invalid / 提交异常）时按降档序列（逐次减半取整手）自动重试到可下上限，每次失败输出 reason；
+成交量 < 目标量时输出 downscaled=true + target_quantity + failed_attempts + warning。
+不降档的两种失败：cross-trading（账户已有同标的未成交挂单，改单或撤单后重挂）/ 挂起超时（撤单退出由 AI 决策）。
 """
 
 import json
@@ -25,6 +30,24 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import trade_utils_tiger_us as U
+
+
+def _downscale_sequence(quantity, lot_size=1):
+    """开仓降档序列：目标量优先，之后逐次减半（向下取整手）直到最低整手。
+
+    2026-08-11 立（00100 待办，与港股 open_position_tiger 同步）：目标量被拒时自动
+    逐次减半重试到可下上限，避免 AI 手动乱试（8-06 港股 MINIMAX 教训同型）。
+    例：1000 股（lot 1）→ 500 → 250 → 125 → 62 → 31 → 15 → 7 → 3 → 1。
+    """
+    lot = max(int(lot_size or 1), 1)
+    seq = [quantity]
+    q = int(int(quantity) // 2 // lot) * lot
+    while q >= lot and q > 0:
+        seq.append(q)
+        if q == lot:
+            break
+        q = int(q // 2 // lot) * lot
+    return seq
 
 
 def main():
@@ -48,6 +71,18 @@ def main():
     stop_loss = float(sys.argv[4])
     target = float(sys.argv[5])
     quantity = int(float(sys.argv[6]))
+    # 账户选择（2026-08-12 立）：默认 None=paper 模拟账户；--account live 切实盘账户。
+    # ⚠️ 实盘=真钱，AI 调用 --account live 前必须已征得用户明确同意（SKILL「auto 账户选择」双闸）。
+    account = None
+    if "--account" in sys.argv:
+        idx = sys.argv.index("--account")
+        if idx + 1 >= len(sys.argv):
+            print("用法错误：--account 需要参数 live / paper", file=sys.stderr)
+            sys.exit(1)
+        account = sys.argv[idx + 1].lower()
+        if account not in ("live", "paper"):
+            print(json.dumps({"ok": False, "error": f"--account 必须是 live/paper，收到 '{account}'"}))
+            sys.exit(1)
 
     if not symbol.startswith("US."):
         print(json.dumps({"ok": False, "error": f"本脚本只处理美股（US.xxx），收到 {symbol}"}))
@@ -57,7 +92,7 @@ def main():
         sys.exit(1)
 
     try:
-        config = U.load_config()
+        config = U.load_config(account=account)
     except Exception as e:
         print(json.dumps({"ok": False, "error": f"老虎配置加载失败: {e}"}))
         sys.exit(1)
@@ -73,8 +108,10 @@ def main():
         sys.exit(1)
     current_price = quote["last"]
 
+    # 真实费率上下文（2026-08-12）：含 shares / sec_type / market / 当月订单序号（阶梯平台费）
+    fee_ctx = U.build_fee_ctx(symbol, quantity, config)
     in_range, range_low, range_high, odds_at_ref, odds_at_current = U.check_price_in_range(
-        direction, current_price, entry_ref, stop_loss, target, symbol
+        direction, current_price, entry_ref, stop_loss, target, symbol, fee_ctx
     )
     result_base = {
         "action": "open_position_tiger_us", "market": "US", "symbol": symbol, "direction": direction,
@@ -120,27 +157,75 @@ def main():
     lo_price = U.round_to_tick_us(lo_price)
     side_str = "Buy" if direction == "long" else "Sell"
 
-    # 主单 LMT + 附加止损腿 OrderLeg('LOSS')（一次提交）
-    try:
-        order_id = U.submit_order_with_stop_us(config, symbol, side_str, quantity, lo_price, stop_loss)
-    except Exception as e:
-        result_base.update({"ok": False, "error": f"主单+附加止损提交失败: {e}", "lo_price": lo_price})
-        print(json.dumps(result_base, ensure_ascii=False))
-        sys.exit(1)
-    result_base["lo_price"] = lo_price
-    result_base["order_id"] = order_id
-
-    filled, fill_price, status = U.check_order_filled_us(config, order_id, timeout=8)
-    if not filled:
+    # 主单 MKT + 附加止损腿 OrderLeg('LOSS')（一次提交）
+    #
+    # 失败自动降档重试（2026-08-11 立，00100 待办，与港股 open_position_tiger 同逻辑）：
+    # 目标量被拒（提交抛异常 / 回查 Invalid）时按降档序列逐次减半重试到可下上限，每次失败
+    # 输出 reason。两种失败不降档：① cross-trading（账户已有同标的未成交挂单，新单与其
+    # 交叉成交被拒，2026-08-11 用户纠正：与持仓止损单无关——开仓=空仓建仓），与量无关、
+    # 降档无意义，须改单或撤单再重挂；② 挂起超时未成交（可能是盘口问题而非被拒，
+    # 撤单退出由 AI 决策）。
+    lot = U.get_lot_size_us(U.new_trade_client(config), symbol)
+    attempts = _downscale_sequence(quantity, lot)
+    failures = []
+    order_id = None
+    fill_price = None
+    status = ""
+    for qty in attempts:
         try:
-            U.cancel_order_us(config, order_id)
-            result_base["warning"] = f"主单未成交（{status}），已撤主单及附加止损"
-        except Exception as ce:
-            result_base["warning"] = f"主单未成交（{status}），撤单失败需手动撤 {order_id}: {ce}"
-        result_base.update({"ok": False, "error": f"主单未成交（{status}），本次开仓未成立"})
+            order_id = U.submit_order_with_stop_us(config, symbol, side_str, qty, lo_price, stop_loss)
+        except Exception as e:
+            msg = str(e)
+            if "cross" in msg.lower() and "pending" in msg.lower():
+                failures.append({"qty": qty, "status": "submit_exception", "reason": msg,
+                                 "hint": "账户已有同标的未成交委托单（之前下单残留），改单或撤销该挂单后再重新挂单"})
+                break  # cross-trading 与量无关，降档无意义
+            failures.append({"qty": qty, "status": "submit_exception", "reason": msg})
+            continue
+        filled, fill_price, status, reason = U.check_order_filled_us(config, order_id, timeout=8)
+        if filled:
+            break
+        if "Invalid" not in status:
+            # 挂起超时 / 其它非被拒状态：撤单退出（不降档，让 AI 决策）
+            try:
+                U.cancel_order_us(config, order_id)
+                cancel_note = "已撤主单及附加止损"
+            except Exception as ce:
+                cancel_note = f"撤单失败需手动撤 {order_id}: {ce}"
+            failures.append({"qty": qty, "status": status, "reason": reason or "", "cancel_note": cancel_note})
+            break
+        # Invalid（被拒）→ 记录失败原因并降档继续
+        hint = ""
+        if reason and "cross" in reason.lower() and "pending" in reason.lower():
+            hint = "账户已有同标的未成交委托单（之前下单残留），改单或撤销该挂单后再重新挂单"
+        failures.append({"qty": qty, "status": status,
+                         "reason": reason or "（无具体原因，被拒订单 reason 常见为通用文案）",
+                         **({"hint": hint} if hint else {})})
+        if hint:
+            break  # cross-trading 与量无关，降档无意义
+    if not filled:
+        result_base.update({"lo_price": lo_price,
+                            "ok": False, "error": f"开仓全部失败（尝试 {len(failures)} 档）", "failures": failures})
         print(json.dumps(result_base, ensure_ascii=False))
         sys.exit(1)
 
+    result_base["lo_price"] = lo_price
+    if len(failures) > 0:
+        # 降档成交：保留目标量字段、更新实际量，提示仓位缩水
+        result_base["target_quantity"] = quantity
+        result_base["quantity"] = attempts[len(failures)] if len(failures) < len(attempts) else qty
+        result_base["downscaled"] = True
+        result_base["failed_attempts"] = failures
+        stop_distance = abs(entry_ref - stop_loss)
+        actual_max_loss = result_base["quantity"] * stop_distance
+        result_base["actual_max_loss"] = round(actual_max_loss, 2)
+        budget_note = ""
+        if result_base.get("budget_B"):
+            budget_note = f"，预算 B {result_base['budget_B']:.2f} 的 {actual_max_loss / result_base['budget_B'] * 100:.0f}%"
+        result_base["warning"] = (
+            f"目标量 {quantity} 被拒（{len(failures)} 档失败），降档成交 {result_base['quantity']}——"
+            f"实际 max_loss {actual_max_loss:.2f}{budget_note}，仓位缩水，收益被拖累")
+    result_base["order_id"] = order_id
     fill_src = "avg_fill_price"
     if fill_price is None:
         fill_price = lo_price

@@ -1,16 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- 密采样守护 watcher launchd 配置（2026-08-04 立；2026-08-10 撤销；2026-08-11 修复逻辑后恢复）。
+<!-- 密采样守护 watcher launchd 配置（2026-08-04 立；2026-08-10 撤销；2026-08-11 修复逻辑后恢复；
+     2026-08-12 重构为「采样在跑 + 会话 Running 标签（state 文件）双判据」）。
      作用：每 10 秒触发 monitor_watcher.py，港股盘中检查密采样是否中断、中断发 macOS 通知。
      独立于 Claude Code session（AI 停密采样 / session 不在场，watcher 仍通知用户）。
 
-     判定逻辑（2026-08-11 用户立）：按会话独立守护——只检查 tmp/monitor_sessions.txt 注册列表
-     里的盯盘会话（preflight 自动注册、停盯注销），每个会话独立判定其 jsonl 停更 > 50 秒 →
-     该会话中断 → 通知。仅港股盘中守护（美股时段用户休息不打扰，2026-08-11 用户立）。
+     判定逻辑（2026-08-12 用户立：盯盘窗口在 Running 且采样脚本在正常采样 → 不报，两者都
+     不活跃才报；会话是否在 Running 读补丁 012 写盘的 state 文件）：按会话独立守护，只检查
+     tmp/monitor_sessions.txt 注册列表里的盯盘会话。优先级：① jsonl 停更 > 30 分钟 = 死会话，
+     自动剔除、不报；② 任一密采样脚本（monitor_segment.py / ws_segment.py / futu_ws_segment.py）
+     进程存活 → 盯盘正常 Running、本轮一律不报；③ 采样没在跑 → 读 ~/.claude/session_running/<sid>.txt
+     （补丁 012 写盘）：running/thinking = 会话在 Running 不报，waiting_input/idle = 没在 Running 报中断，
+     state 文件无（012 未生效）→ fallback jsonl 停更 > 90 秒判定。
+     仅港股盘中守护（美股时段用户休息不打扰，2026-08-11 用户立）。
 
-     参数依据（2026-08-11 用户纠正 + 实测）：「无输出内容的时间间隔」= 采样段运行的时长
-     （采样脚本跑 40s 期间 jsonl 停更、无输出），正常最少 ≈ 40s；实测段间 gap 6-25s 是
-     分析时间（jsonl 活跃）、不是无输出间隔。判定阈值 50s（> 40s 正常无输出，留余量防误报）；
-     检查间隔 10s → 最坏检测延迟 = 阈值 + 间隔 = 60s，恰好满足「真实中断 ≤ 60s」（用户立）。
+     补丁 012 依赖：PatchClaudeAgent 的 patch 012 须应用到本机 extension.js、且盯盘会话重载
+     扩展后才写 state 文件；未生效时 watcher 自动 fallback 到 jsonl 判定（过渡期不误报）。
 
      部署（手动）：
        1. 复制本文件到 ~/Library/LaunchAgents/com.daytrading.monitor-watcher.plist

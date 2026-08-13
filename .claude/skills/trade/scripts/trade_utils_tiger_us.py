@@ -19,7 +19,7 @@ denied US market），get_quote_us 改富途 OpenD 单源（美股行情只有�
 - **lot_size = 1**（美股 1 股/手，从 get_contract.lot_size 取、fallback 1）。
 - **tick = 0.01**（美股统一最小报价单位、无价位表）。
 - **币种 USD**：账户 currency=USD，equity 取 net_liquidation 直用（无需港股的 HKD 保守口径换算）。
-- **费率 3bps/边**（_fee_per_side 按 US. 前缀判，复用 trade_utils_tiger）。
+- **费率**：真实费率（2026-08-12 改，复用 fee_schedule / trade_utils_tiger 的 _market_of + _sec_type_of + build_fee_ctx）；美股佣金 0.029% 最低 15、无印花税，大单 ≈4.17 bps/边（个股 ETF 同结构）。
 - 交易时段：美东 09:30-16:00（夏令时北京 21:30-次日 04:00 / 冬令时 22:30-次日 05:00）。
 """
 

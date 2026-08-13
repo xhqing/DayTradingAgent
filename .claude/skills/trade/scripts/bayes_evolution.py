@@ -10,6 +10,9 @@
 import csv, math, sys, os, glob, re
 from statistics import mean, stdev
 from scipy import stats as ss
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import fee_schedule as FS   # 真实费率（市场+类型+成交额+阶梯平台费），2026-08-12 立
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # 自身目录（scripts/），与 review.py 同目录
 from review import p_g_pos, p_sum_y_pos, p_g_target, p_sum_y_target
 
@@ -33,12 +36,12 @@ def ppos_emp(xbar, n, sigma):
     mu = pd * xbar / (pp + pd)
     return ss.norm.cdf(mu * math.sqrt(pp + pd))
 
-# 单边手续费率（2026-08-03 用户立：复盘 R / EV / 胜率等一律用扣费净盈亏 net）
-# 港股 18bps/边、美股 3bps/边；一笔交易 = 开仓 + 平仓 两边各收一次。
-def _fee_per_side(symbol):
-    s = symbol.upper()
-    if s.startswith('HK.'): return 0.0018   # 18bps
-    if s.startswith('US.'): return 0.0003   # 3bps
+# 单边费率（2026-08-12 改真实费率，复用 fee_schedule）：按市场 + 标的类型 + 成交额精确算，
+# 含佣金(max(15,×0.029%)) + 印花税(港股个股0.1%/ETF免) + 各征费 + 阶梯平台费。
+def _market_of(symbol):
+    s = (symbol or '').upper()
+    if s.startswith('HK.'): return 'HK'
+    if s.startswith('US.'): return 'US'
     raise ValueError(f"未知市场前缀、无法定费率: {symbol!r}（只支持 HK. / US.）")
 
 def _resolve_date(argv=None):
@@ -84,17 +87,41 @@ DATE, SUFFIX = _resolve_date(sys.argv[1:])
 CSV_PATH = f"reviews/{DATE}-trades{SUFFIX}.csv"
 
 # 读累积 trades CSV（单一数据源，与 review.py 同源；每次复盘更新此 CSV）
-# R = 扣双边手续费后的净 R（与 review.py net 口径一致）
-trades = []
+# R = 扣双边手续费后的净 R（与 review.py net 口径一致）；2026-08-12 起用真实费率（fee_schedule）
+rows_raw = []
+type_missing_any = False
 with open(CSV_PATH) as fh:
     for r in csv.DictReader(fh):
-        sign = 1 if r['direction'].strip().lower() in ('long', '做多') else -1
-        entry, exit_, shares = float(r['entry_price']), float(r['exit_price']), float(r['shares'])
-        P_gross = (exit_ - entry) * shares * sign                       # 毛盈亏
-        fee = _fee_per_side(r['symbol']) * (entry + exit_) * shares     # 开 + 平 两边手续费
-        R = (P_gross - fee) / float(r['max_loss'])                      # 净 R（分母 max_loss 保持毛值）
-        trades.append([r['date'], r['symbol'], R])
-trades.sort(key=lambda x: (x[0], x[1]))
+        sec_type = (r.get('type') or r.get('sec_type') or '').strip().lower()
+        if not sec_type:
+            sec_type = 'stock'; type_missing_any = True   # 缺 type 默认 stock（保守收印花税）
+        rows_raw.append({
+            'date': r['date'], 'symbol': r['symbol'],
+            'sign': 1 if r['direction'].strip().lower() in ('long', '做多') else -1,
+            'entry': float(r['entry_price']), 'exit': float(r['exit_price']),
+            'shares': float(r['shares']), 'M': float(r['max_loss']),
+            'sec_type': sec_type,
+        })
+rows_raw.sort(key=lambda x: (x['date'], x['symbol']))
+# 按「(自然月, 市场)」累计订单序号算阶梯平台费——港美平台费完全独立、各自计档（2026-08-12 用户纠正）。
+# 开仓、平仓各 1 笔；日内交易开平同日同月。
+month_counter = {}
+trades = []
+for x in rows_raw:
+    ym = x['date'][:7]
+    market = _market_of(x['symbol'])
+    key = (ym, market)
+    month_counter[key] = month_counter.get(key, 0) + 1; idx_open = month_counter[key]
+    month_counter[key] = month_counter.get(key, 0) + 1; idx_close = month_counter[key]
+    P_gross = (x['exit'] - x['entry']) * x['shares'] * x['sign']              # 毛盈亏
+    fee_open = FS.fee_per_side(market, x['sec_type'], x['entry'] * x['shares'], idx_open)
+    fee_close = FS.fee_per_side(market, x['sec_type'], x['exit'] * x['shares'], idx_close)
+    fee = fee_open + fee_close                                                # 开 + 平 两边手续费
+    R = (P_gross - fee) / x['M']                                              # 净 R（分母 max_loss 保持毛值）
+    trades.append([x['date'], x['symbol'], R])
+if type_missing_any:
+    sys.stderr.write("⚠️ 部分/全部行缺 type 列，已按 stock（收印花税）计费；"
+                     "ETF 漏标会多算印花税，建议补 type 列（stock/etf）精算。\n")
 
 # 序贯累积：P(EV>0) 从 N>=2 起；EV（累计 R 均值 ± 频率派 95% CI）从 N>=1 起、CI 从 N>=2 起
 xs, ppos, los, his, r_cum = [], [], [], [], []
