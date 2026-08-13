@@ -114,15 +114,31 @@ _ensure_awake()
 # （2026-08-04 教训，多层防护见 monitoring.md「不因市况降频」节 + .claude/hooks/monitor_guard.py）。
 print("🔒 密采样提醒：盯盘密采样唯一入口是 monitor_segment.py 40 秒循环，禁用 cron / 直接 snapshot 替代。")
 
-# 盯盘会话注册（2026-08-11 立）：把本会话 CLAUDE_CODE_SESSION_ID 写入 tmp/monitor_sessions.txt，
-# 纳入密采样守护 watcher（launchd 每 120 秒）的守护范围——watcher 对该会话 jsonl 停更 > 60 秒
-# 判中断、发系统通知提醒用户唤醒 AI。preflight 是盯盘启动必跑脚本，注册动作放这里零额外负担；
-# 停盯时由 trade 停盯流程调 scripts/monitor_unregister.sh 注销（正常停盯不被误报）。
+# 盯盘会话注册（2026-08-11 立；2026-08-12 收窄为仅港股注册）：把本会话 CLAUDE_CODE_SESSION_ID
+# 写入 tmp/monitor_sessions.txt，纳入密采样守护 watcher（launchd 每 10 秒）的守护范围。
+# ⚠️ **仅港股盯盘注册、美股不注册**（2026-08-12 用户立）：watcher 的 in_trading_session()
+# 只在港股盘中检查（美股时段用户休息不打扰），若美股会话也注册、第二天港股开盘 watcher 仍会
+# 检查到它 → jsonl 停更 8 小时 > 阈值 → 一直报。故注册源头按市场收窄：只在港股盘中（含盘前
+# 09:30 前 30 分钟预启动阶段，覆盖盘前预热场景）注册，美股 / 夜间 / 盘外一律跳过。
+# 停盯时由 trade 停盯流程调 scripts/monitor_unregister.sh 注销（正常停盯不被误报）；
+# 即便忘注销，watcher 的死会话自动剔除（jsonl 停更 > 30 分钟）也会兜底清理。
 def _register_monitor_session():
     import os as _os
+    import datetime as _dt
     _sid = _os.environ.get("CLAUDE_CODE_SESSION_ID", "")
     if not _sid:
         return  # 非 Claude Code 会话内（如手动跑脚本）→ 跳过
+    # 港股盘中判断（与 preflight 主流程的 hk 变量口径一致：周一至周五 09:30-12:00 / 13:00-16:00）。
+    # 额外允许 09:00 起注册（盘前 30 分钟，覆盖盘前预热启动 monitor_segment 的场景）。
+    _now = _dt.datetime.now()
+    if _now.weekday() >= 5:
+        print("👀 美股/盘外：watcher 不注册（watcher 仅港股盘中守护、美股时段不打扰用户）")
+        return
+    _t = _now.time()
+    _hk_session = (_dt.time(9, 0) <= _t < _dt.time(12, 0)) or (_dt.time(13, 0) <= _t < _dt.time(16, 0))
+    if not _hk_session:
+        print("👀 美股/盘外：watcher 不注册（watcher 仅港股盘中守护、美股时段不打扰用户）")
+        return
     _root = _os.path.abspath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "..", "..", ".."))
     _reg = _os.path.join(_root, "tmp", "monitor_sessions.txt")
     try:
@@ -131,7 +147,7 @@ def _register_monitor_session():
         if not _exists:
             with open(_reg, "a") as _f:
                 _f.write(_sid + "\n")
-        print(f"👀 盯盘会话已注册（密采样 watcher 守护；停盯时自动注销）")
+        print(f"👀 港股盯盘会话已注册（密采样 watcher 守护；停盯时自动注销）")
     except Exception as _e:
         print(f"⚠️ 盯盘会话注册失败（{_e}），watcher 不守护本会话")
 

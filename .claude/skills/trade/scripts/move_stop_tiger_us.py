@@ -52,6 +52,14 @@ def main():
     direction = sys.argv[2]
     new_stop_price = float(sys.argv[3])
     quantity = int(float(sys.argv[4]))
+    # 账户选择（2026-08-12 立）：默认 None=paper；--account live 切实盘。⚠️ live=真钱须用户已确认。
+    account = None
+    if "--account" in sys.argv:
+        idx = sys.argv.index("--account")
+        account = sys.argv[idx + 1].lower() if idx + 1 < len(sys.argv) else None
+        if account not in ("live", "paper"):
+            print(json.dumps({"ok": False, "error": f"--account 必须是 live/paper，收到 '{account}'"}))
+            sys.exit(1)
 
     if not symbol.startswith("US."):
         print(json.dumps({"ok": False, "error": f"本脚本只处理美股（US.xxx），收到 {symbol}"}))
@@ -61,7 +69,7 @@ def main():
         sys.exit(1)
 
     try:
-        config = U.load_config()
+        config = U.load_config(account=account)
     except Exception as e:
         print(json.dumps({"ok": False, "error": f"老虎配置加载失败: {e}"}))
         sys.exit(1)

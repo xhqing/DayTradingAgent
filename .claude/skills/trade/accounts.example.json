@@ -1,9 +1,10 @@
 {
-  "_comment": "账户敏感信息模板。复制为 accounts.json 后填入真实值(accounts.json 已 gitignore)。AI 不管账户、不核实资金/持仓（信号模式）；行情数据源分工见 SKILL「数据源分工总则」。",
+  "_comment": "账户敏感信息模板。复制为 accounts.json 后填入真实值(accounts.json 已 gitignore)。行情数据源分工见 SKILL「数据源分工总则」。",
   "tiger": {
     "config_path": "~/.tigeropen/",
     "tiger_id": "<tiger_id>",
-    "account": "<account>",
+    "account": "<account_paper模拟账户号>",
+    "account_live": "<account_live实盘账户号，auto模式备选；用户明确说切实盘才用、切实盘前必须额外确认>",
     "license": "<TBNZ等>"
   }
 }

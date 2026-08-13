@@ -50,12 +50,19 @@ from pathlib import Path
 # 配置加载（自包含；props_path 默认 ~/.tigeropen/）
 # ---------------------------------------------------------------------------
 
-def load_config(props_path=None):
+def load_config(props_path=None, account=None):
     """创建老虎 SDK 客户端配置。
 
     props_path：properties 目录或文件（默认 ~/.tigeropen/）。SDK 支持环境变量
     TIGEROPEN_TIGER_ID / TIGEROPEN_ACCOUNT / TIGEROPEN_PRIVATE_KEY / TIGEROPEN_PROPS_PATH
     等覆盖（优先级：参数 > 环境变量 > properties 文件）。
+
+    account（2026-08-12 立，实盘备选账户支持）：选择账户——
+    - None / 'paper'：用 properties 默认账户（模拟账户，tiger.account）。
+    - 'live'：切老虎实盘账户（从 accounts.json 的 tiger.account_live 读实盘账户号、覆盖 config.account）。
+      ⚠️ 实盘=真钱，调用方须已征得用户明确同意（SKILL「auto 模式的账户选择」：用户明确说切实盘 + AI 额外确认两道闸）。
+    - 具体账户号字符串：直接用该账户号（覆盖 config.account）。
+    config.account 是可写属性（实测），切换不碰 properties 文件。
 
     ⚠️ 不走 get_client_config(props_path=...)（2026-08-02 实测：它先硬读 private_key_path
     参数、None 即 TypeError，读不到 properties 内嵌私钥）；TigerOpenClientConfig 会从
@@ -64,7 +71,42 @@ def load_config(props_path=None):
     from tigeropen.tiger_open_config import TigerOpenClientConfig
     if props_path is None:
         props_path = os.path.expanduser("~/.tigeropen/")
-    return TigerOpenClientConfig(props_path=props_path)
+    config = TigerOpenClientConfig(props_path=props_path)
+    # 账户选择（2026-08-12）
+    if account in (None, 'paper'):
+        pass   # 用 properties 默认账户（模拟）
+    elif account == 'live':
+        live_acct = _read_accounts_json_field('tiger', 'account_live')
+        if not live_acct:
+            raise ValueError("切实盘失败：accounts.json 未配置 tiger.account_live（实盘账户号）。"
+                             "请在 accounts.json 的 tiger 段加 account_live 字段。")
+        config.account = live_acct
+    else:   # 具体账户号字符串
+        config.account = account
+    return config
+
+
+def _read_accounts_json_field(section, field):
+    """从项目 accounts.json（已 gitignore）读指定字段值。读不到返回 None。
+
+    accounts.json 路径优先级：环境变量 ACCOUNTS_JSON > 脚本同目录 ../accounts.json（skill 根）。
+    纯读取、不写入；文件不存在或字段缺失返回 None（调用方按默认处理）。
+    """
+    import json
+    candidates = []
+    env_path = os.environ.get('ACCOUNTS_JSON')
+    if env_path:
+        candidates.append(env_path)
+    candidates.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'accounts.json'))
+    for path in candidates:
+        if os.path.exists(path):
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+                return data.get(section, {}).get(field)
+            except Exception:
+                return None
+    return None
 
 
 def new_trade_client(config=None):
@@ -405,7 +447,7 @@ def submit_stop_order_tiger(config, symbol, side, quantity, trigger_price, retri
 # ---------------------------------------------------------------------------
 
 def check_order_filled_tiger(config, order_id, timeout=8, poll_interval=2):
-    """轮询订单成交状态（get_orders）。返回 (filled, fill_price, status_str)。
+    """轮询订单成交状态（get_orders）。返回 (filled, fill_price, status_str, reason)。
 
     老虎状态值（2026-08-02 源码确认）：Filled / PartiallyFilled / Cancelled /
     Inactive（已失效）/ Invalid（非法）等。
@@ -414,11 +456,19 @@ def check_order_filled_tiger(config, order_id, timeout=8, poll_interval=2):
     直接 str(枚举) 得 'OrderStatus.FILLED'，'Filled' in 它恒 False → 已成交误判未成交、
     随后撤单撤已成交的单（持仓实际已建立、附加止损还挂着）。2026-08-03 paper 实测暴露
     （开仓主单实际 FILLED @486.2，脚本却输出「主单未成交、已撤」）。
+
+    reason：订单对象 Order.reason 字段（SDK 注释「下单失败时返回失败原因的描述」）。
+    2026-08-06 MINIMAX 58,400 被拒时脚本只输出 status、没输出 reason，导致「原因未明」；
+    2026-08-11 实测查历史订单确认 reason 可取到具体文案（如 120 股那笔的
+    'cross-trading with your pending sell order'——账户已有同标的未成交委托单、新单与它
+    交叉成交被拒，2026-08-11 用户纠正与持仓止损单无关）。注意部分被拒订单 reason 只有通用文案
+    （'The order cannot be canceled...'），拿不到具体原因时按通用处理。
     """
     tc = new_trade_client(config)
     try:
         deadline = time.time() + timeout
         last_status = ""
+        last_reason = ""
         while time.time() < deadline:
             for o in (tc.get_orders() or []):
                 if str(getattr(o, "id", "")) != str(order_id) and \
@@ -427,15 +477,17 @@ def check_order_filled_tiger(config, order_id, timeout=8, poll_interval=2):
                 status_obj = getattr(o, "status", "")
                 status = status_obj.value if hasattr(status_obj, "value") else str(status_obj)
                 last_status = status
+                reason = getattr(o, "reason", None) or ""
+                last_reason = reason
                 avg = getattr(o, "avg_fill_price", None)
                 if "Filled" in status:
-                    return True, (float(avg) if avg else None), status
+                    return True, (float(avg) if avg else None), status, reason
                 if any(s in status for s in ("Cancelled", "Inactive", "Invalid",
                                              "PendingCancel")):
-                    return False, None, status
+                    return False, None, status, reason
                 break  # 已定位订单但未成交，继续等
             time.sleep(poll_interval)
-        return False, None, last_status or "timeout"
+        return False, None, last_status or "timeout", last_reason
     finally:
         pass
 
@@ -600,22 +652,107 @@ def calc_position_extremes_tiger(symbol, mode="signal", project_root=None):
 # 价格范围 / 仓位计算（纯函数）
 # ---------------------------------------------------------------------------
 
-# 单边手续费率（2026-08-04 用户立：盯盘前瞻赔率改净口径，与复盘 review.py 同口径）。
-# 港股 18bps/边、美股 3bps/边（1bps=0.0001）；一笔交易 = 开仓 + 平仓 两边各收一次。
-# 本 utils 只处理港股（HK.），_fee_per_side 按 symbol 前缀判、与美股 utils / review.py 一致。
-def _fee_per_side(symbol):
+# 单边费率（2026-08-12 改真实费率，复用 fee_schedule）：按市场 + 标的类型 + 成交额精确算，
+# 含佣金(max(15,×0.029%)) + 印花税(港股个股0.1%/ETF免) + 各征费 + 阶梯平台费。
+# 盯盘前瞻与复盘 review.py 同口径（2026-08-12 用户立：完全精算）。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import fee_schedule as FS   # 共享真实费率模块
+
+# 旧百分比费率（仅 _net_odds 缺 fee_ctx 时向后兼容用；正常路径都走真实费率 fee_ctx）
+_LEGACY_FEE = {'HK': 0.0018, 'US': 0.0003}
+
+
+def _market_of(symbol):
     s = (symbol or '').upper()
-    if s.startswith('HK.'): return 0.0018   # 18bps
-    if s.startswith('US.'): return 0.0003   # 3bps
-    return 0.0   # 未知市场前缀：保守不扣费（等价毛口径），避免误判
+    if s.startswith('HK.'): return 'HK'
+    if s.startswith('US.'): return 'US'
+    return None   # 未知前缀
 
 
-def _net_odds(direction, entry, target, stop, fee_per_side):
+# 港股 ETF 白名单（免印花税；与复盘 CSV type 列、classify_hk_security.py 一致）。
+# 港股代码无规律，ETF 靠白名单识别——新 ETF 交易前须补进此表（否则按 stock 多算印花税、保守）。
+_HK_ETF_WHITELIST = {'HK.07709'}   # 南方两倍做多海力士（2x 杠杆 ETF）
+# 美股杠杆 / 反向 ETF（无印花税；美股个股 ETF 费用结构同、但 type 仍标注供一致性）
+_US_ETF_SET = {'US.SOXL', 'US.SOXS'}
+
+
+def _sec_type_of(symbol):
+    """标的类型（stock / etf），用于印花税判定（港股个股收、ETF 免）。
+    港股 ETF 靠白名单识别（代码无规律）；白名单外默认 stock（保守收印花税）。
+    开仓前护栏已跑 classify_hk_security.py 确认类型，此处白名单是脚本内快速判定。"""
+    s = (symbol or '').upper()
+    if s in _HK_ETF_WHITELIST or s in _US_ETF_SET:
+        return 'etf'
+    return 'stock'
+
+
+def build_fee_ctx(symbol, shares, config, order_idx_open=None, order_idx_close=None):
+    """构造 _net_odds 用的真实费率上下文（2026-08-12）。
+
+    从老虎实盘账户查**该市场**本月已成交订单数（港美平台费独立计档、必须按 market 分开查；
+    +1 = 开仓订单序号、+2 = 平仓订单序号，开平同笔交易占两个序号）。
+    查询失败时 order_idx 置 None（不计平台费，略偏乐观；调用方获知后可改保守档）。
+    返回 {shares, sec_type, market, order_idx_open, order_idx_close}。
+    """
+    market = _market_of(symbol)
+    month_count = get_month_order_count_tiger(config, market=market)   # 本月该市场已成交数
+    if month_count is None:
+        idx_open, idx_close = None, None   # 查询失败 → 不计平台费
+    else:
+        idx_open = month_count + 1         # 本次开仓 = 本月该市场已成交 + 1
+        idx_close = month_count + 2        # 平仓 = +2（开平同笔占两序号）
+    if order_idx_open is not None:  idx_open = order_idx_open    # 显式覆盖
+    if order_idx_close is not None: idx_close = order_idx_close
+    return {'shares': shares, 'sec_type': _sec_type_of(symbol),
+            'market': market, 'order_idx_open': idx_open, 'order_idx_close': idx_close}
+
+
+def get_month_order_count_tiger(config, market=None):
+    """查老虎账户【本月】已成交的订单数（用于阶梯平台费定档）。
+
+    2026-08-12 用户立：signal / auto 两模式都从老虎实盘账户取本月订单数（signal 模式只禁自动下单、
+    查询等只读操作允许；auto 模拟盘也取实盘账户数，模拟盘平台费偏高就当保守估计）。
+    **订单数口径（2026-08-12 用户立）：只数成交订单（Filled / PartiallyFilled）**——主单、附加止损单、
+    移损单等只要成交了都算 1 笔，未成交 / 撤销 / 失效的不算。与券商实际计费口径一致。
+    **港股 / 美股平台费完全独立、各自按市场单独计阶梯档**（2026-08-12 用户纠正：港美分开算、互不影响）。
+    market='HK'/'US' 必须传——按市场过滤（用订单 contract.market 字段，实测 HK/US 可靠区分）只数该市场订单；
+    market=None 返回合计（仅诊断用、不定档，会高估各市场档位）。
+    实测（2026-08-12 模拟账户）：本月港股 41 笔、美股 14 笔。
+    """
+    import datetime as _dt
+    from tigeropen.common.consts import OrderStatus
+    tc = new_trade_client(config)
+    today = _dt.date.today()
+    start = _dt.date(today.year, today.month, 1)
+    # 下月 1 日（end_time 开区间）
+    end = _dt.date(today.year + (1 if today.month == 12 else 0),
+                   1 if today.month == 12 else today.month + 1, 1)
+    try:
+        orders = tc.get_orders(start_time=start.strftime("%Y-%m-%d"),
+                               end_time=end.strftime("%Y-%m-%d"),
+                               states=[OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED],
+                               limit=1000) or []
+        if market:   # 按市场过滤（港美平台费独立计档，必须分开数）
+            orders = [o for o in orders
+                      if str(getattr(getattr(o, 'contract', None), 'market', '')).upper() == market.upper()]
+        return len(orders)
+    except Exception as e:
+        print(f"⚠️ 老虎本月订单查询失败: {e}（平台费将用保守档）", file=sys.stderr)
+        return None
+
+
+def _net_odds(direction, entry, target, stop, fee_per_side=None, fee_ctx=None):
     """净前瞻赔率（与复盘 R = P_net / M 同口径）。
 
-    分子 = 到止盈的净盈利 = 止盈距 − 双边费（开仓按 entry、平仓按 target 各收一次单边费率，
-    即 fee_per_side × (entry + target)）；分母 = 毛止损距（与复盘 M = shares×止损距 同为毛值、不动）。
-    前瞻假设到止盈 target 出场，故「平仓价」用 target（与复盘用实际平仓价算费同结构）。
+    分子 = 到止盈的净盈利 − 双边费；分母 = 毛止损距（与复盘 M = shares×止损距 同为毛值、不动）。
+    前瞻假设到止盈 target 出场，故「平仓价」用 target。
+
+    费率两种口径（2026-08-12 改真实费率）：
+    - fee_ctx 给定（正常路径）：真实费率，每股双边费 = (开仓边费 + 平仓边费) / shares。
+      fee_ctx = {shares, sec_type, market, order_idx_open, order_idx_close}。
+      开仓边费按 entry×shares、平仓边费按 target×shares，各自用 FS.fee_per_side（含佣金最低 / 印花税 / 阶梯平台费）。
+    - fee_ctx 缺省（向后兼容）：用旧百分比 fee_per_side（或 _LEGACY_FEE），每股双边费 = fee_per_side×(entry+target)。
+
     做多 stop_dist = entry − stop；做空 stop_dist = stop − entry；≤0 返回 inf（方向错或贴止损）。
     """
     if direction == 'long':
@@ -626,13 +763,24 @@ def _net_odds(direction, entry, target, stop, fee_per_side):
         stop_dist = stop - entry
     if stop_dist <= 1e-12:
         return float('inf')
-    fee_per_share = fee_per_side * (entry + target)
+    if fee_ctx:   # 真实费率口径（2026-08-12）
+        shares = fee_ctx['shares']
+        sec_type = fee_ctx['sec_type']
+        market = fee_ctx['market']
+        fee_open = FS.fee_per_side(market, sec_type, entry * shares, fee_ctx.get('order_idx_open'))
+        fee_close = FS.fee_per_side(market, sec_type, target * shares, fee_ctx.get('order_idx_close'))
+        fee_per_share = (fee_open + fee_close) / shares
+    else:         # 向后兼容：旧百分比口径（fee_per_side 直接给百分比，如 0.0018）
+        fps = fee_per_side if fee_per_side is not None else 0.0
+        fee_per_share = fps * (entry + target)
     return (gross_gain - fee_per_share) / stop_dist
 
 
-def calc_entry_range(direction, entry_ref, stop_loss, target, symbol=None):
+def calc_entry_range(direction, entry_ref, stop_loss, target, symbol=None, fee_ctx=None):
     """开仓价格范围（经验参数、与毛/净赔率无关）：做多 [ref - R0*0.8, ref + ref*3/8]；做空 [ref - ref*3/8, ref + R0*0.8]。
-    价格范围用毛 R0 算、不随净口径变；odds_at_ref 为净口径（扣双边费）。"""
+    价格范围用毛 R0 算、不随净口径变；odds_at_ref 为净口径（扣双边费）。
+    fee_ctx（2026-08-12 真实费率）= {shares, sec_type, market, order_idx_open, order_idx_close}，
+    给则用真实费率、不给则用旧百分比口径（_LEGACY_FEE 按 symbol 市场前缀）。"""
     R0 = abs(entry_ref - stop_loss)
     if R0 < 1e-9:
         raise ValueError("止损价与参考价相同，R0=0，无法计算价格范围")
@@ -642,16 +790,25 @@ def calc_entry_range(direction, entry_ref, stop_loss, target, symbol=None):
     else:
         range_low = entry_ref - entry_ref * 3.0 / 8.0
         range_high = entry_ref + R0 * 0.8
-    odds_at_ref = _net_odds(direction, entry_ref, target, stop_loss, _fee_per_side(symbol))
+    if not fee_ctx:
+        fee_ctx = None   # 退回旧百分比口径
+    odds_at_ref = _net_odds(direction, entry_ref, target, stop_loss, fee_ctx=fee_ctx) \
+        if fee_ctx else _net_odds(direction, entry_ref, target, stop_loss,
+                                  fee_per_side=_LEGACY_FEE.get(_market_of(symbol), 0.0))
     return range_low, range_high, odds_at_ref
 
 
-def check_price_in_range(direction, current_price, entry_ref, stop_loss, target, symbol=None):
+def check_price_in_range(direction, current_price, entry_ref, stop_loss, target, symbol=None, fee_ctx=None):
     """检查当前价是否在可接受开仓范围内。返回 (in_range, low, high, odds_ref, odds_current)。
-    odds_ref / odds_current 均为净口径（扣双边费）。"""
-    range_low, range_high, odds_at_ref = calc_entry_range(direction, entry_ref, stop_loss, target, symbol)
+    odds_ref / odds_current 均为净口径（扣双边费）。
+    fee_ctx（2026-08-12 真实费率）= {shares, sec_type, market, order_idx_open, order_idx_close}。"""
+    range_low, range_high, odds_at_ref = calc_entry_range(direction, entry_ref, stop_loss, target, symbol, fee_ctx)
     in_range = range_low <= current_price <= range_high
-    odds_at_current = _net_odds(direction, current_price, target, stop_loss, _fee_per_side(symbol))
+    if fee_ctx:
+        odds_at_current = _net_odds(direction, current_price, target, stop_loss, fee_ctx=fee_ctx)
+    else:
+        odds_at_current = _net_odds(direction, current_price, target, stop_loss,
+                                    fee_per_side=_LEGACY_FEE.get(_market_of(symbol), 0.0))
     return in_range, range_low, range_high, odds_at_ref, odds_at_current
 
 
