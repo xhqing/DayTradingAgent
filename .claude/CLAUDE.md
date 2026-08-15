@@ -17,7 +17,7 @@
 
 ## actions/ 目录归属（2026-07-30 立，2026-07-31 扩展到港股）
 
-港股和美股的模拟盘交易动作记录统一放**项目根 `actions/`**：港股 `actions/YYYY-MM-DD-HKT-actions.md`、美股 `actions/YYYY-MM-DD-ET-actions.md`。`actions/` 记录已执行的交易动作（含 order_id、成交价）。`signals/` 目录保留历史信号记录，新交易不再写入。**复盘数据源 = `signals/` + `actions/` 两个目录的全部交易记录（2026-08-03 用户立：以后复盘都复盘这两个目录下的所有交易）**——signal 模式交易在 `signals/`、auto 模式交易在 `actions/`，复盘时两目录全遍历、合并为全量样本。
+港股和美股的模拟盘交易动作记录统一放**项目根 `actions/`**：港股 `actions/YYYY-MM-DD-HKT-actions.md`、美股 `actions/YYYY-MM-DD-ET-actions.md`。`actions/` 记录已执行的交易动作（含 order_id、成交价）。`signals/` 目录保留历史信号记录，新交易不再写入。**复盘数据源 = `signals/` + `actions/` 两个目录的交易记录（2026-08-03 用户立：复盘数据源是这两个目录）**——signal 模式交易在 `signals/`、auto 模式交易在 `actions/`。**默认复盘范围 = 港股（2026-08-13 用户立）**：复盘默认只遍历港股文件（`*-HKT-*`）、合并为样本；美股文件（`*-ET-*`）默认不纳入，用户明确要求复盘美股时才遍历。
 
 ## commit skill 检测缓存
 

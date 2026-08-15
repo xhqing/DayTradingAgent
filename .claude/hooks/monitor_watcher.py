@@ -13,10 +13,13 @@
     2. **采样在跑 → 正常**：任一密采样脚本（monitor_segment.py / ws_segment.py /
        futu_ws_segment.py）进程存活 → 说明有会话正在采样、盯盘窗口正常 Running
        → 本轮所有注册会话都判正常、一律不报。
-    3. **采样没在跑 → 读会话 state 文件判定会话是否在 Running**：
-       - state = running / thinking → 会话真在 Running、**不报**；
+    3. **采样没在跑 → 读会话 state 文件内容判定会话是否在 Running**：
+       - state = running / thinking → 会话 state 显示在 Running；但补丁 012 事件驱动写盘、
+         会话进程崩溃后 state 会停在 running 永不更新，故再用 jsonl 活跃度兜一道：
+         jsonl 停更 > RUNNING_SILENCE_SECONDS（5 分钟）→ 视作陈旧 running、**报中断**；否则
+         jsonl 还在动 = 会话真活着、**不报**。
        - state = waiting_input / idle → 会话没在 Running（等输入 / 空闲）、**报中断**；
-       - state 文件不存在 / 过期（补丁 012 未生效）→ fallback 到 jsonl 停更 > STALE_SECONDS。
+       - state 文件不存在（补丁 012 未生效）→ fallback 到 jsonl 停更 > STALE_SECONDS（90 秒）。
 
   为什么用「采样在跑 + 会话 Running 标签（state 文件）」双判据（2026-08-12 用户立）：
   - 旧逻辑只认 jsonl 停更阈值，但盯盘窗口 Running 时 AI 回合正卡在采样脚本的 Bash 调用里
@@ -28,6 +31,20 @@
     Running（不报）」与「会话也没在 Running（报）」。补丁 002 的 Running 标签即源自此 state
     （busy=state!="idle" && pendingInput=state=="waiting_input"，真 Running = running/thinking）；
     补丁 012 把 state 写盘，watcher 读它 = 读会话 Running 标签的地面真相。
+
+  为什么 state 文件只看内容、不看 mtime（2026-08-14 修复误报时改，关键）：
+  - 补丁 012 的写盘是**事件驱动**——只在会话 state 真正切换（idle→running→thinking→
+    waiting_input）时调用 updateSessionState 写盘。一个持续 running 的 AI 回合（采样结束→
+    连续读日志/读 csv/分析/重启，期间 state 保持 running 不切换）里，这个方法根本不会再被
+    调用，state 文件 mtime 冻结在「最后一次进入 running 的瞬间」、几分钟内必然老化。
+  - 旧逻辑据 mtime > STATE_STALE_SECONDS（120s）把「内容写着 running、但 mtime 老化」的
+    有效文件判成 None = 作废了最可靠的判定信号，fallback 到脆的 jsonl 停更阈值（90s）——
+    于是每段采样之间的分析窗口（jsonl 短暂停更 > 90s）周期性误报「中断」（用户实测：会话
+    明明在 Running、state 文件也写着 running，却一直收到中断通知）。
+  - 正解：**内容才是地面真相**——state 文件写着 running/thinking 就算在 Running，不看 mtime；
+    防「崩溃后 state 停在 running」的陈旧坑改用 jsonl 活跃度兜底（RUNNING_SILENCE_SECONDS，
+    300s）：state=running 且 jsonl 长期不动才算中断。jsonl 是会话活动度的地面真相（每个 AI
+    回合都追加事件、写得密），比 state mtime 可靠得多。
 
   为什么 state 文件缺失要 fallback 到 jsonl（过渡期兼容）：
   - 补丁 012 应用到 extension.js 后，**会话需重载扩展才生效**（旧会话用的旧 extension.js
@@ -71,10 +88,19 @@ REG_FILE = os.path.join(_PROJECT_ROOT, "tmp", "monitor_sessions.txt")
 # apply 引擎应用到本机 extension.js 的 updateSessionState，会话重载扩展后生效。
 STATE_DIR = os.path.expanduser("~/.claude/session_running")
 
-# state 文件多久视为过期（补丁每次 state 变化都覆盖写，正常 Running 会话几十秒内必然有
-# state 刷新——AI 回合响应会触发 running→thinking→waiting_input 等切换）。文件停更超过此值
-# = 补丁没在写 = 会话已退出 / 扩展崩，视作无 state（fallback 到 jsonl 判定）。
-STATE_STALE_SECONDS = 120
+# state=running/thinking 时，允许会话 jsonl 最长静默多久仍视作「真在 Running」。
+# 参数依据（2026-08-14 修复误报时立）：
+#   补丁 012 的写盘是事件驱动——只在会话 state 真正切换（idle→running→thinking→waiting_input）
+#   时调用 updateSessionState 写盘。一个持续 running 的 AI 回合（采样结束→连续读日志/读 csv/
+#   分析/重启，期间 state 保持 running 不切换）里，这个方法根本不会再被调用，state 文件 mtime
+#   冻结在「最后一次进入 running 的瞬间」、几分钟内必然老化。故 state 文件的 mtime 不能用来判
+#   「会话是否还活着」——内容写着 running 才是地面真相。但为防「会话崩溃后 state 停在 running
+#   永不更新」的陈旧坑，用 jsonl 活跃度做一道兜底：state=running 且 jsonl 也长期不动（> 此值）
+#   = 会话进程已卡死/崩溃、running state 已陈旧，报中断。
+#   取 300 秒（5 分钟）：远大于正常段间分析窗口（采样段 40s 期间靠 sampling_running 挡、段间
+#   分析读文件+重启 jsonl 写得勤，正常 < 2~3min），又远小于死会话剔除 30min——会话真崩溃后
+#   约 5 分钟内能报，不再死等到 30min 才被剔除。
+RUNNING_SILENCE_SECONDS = 300
 
 # 会话 jsonl 停更多久视作已结束（死会话自动剔除阈值）。参数依据（2026-08-12 立）：
 #   盯盘段长 40 秒、正常段间循环 jsonl 停更必然 < 90 秒（见 STALE_SECONDS）；远大于此的
@@ -141,10 +167,20 @@ def session_state(sid):
     - "running" / "thinking"：会话真在 Running（AI 响应中），非中断。
     - "waiting_input"：会话等输入（窗口活着、Idle）——按用户立意「没在 Running」算中断。
     - "idle"：会话空闲——算中断。
-    - None：state 文件不存在（补丁 012 未生效，如盯盘会话用的旧 extension.js）或文件过期
-      （> STATE_STALE_SECONDS 没刷新 = 会话已退 / 扩展崩）。调用方需 fallback。
+    - None：state 文件不存在（补丁 012 未生效，如盯盘会话用的旧 extension.js）。调用方需 fallback。
 
-    为什么用 state 文件作「会话是否在 Running」的判据（2026-08-12 用户立）：
+    为什么不再用 state 文件的 mtime 判过期（2026-08-14 修复误报时改）：
+    补丁 012 的写盘是事件驱动——只在会话 state 真正切换（idle→running→thinking→waiting_input）
+    时调用 updateSessionState 写盘。一个持续 running 的 AI 回合（采样结束→连续读日志/读 csv/
+    分析/重启，期间 state 保持 running 不切换）里，这个方法根本不会再被调用，state 文件 mtime
+    冻结在「最后一次进入 running 的瞬间」、几分钟内必然老化。旧逻辑据此（mtime > STATE_STALE_SECONDS）
+    把「内容写着 running、但 mtime 老化」的有效文件判成 None = 作废了最可靠的判定信号，fallback
+    到脆的 jsonl 停更阈值（90s），于是每段采样之间的分析窗口（jsonl 短暂停更 > 90s）周期性误报。
+    正解：**内容才是地面真相**——state 文件写着 running/thinking 就算会话在 Running，不看 mtime；
+    防「会话崩溃后 state 停在 running 永不更新」的陈旧坑改用 jsonl 活跃度兜底（见 interrupted_sessions
+    的 RUNNING_SILENCE_SECONDS 检查），不再靠 mtime 猜。
+
+    为什么用 state 文件内容作「会话是否在 Running」的判据（2026-08-12 用户立）：
     补丁 002 的 Running 标签源自 busy=state!="idle" && pendingInput=state=="waiting_input"，
     真 Running = busy && !pendingInput = state 是 running/thinking。但该状态只在 extension
     进程内存、原不写盘、外部读不到（见 patch 012 背景）。补丁 012 把 state 写到
@@ -154,11 +190,26 @@ def session_state(sid):
     p = os.path.join(STATE_DIR, sid + ".txt")
     if not os.path.isfile(p):
         return None
-    if time.time() - os.path.getmtime(p) > STATE_STALE_SECONDS:
-        return None  # 文件过期 = 补丁没在写 = 无有效 state
     try:
         with open(p) as f:
             return f.read().strip()
+    except OSError:
+        return None
+
+
+def jsonl_age(sid):
+    """会话 jsonl 停更了多少秒。文件不存在返回 None。
+
+    jsonl 是会话活动度的地面真相——AI 每个回合（读日志 / 分析 / 工具调用）都往 jsonl 追加事件，
+    正常盯盘期间写得勤（采样段 40s 期间靠 sampling_running 挡、段间分析重启 jsonl 写得也密）。
+    state 文件因补丁 012 事件驱动写盘、可能长时间不刷新（见 session_state 说明），故判会话是否
+    真活着用 jsonl mtime 比 state mtime 可靠——这是「防崩溃后 state 停在 running 陈旧坑」的兜底信号。
+    """
+    p = os.path.join(TRANSCRIPT_DIR, sid + ".jsonl")
+    if not os.path.isfile(p):
+        return None
+    try:
+        return time.time() - os.path.getmtime(p)
     except OSError:
         return None
 
@@ -174,11 +225,10 @@ def prune_dead_sessions(sessions):
     alive = []
     dead = []
     for sid in sessions:
-        p = os.path.join(TRANSCRIPT_DIR, sid + ".jsonl")
-        if not os.path.isfile(p):
+        age = jsonl_age(sid)
+        if age is None:
             dead.append(sid)  # 会话文件不存在 → 视作已结束
             continue
-        age = time.time() - os.path.getmtime(p)
         if age > DEAD_SESSION_SECONDS:
             dead.append(sid)
         else:
@@ -199,10 +249,12 @@ def interrupted_sessions(sessions):
     """采样没在跑时，判定哪些会话真中断了。返回 [(sid, 原因), ...]。
 
     判定优先级（用户立：采样没在跑 + 会话没在 Running 才报）：
-    1. 读会话 state 文件（补丁 012）：
-       - running / thinking → 会话真在 Running，**不报**。
+    1. 读会话 state 文件内容（补丁 012，只看内容、不看 mtime——见 session_state 说明）：
+       - running / thinking → 会话 state 显示在 Running；但补丁 012 事件驱动写盘、崩溃后 state
+         会停在 running 永不更新，故再用 jsonl 活跃度兜一道：jsonl 停更 > RUNNING_SILENCE_SECONDS
+         → 视作陈旧 running（会话进程卡死 / 崩溃）、**报中断**；否则 jsonl 还在动 = 会话真活着、**不报**。
        - waiting_input / idle → 会话没在 Running（等输入 / 空闲），**报**。
-    2. state 文件不存在 / 过期（补丁 012 未生效，如会话用旧 extension.js）→ fallback 到
+    2. state 文件不存在（补丁 012 未生效，如会话用旧 extension.js）→ fallback 到
        jsonl 停更 > STALE_SECONDS 判定（旧逻辑的保守回退，过渡期不致误报）。
 
     仅在采样没在跑时调用（采样在跑时主流程已提前 return）。
@@ -211,17 +263,22 @@ def interrupted_sessions(sessions):
     for sid in sessions:
         st = session_state(sid)
         if st in ("running", "thinking"):
-            continue  # 会话真在 Running → 不报
+            # state 显示在 Running，但用 jsonl 活跃度兜底防「崩溃后 state 停在 running」陈旧坑
+            # （补丁 012 事件驱动写盘，进程卡死后 state 文件内容不会变回 idle）。
+            jage = jsonl_age(sid)
+            if jage is None or jage > RUNNING_SILENCE_SECONDS:
+                interrupted.append((sid, f"state={st} 但 jsonl 已停更 {int(jage) if jage else '?'}s（陈旧 running，疑似崩溃）"))
+            # 否则 jsonl 还在动 = 会话真活着、不报
+            continue
         if st in ("waiting_input", "idle"):
             interrupted.append((sid, f"state={st}（没在 Running）"))
             continue
-        # st is None：补丁 012 未生效 / 文件过期 → fallback jsonl 停更判定
-        p = os.path.join(TRANSCRIPT_DIR, sid + ".jsonl")
-        if not os.path.isfile(p):
+        # st is None：补丁 012 未生效 → fallback jsonl 停更判定
+        jage = jsonl_age(sid)
+        if jage is None:
             continue  # jsonl 也不在（异常）→ 跳过、不误报
-        age = time.time() - os.path.getmtime(p)
-        if age > STALE_SECONDS:
-            interrupted.append((sid, f"jsonl 停更 {int(age)}s（state 文件无，fallback）"))
+        if jage > STALE_SECONDS:
+            interrupted.append((sid, f"jsonl 停更 {int(jage)}s（state 文件无，fallback）"))
     return interrupted
 
 

@@ -67,6 +67,23 @@ def load_config(props_path=None, account=None):
     ⚠️ 不走 get_client_config(props_path=...)（2026-08-02 实测：它先硬读 private_key_path
     参数、None 即 TypeError，读不到 properties 内嵌私钥）；TigerOpenClientConfig 会从
     properties 的 private_key_pk1/pk8 自动读私钥。
+
+    ⚠️ is_paper 网关路由 bug 修复（2026-08-13）：老虎 SDK 的 account.setter 是单向开关——
+    `if is_paper_account(value): is_paper = True`，只在「新账户号是 paper」时设 True、
+    切到**非 paper 账户号（如实盘）时不清零**。构造时 _load_props 读到 properties 的 17 位
+    模拟号已把 is_paper 设成 True，之后赋值实盘号 is_paper 卡在 True，导致 server_url 仍指向
+    sandbox 沙箱网关（openapi-sandbox.tigerfintech.com）而非生产网关（openapi.tigerfintech.com）——
+    实盘请求走错网关、行为不可控。故本函数在确定 config.account 后，用 SDK 自己的
+    AccountUtil.is_paper_account() 按**当前账户号真实属性**显式设定 is_paper（赋 True 或 False），
+    保证 server_url 路由与账户号一致。三个分支（默认/live/具体号）统一走 _sync_is_paper。
+
+    ⚠️ 代理支持（2026-08-14 立，apply_proxy）：老虎 SDK 用 urllib3.PoolManager 发请求、
+    **不读 HTTP(S)_PROXY 环境变量**（curl / requests 认、urllib3 不认），环境变量方式对 SDK
+    无效、必须代码层把 web_utils.http_pool 换成 urllib3.ProxyManager。背景：2026-06-12 监管
+    新规后老虎按「指令发出的网络环境」判定，境内 IP 下实盘开仓/加仓被 code=1200 拒（仅允许
+    平仓/减仓/转出）；换境外出口后实测下单正常受理（2026-08-14 实盘验证，拒单原因从监管拦截
+    变为普通资金不足）。配置走 skill config.json 的 proxy 节（enabled / http_proxy /
+    apply_scope），默认 live_only（仅实盘走代理、模拟盘直连）。apply_proxy 失败回退直连并警告。
     """
     from tigeropen.tiger_open_config import TigerOpenClientConfig
     if props_path is None:
@@ -83,7 +100,94 @@ def load_config(props_path=None, account=None):
         config.account = live_acct
     else:   # 具体账户号字符串
         config.account = account
+    _sync_is_paper(config)   # 修复 SDK 单向开关 bug，确保 is_paper / 网关路由与账户号一致
+    apply_proxy(config)      # SDK 不读环境变量代理，代码层切 ProxyManager（2026-08-14）
     return config
+
+
+def apply_proxy(config):
+    """按 skill config.json 的 proxy 节给老虎 SDK 挂代理（2026-08-14 立）。
+
+    老虎 SDK 的请求出口在 tigeropen.common.util.web_utils.http_pool（模块级 urllib3.PoolManager
+    单例），不读 HTTP(S)_PROXY 环境变量——须把该单例替换为 urllib3.ProxyManager 才能走代理
+    （对进程内全部后续 SDK 请求生效）。
+
+    为什么需要（监管背景，2026-06-12 新规）：老虎按「指令发出的网络环境」判定，境内 IP 下
+    实盘开仓/加仓被 code=1200 拒（"Under regulatory requirements for existing Mainland China
+    investors, while located in Mainland China, you may only close, reduce, or transfer out
+    positions..."），仅允许平仓/减仓/转出。境外出口实测下单正常受理（2026-08-14 验证：同一
+    实盘账户、同一凭证，境内 IP 拒单、境外出口受理，拒单原因从监管拦截变为普通资金不足）。
+
+    配置（config.json 的 proxy 节）：
+    - enabled：总开关，false 直接返回（保持直连）。
+    - http_proxy：代理地址（默认 http://127.0.0.1:1087 = 本机 xpilot Xray 的 HTTP 入站口；
+      xpilot 路由白名单须含 domain:openapi.tigerfintech.com，注意必须带 domain: 前缀——
+      裸域名会被 xpilot 生成配置时静默丢弃，2026-08-14 踩过）。
+    - apply_scope：'live_only'（默认，仅实盘/非模拟账户走代理——模拟盘无监管限制、直连更快）、
+      'all'（全部走代理）、'off'（等价 enabled=false）。
+    - accounts_live_required：live_only 下非实盘账户是否仍强制走代理（默认 false——监管拦截
+      只作用于实盘开仓，模拟盘无此限制、直连更快）。
+
+    失败回退：ProxyManager 构造或代理连通性探测失败时保留直连并 stderr 警告——代理挂了
+    不该炸掉模拟盘的只读查询路径。
+    """
+    import json as _json
+    cfg_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.json')
+    proxy_cfg = {}
+    try:
+        with open(cfg_path) as _f:
+            proxy_cfg = _json.load(_f).get('proxy', {})
+    except Exception:
+        pass   # config.json 缺失/损坏 → 无代理配置 → 保持直连
+    if not proxy_cfg.get('enabled', False) or proxy_cfg.get('apply_scope') == 'off':
+        return
+    scope = proxy_cfg.get('apply_scope', 'live_only')
+    # 判定当前账户是否需要代理
+    if scope == 'live_only':
+        live_acct = _read_accounts_json_field('tiger', 'account_live')
+        is_live = live_acct is not None and str(config.account) == str(live_acct)
+        if not is_live and not proxy_cfg.get('accounts_live_required', False):
+            return   # 非实盘且不强制 → 直连
+        # is_live 或 accounts_live_required=true 都走代理（保守：账户号判断失误也不漏）
+    # 挂代理
+    proxy_url = proxy_cfg.get('http_proxy', 'http://127.0.0.1:1087')
+    try:
+        import urllib3
+        from tigeropen.common.util import web_utils
+        probe = urllib3.PoolManager()   # 探测代理端口在监听（直连探测，不发业务流量）
+        import socket as _socket
+        host_port = proxy_url.split('//')[-1]
+        host, port = host_port.split(':')[0], int(host_port.split(':')[1])
+        s = _socket.create_connection((host, port), timeout=2)
+        s.close()
+        web_utils.http_pool = urllib3.ProxyManager(proxy_url)
+        print(f"✅ 老虎 SDK 代理已启用: {proxy_url}（scope={scope}，账户 {config.account}）",
+              file=sys.stderr)
+    except Exception as e:
+        print(f"⚠️ 老虎 SDK 代理启用失败（回退直连；境内直连实盘开仓会被 code=1200 拒）: {e}",
+              file=sys.stderr)
+
+
+def _sync_is_paper(config):
+    """按 config.account 真实属性显式设定 is_paper（修复老虎 SDK account.setter 单向开关 bug，
+    2026-08-13）。
+
+    SDK 的 account.setter 只在「账户号是 paper」时把 is_paper 设 True、切到非 paper 账户时不清零，
+    导致从模拟（properties 默认 17 位号、构造时已 is_paper=True）切实盘时 is_paper 卡 True、
+    server_url 仍走 sandbox 沙箱网关。这里用 SDK 权威判定 AccountUtil.is_paper_account() 同步：
+    纯数字且长度 ≥ PAPER_ACCOUNT_DIGIT_LEN(17) → True（模拟）、否则 False（实盘）。
+
+    设完 is_paper 后必须重算 server_url：构造时 refresh_server_info 已按（构造期的 is_paper + license）
+    定了 server_url，这里改 is_paper 后调 refresh_server_info() 让 SDK 按（新 is_paper + license）重选
+    生产 / 沙箱网关（实测改 is_paper 不自动重算 server_url，须显式调）。
+    """
+    from tigeropen.common.util.account_util import AccountUtil
+    config.is_paper = bool(AccountUtil.is_paper_account(config.account))
+    try:
+        config.refresh_server_info()
+    except Exception as e:
+        print(f"⚠️ refresh_server_info 失败（is_paper 已修正，但 server_url 可能未重算）: {e}",
+              file=sys.stderr)
 
 
 def _read_accounts_json_field(section, field):
