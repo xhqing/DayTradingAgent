@@ -61,6 +61,10 @@ lows = [x for x in (_f(r["low"]) for r in rows) if x is not None] or lasts
 ratios = [x for x in (_f(r["ratio"]) for r in rows) if x is not None]
 vrs = [x for x in (_f(r["vr"]) for r in rows) if x is not None]
 turnovers = [x for x in (_f(r["turnover_yi"]) for r in rows) if x is not None]
+# turnover 行的时间戳（与 turnovers 序列同序、同长——额增速窗口时长要用 turnover 自身的采样
+# 间隔推算，不能用全文件行数：混合数据源文件里 ws 每秒行与 segment 10 秒行交错，全文件
+# 平均间隔与 turnover 序列的真实间隔相差很大）
+turnover_times = [r["time"] for r in rows if _f(r["turnover_yi"]) is not None]
 
 day_high = max(highs)
 day_low = min(lows)
@@ -86,9 +90,25 @@ v_last = statistics.mean(vrs[half:]) if len(vrs[half:]) > 0 else None
 quart = max(1, n // 4)
 seg = [statistics.mean(s) for i in range(4) if (s := lasts[i * quart : (i + 1) * quart])]
 
-# 额增速：最后 5 分钟 vs 全程均速
-recent_n = min(30, n)
-recent_turnover_rate = (turnovers[-1] - turnovers[-recent_n]) / recent_n if len(turnovers) > 1 and n > recent_n else 0
+# 额增速：最后 5 分钟 vs 全程均速。
+# 2026-08-16 修复：不再假设「每点=1 秒」——log 实际采样间隔因数据源而异（monitor_segment
+# 10 秒/点、ws/futu_ws 每秒/点），按 1 秒换算会把 10 秒采样的额增速高估 10 倍。改为用
+# turnover 序列自身首末时间戳推算平均间隔（秒/点），窗口时长 = 点数 × 间隔 ÷ 60 = 分钟。
+recent_n = min(30, len(turnovers))
+_sample_secs = 1.0
+if len(turnover_times) >= 2:
+    try:
+        _t0 = datetime.strptime(turnover_times[0], "%H:%M:%S")
+        _t1 = datetime.strptime(turnover_times[-1], "%H:%M:%S")
+        _span = (_t1 - _t0).total_seconds()
+        if _span > 0:
+            _sample_secs = max(1.0, _span / (len(turnover_times) - 1))
+    except (KeyError, ValueError):
+        pass
+recent_turnover_rate = (
+    (turnovers[-1] - turnovers[-recent_n]) / (recent_n * _sample_secs / 60.0)
+    if len(turnovers) > 1 and len(turnovers) >= recent_n else 0
+)
 
 print(f"=== {SYMBOL} 全貌摘要（{first_t}-{last_t}，{n} 点）===")
 print(f"开={open_p} 现={cur_p} ({(cur_p/open_p-1)*100:+.2f}%) | 当日 high={day_high} low={day_low} 振幅={amp:.1f}%")
@@ -96,7 +116,7 @@ print(f"箱体测试：顶({day_high})触及 {top_test} 次 / 底({day_low})触�
 print(f"买卖比演变：前半 {r_first:+.0f} → 后半 {r_last:+.0f}（{'恶化↘' if r_last < r_first else '改善↗'}）" if r_first is not None else "买卖比：N/A（ws log 无此字段）")
 print(f"量比演变：前半 {v_first:.1f} → 后半 {v_last:.1f}（{'缩量↘' if v_last < v_first else '放量↗'}）" if v_first is not None and v_last is not None else "量比：N/A（ws log 无此字段）")
 print(f"价格4段均价：{[round(x, 2) for x in seg]}（{'递增' if seg[-1]>seg[0] else '递减' if seg[-1]<seg[0] else '走平'}）")
-print(f"额：当前 {turnovers[-1]:.1f}亿 | 近{recent_n}点均速 {recent_turnover_rate*60:.2f}亿/分" if len(turnovers) > 1 else "额：N/A（ws log 无此字段）")
+print(f"额：当前 {turnovers[-1]:.1f}亿 | 近{recent_n}点（约{recent_n * _sample_secs / 60.0:.0f}分钟）均速 {recent_turnover_rate:.2f}亿/分（turnover 采样间隔≈{_sample_secs:.0f}s/点）" if len(turnovers) > 1 else "额：N/A（ws log 无此字段）")
 
 # VWAP（富途 avg_price）——日内多空分界 + 趋势日判断，看全貌必看（2026-07-22 用户立）
 try:

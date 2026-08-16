@@ -3,20 +3,24 @@
 # 2026-07-30 立：模拟盘模式下，AI 调用脚本下单成功后记录交易动作到 actions/ 目录。
 # 2026-08-06 修：增加市场参数 market（hkt/et）——此前写死 ET 后缀，港股动作误写入
 #   ET 文件（2026-08-06 上午 01888 四条记录全进了 2026-08-06-ET-actions.md）。
+# 2026-08-16 修：market / mode 两个参数改为【必填】（无默认值、缺参报错退出）——
+#   默认值已两次诱发事故（2026-08-06 忘传 market 港股进 ET 文件、2026-08-13 忘传
+#   mode 读 ring-log 旧末行致动作时间倒流一天），去掉向后兼容、强制显式传参。
 # 内容与信号文件大致相同，但框架是「动作」而非「信号」。
 #
 # 用法（交易动作内容是多行 markdown，经 stdin 传入）：
-#   cat <<'ACTION' | bash log_action.sh [market]
+#   cat <<'ACTION' | bash log_action.sh <market> <mode>
 #   ## 🟢🟢🟢 开仓 · <标的代码> <中文名> · 做多/做空 🟢🟢🟢
 #   （完整交易动作内容：标题 + 表格 + 依据 + 下单结果）
 #   ACTION
-#     market    hkt（港股）/ et（美股），默认 et（向后兼容旧调用）。
-#               ★ 港股动作必须传 hkt：写入 actions/YYYY-MM-DD-HKT-actions.md
+#     market    hkt（港股）/ et（美股），必填：写入 actions/YYYY-MM-DD-HKT/ET-actions.md
+#     mode      auto / signal，必填：auto 用当前时间戳、signal 读 ring-log 末行
 #
 # 行为：
 #   ① 把 stdin 交易动作内容 append 到 actions/YYYY-MM-DD-{HKT,ET}-actions.md
 #   （按 market 参数选后缀）
-#   ② 动作正文首行带时间戳——读 ring-log.csv 末行（= 拍板时刻），无则用当前时间。
+#   ② 动作正文首行带时间戳——auto 模式 = 当前时间（下单时刻）；signal 模式读
+#      ring-log.csv 末行（= 拍板时刻），无则用当前时间。
 #
 # 调试 / 测试：可用环境变量覆盖
 #   PROJECT_ROOT=xxx   覆盖项目根
@@ -24,8 +28,12 @@
 
 set -uo pipefail
 
-# 市场参数：$1 = hkt / et（默认 et，向后兼容旧调用）
-MARKET="${1:-et}"
+# 市场参数：$1 = hkt / et（2026-08-16 起必填——默认值曾致港股动作误入 ET 文件）
+if [ $# -lt 1 ] || [ -z "${1:-}" ]; then
+  echo "Error: 缺少 market 参数——用法：bash log_action.sh <hkt|et> <auto|signal>（两个参数必填，2026-08-16 起无默认值）" >&2
+  exit 1
+fi
+MARKET="$1"
 case "$MARKET" in
   hkt) MARKET_SUFFIX="HKT" ;;
   et)  MARKET_SUFFIX="ET" ;;
@@ -35,11 +43,14 @@ case "$MARKET" in
     ;;
 esac
 
-# 模式参数：$2 = auto / signal（默认 signal，向后兼容旧调用）
+# 模式参数：$2 = auto / signal（2026-08-16 起必填——默认 signal 曾致 auto 动作
+# 误读 ring-log 旧末行、时间倒流一天：2026-08-13 两条动作标成 2026-08-12 13:45:43）。
 # auto 模式动作时间 = 当前时间（下单时刻）；signal 模式才读 ring-log（拍板时刻 = 响铃时刻）。
-# 2026-08-06 修：此前无模式区分、一律读 ring-log 末行，auto 动作被误标成昨晚美股
-# 最后一次响铃时间（01:10:45），8/6 上午 01888 四条记录全部错标。
-MODE="${2:-signal}"
+if [ $# -lt 2 ] || [ -z "${2:-}" ]; then
+  echo "Error: 缺少 mode 参数——用法：bash log_action.sh <hkt|et> <auto|signal>（两个参数必填，2026-08-16 起无默认值）" >&2
+  exit 1
+fi
+MODE="$2"
 case "$MODE" in
   auto|signal) : ;;
   *)

@@ -620,16 +620,18 @@ def get_open_position_tiger(config, symbol=None):
                        if str(getattr(p.contract, "symbol", "")) == target]
             if not matches:
                 return None
-            _, p, qty = matches[0]
+            s, p, qty = matches[0]  # 2026-08-16 修复：取目标持仓自己的 side（原写法丢弃 s、
+            # 返回值误用收集循环残留的 side——同账户多空混持时查后一个标的会拿前一个的
+            # side，一键平仓据此把空仓再 Sell 加倍 / 多仓再 Buy 加倍）
         else:
             if len(collected) != 1:
                 return None
-            _, p, qty = collected[0]
+            s, p, qty = collected[0]
         cost = getattr(p, "average_cost", None)
         return {
             "symbol": to_futu_symbol_tiger(getattr(p.contract, "symbol", None)),
             "symbol_name": getattr(p.contract, "name", None),
-            "side": side,
+            "side": s,  # 目标持仓自己的 side（多空混持时不再张冠李戴）
             "quantity": int(qty),
             "cost_price": float(cost) if cost else None,
         }
@@ -672,13 +674,19 @@ def cancel_all_stop_orders_tiger(config, symbol, exclude_order_id=None):
                 continue
             if exclude_order_id is not None and str(oid) == str(exclude_order_id):
                 continue  # 跳过刚下的新止损（移损 fallback「先下新再撤旧」保新止损）
-            status = str(getattr(order, "status", ""))
+            # 2026-08-16 修复：status / order_type 运行时是老虎 SDK 枚举（普通 Enum，
+            # str() 得 'OrderStatus.FILLED' / 'OrderType.STP' 形态、裸字符串子串比较全部
+            # 失效——独立 STP 单撤不掉、终结状态过滤失效）。统一 .value 优先、str 兜底，
+            # 枚举 / 纯字符串两种形态都正确（与 close/move 脚本 _is_stop_order 口径一致）。
+            raw_status = getattr(order, "status", "")
+            status = raw_status.value if hasattr(raw_status, "value") else str(raw_status)
             if any(s in status for s in ("Filled", "Cancelled", "Inactive", "Invalid",
                                          "PendingCancel")):
                 continue
-            otype = str(getattr(order, "order_type", ""))
+            raw_otype = getattr(order, "order_type", "")
+            otype = (raw_otype.value if hasattr(raw_otype, "value") else str(raw_otype) or "")
             legs = getattr(order, "order_legs", None) or []
-            is_stop = otype == "STP" or any(
+            is_stop = str(otype).upper() == "STP" or any(
                 str(getattr(leg, "leg_type", "")).upper() == "LOSS" for leg in legs)
             if not is_stop:
                 continue
@@ -857,7 +865,9 @@ def _net_odds(direction, entry, target, stop, fee_per_side=None, fee_ctx=None):
       开仓边费按 entry×shares、平仓边费按 target×shares，各自用 FS.fee_per_side（含佣金最低 / 印花税 / 阶梯平台费）。
     - fee_ctx 缺省（向后兼容）：用旧百分比 fee_per_side（或 _LEGACY_FEE），每股双边费 = fee_per_side×(entry+target)。
 
-    做多 stop_dist = entry − stop；做空 stop_dist = stop − entry；≤0 返回 inf（方向错或贴止损）。
+    做多 stop_dist = entry − stop；做空 stop_dist = stop − entry；≤0 raise ValueError
+    （方向错或贴止损——2026-08-16 修复：原返回 inf，价格范围闸门照常通过、赔率以 inf 这一
+    最诱人形态呈现而非报错，带着开盘即触发的止损腿放行下单）。
     """
     if direction == 'long':
         gross_gain = target - entry
@@ -866,7 +876,9 @@ def _net_odds(direction, entry, target, stop, fee_per_side=None, fee_ctx=None):
         gross_gain = entry - target
         stop_dist = stop - entry
     if stop_dist <= 1e-12:
-        return float('inf')
+        raise ValueError(
+            f"止损距 ≤0（direction={direction}, entry={entry}, stop={stop}）：做多要求 stop < entry、"
+            f"做空要求 stop > entry——止损价在入场价错误一侧或与之重合，禁止计算赔率（原实现返回 inf 会误导放行）")
     if fee_ctx:   # 真实费率口径（2026-08-12）
         shares = fee_ctx['shares']
         sec_type = fee_ctx['sec_type']
@@ -905,14 +917,21 @@ def calc_entry_range(direction, entry_ref, stop_loss, target, symbol=None, fee_c
 def check_price_in_range(direction, current_price, entry_ref, stop_loss, target, symbol=None, fee_ctx=None):
     """检查当前价是否在可接受开仓范围内。返回 (in_range, low, high, odds_ref, odds_current)。
     odds_ref / odds_current 均为净口径（扣双边费）。
-    fee_ctx（2026-08-12 真实费率）= {shares, sec_type, market, order_idx_open, order_idx_close}。"""
+    fee_ctx（2026-08-12 真实费率）= {shares, sec_type, market, order_idx_open, order_idx_close}。
+    2026-08-16：odds_at_current 以现价为 entry，现价漂过止损一侧时止损距 ≤0——此时
+    _net_odds raise ValueError，捕获后 odds_at_current 记 -inf 且 in_range 强制 False
+    （现价已在止损错误一侧 = 立即触发止损、绝不可开仓）。"""
     range_low, range_high, odds_at_ref = calc_entry_range(direction, entry_ref, stop_loss, target, symbol, fee_ctx)
     in_range = range_low <= current_price <= range_high
-    if fee_ctx:
-        odds_at_current = _net_odds(direction, current_price, target, stop_loss, fee_ctx=fee_ctx)
-    else:
-        odds_at_current = _net_odds(direction, current_price, target, stop_loss,
-                                    fee_per_side=_LEGACY_FEE.get(_market_of(symbol), 0.0))
+    try:
+        if fee_ctx:
+            odds_at_current = _net_odds(direction, current_price, target, stop_loss, fee_ctx=fee_ctx)
+        else:
+            odds_at_current = _net_odds(direction, current_price, target, stop_loss,
+                                        fee_per_side=_LEGACY_FEE.get(_market_of(symbol), 0.0))
+    except ValueError:
+        odds_at_current = float('-inf')
+        in_range = False
     return in_range, range_low, range_high, odds_at_ref, odds_at_current
 
 

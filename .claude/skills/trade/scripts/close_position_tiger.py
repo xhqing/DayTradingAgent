@@ -52,8 +52,13 @@ def _parse_args(argv):
     ⚠️ --account live（实盘）= 真钱，AI 调用前须已征得用户明确同意。"""
     args = []
     account = None
-    skip_next = False
+    skip_next = False  # 跳过 --mode 后跟的值
+    expect_account = False  # 捕获 --account 后跟的值（空格形式，2026-08-16 修复：此前只跳过未赋值）
     for a in argv:
+        if expect_account:
+            account = a.lower()
+            expect_account = False
+            continue
         if skip_next:
             skip_next = False
             continue
@@ -63,7 +68,7 @@ def _parse_args(argv):
         if a.startswith("--mode="):
             continue
         if a == "--account":
-            skip_next = True
+            expect_account = True
             continue
         if a.startswith("--account="):
             account = a.split("=", 1)[1].lower()

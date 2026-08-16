@@ -90,6 +90,18 @@ def main():
     if direction not in ("long", "short"):
         print(json.dumps({"ok": False, "error": f"direction 必须是 long/short，收到 '{direction}'"}))
         sys.exit(1)
+    # 止损价方向硬校验（2026-08-16 立）：做多必须 stop < entry_ref、做空必须 stop > entry_ref——
+    # 方向错的止损腿开盘即触发，且下游赔率计算因止损距 ≤0 报错（此前实现返回 inf、以最诱人形态放行）。
+    if direction == "long" and stop_loss >= entry_ref:
+        print(json.dumps({"ok": False, "error": (
+            f"做多止损价必须在参考价下方（stop_loss={stop_loss} ≥ entry_ref={entry_ref}），"
+            f"方向反了——这样的止损腿开盘即触发")}, ensure_ascii=False))
+        sys.exit(1)
+    if direction == "short" and stop_loss <= entry_ref:
+        print(json.dumps({"ok": False, "error": (
+            f"做空止损价必须在参考价上方（stop_loss={stop_loss} ≤ entry_ref={entry_ref}），"
+            f"方向反了——这样的止损腿开盘即触发")}, ensure_ascii=False))
+        sys.exit(1)
 
     try:
         config = U.load_config(account=account)
@@ -109,7 +121,11 @@ def main():
     current_price = quote["last"]
 
     # 真实费率上下文（2026-08-12）：含 shares / sec_type / market / 当月订单序号（阶梯平台费）
-    fee_ctx = U.build_fee_ctx(symbol, quantity, config)
+    # quantity>0 才用真实费率；quantity==0（自动算仓位）此时 shares 未知，价格范围检查用旧百分比口径
+    # （_net_odds 按 entry/target 算每股费，不依赖 shares），算出仓位后由调用方按真实费率复核。
+    # （2026-08-16 修复：原版无此守卫，quantity=0 时真实费率分支 (fee_open+fee_close)/shares
+    # 除零崩溃——「数量传 0 = 自动算仓位」的文档化主用法在美股不可用。对齐港股版守卫。）
+    fee_ctx = U.build_fee_ctx(symbol, quantity, config) if quantity > 0 else None
     in_range, range_low, range_high, odds_at_ref, odds_at_current = U.check_price_in_range(
         direction, current_price, entry_ref, stop_loss, target, symbol, fee_ctx
     )
