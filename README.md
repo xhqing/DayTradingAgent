@@ -9,6 +9,7 @@
   <img src="https://img.shields.io/badge/markets-HK%20%2F%20US%20%2F%20A--Share-16C784.svg" alt="Markets: HK / US / A-Share" />
   <img src="https://img.shields.io/badge/mode-signal-FF8C00.svg" alt="Mode: Signal" />
   <img src="https://img.shields.io/badge/mode-auto-2ECC71.svg" alt="Mode: Auto" />
+  <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/xhqing/xhqing/main/traffic/badges/DayTradingAgent.json" alt="visitors" />
 </p>
 
 <p align="center">🌐 <a href="README_cn.md">简体中文</a></p>
