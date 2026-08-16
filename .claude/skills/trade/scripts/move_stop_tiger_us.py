@@ -74,6 +74,32 @@ def main():
         print(json.dumps({"ok": False, "error": f"老虎配置加载失败: {e}"}))
         sys.exit(1)
 
+    # 新止损价方向硬校验（2026-08-16 立，同港股版）：新止损必须未穿越现价——做多止损在
+    # 现价下方、做空止损在现价上方。传到现价错误一侧会瞬间市价触发清仓（误平仓）。要主动
+    # 平仓请用 close_position_tiger_us.py（它故意用「触发价=现价」平仓、语义不同）。
+    # 美股行情走富途 OpenD（老虎美股无行情权限）。
+    try:
+        _quote = U.get_quote_us(config, symbol)
+    except Exception as e:
+        print(json.dumps({"ok": False, "error": f"获取美股行情失败（无法校验新止损价方向）: {e}"},
+                         ensure_ascii=False))
+        sys.exit(1)
+    if _quote is None or _quote.get("last") is None:
+        print(json.dumps({"ok": False, "error": f"美股报价为空: {symbol}（无法校验新止损价方向）"},
+                         ensure_ascii=False))
+        sys.exit(1)
+    _last = float(_quote["last"])
+    if direction == "long" and new_stop_price >= _last:
+        print(json.dumps({"ok": False, "error": (
+            f"做多新止损价 {new_stop_price} ≥ 现价 {_last}——止损已穿越现价、提交会瞬间市价触发清仓；"
+            f"要主动平仓请用 close_position_tiger_us.py，不要用移损脚本")}, ensure_ascii=False))
+        sys.exit(1)
+    if direction == "short" and new_stop_price <= _last:
+        print(json.dumps({"ok": False, "error": (
+            f"做空新止损价 {new_stop_price} ≤ 现价 {_last}——止损已穿越现价、提交会瞬间市价触发清仓；"
+            f"要主动平仓请用 close_position_tiger_us.py，不要用移损脚本")}, ensure_ascii=False))
+        sys.exit(1)
+
     result_base = {"action": "move_stop_tiger_us", "market": "US", "symbol": symbol, "direction": direction,
                    "new_stop_price": new_stop_price, "quantity": quantity}
 

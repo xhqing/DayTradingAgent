@@ -61,7 +61,7 @@ pR_W+qR_L
 &=\frac{1}{N}\sum_{i=1}^{N}R_i=\mathrm{EV}.\qquad\blacksquare
 \end{aligned}$$
 
-*Corollary（预估 EV）.* 开仓前取预估**净**胜赔率 $\hat{R}_W\geq 1.2$（净口径，扣双边费，见 `trading-strategy.md`「赔率三阶段」）、保守取 $R_L=-1$（假设每次亏满 $M_i$、即 $R_i=-1$），则 $\mathrm{EV}_{\text{est}}=p\,\hat{R}_W-q$，即「交易策略纪律」的 $EV=\text{胜率}\times\text{赔率}-\text{败率}$。
+*Corollary（预估 EV）.* 开仓前取预估**净**胜赔率 $\hat{R}_W\geq 2.4$（净口径，扣双边费，见 `trading-strategy.md`「赔率三阶段」）、保守取 $R_L=-1$（假设每次亏满 $M_i$、即 $R_i=-1$），则 $\mathrm{EV}_{\text{est}}=p\,\hat{R}_W-q$，即「交易策略纪律」的 $EV=\text{胜率}\times\text{赔率}-\text{败率}$。
 
 *Definition（百分制 / 金额制）.* $\mathrm{EV}\%:=100\,\mathrm{EV}$（百分制 R-multiple）；$\overline{P}:=\dfrac{1}{N}\sum_{i=1}^{N}P_i$（平均每单盈利金额，直接平均各笔绝对盈亏；各笔 $M_i$ 不同时 $\overline{P}\neq M\cdot\mathrm{EV}$，故金额制独立定义、不经统一 $M$）。
 

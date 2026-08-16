@@ -5,11 +5,11 @@
 <h1 align="center">Victor —— 港股 / 美股 / A 股日内交易智能体</h1>
 
 <p align="center">
-  <a href="LICENSE.md"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT" /></a>
-  <img src="https://img.shields.io/badge/markets-HK%20%2F%20US%20%2F%20A--Share-16C784.svg" alt="Markets: HK / US / A-Share" />
-  <img src="https://img.shields.io/badge/mode-signal-FF8C00.svg" alt="Mode: Signal" />
-  <img src="https://img.shields.io/badge/mode-auto-2ECC71.svg" alt="Mode: Auto" />
-  <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/xhqing/xhqing/main/traffic/badges/DayTradingAgent.json" alt="visitors" />
+  <a href="LICENSE.md"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
+  <img src="https://img.shields.io/badge/Markets-HK%20%2F%20US%20%2F%20A--Share-16C784.svg" alt="Markets: HK / US / A-Share" />
+  <img src="https://img.shields.io/badge/Mode-Signal-FF8C00.svg" alt="Mode: Signal" />
+  <img src="https://img.shields.io/badge/Mode-Auto-2ECC71.svg" alt="Mode: Auto" />
+  <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/xhqing/xhqing/main/traffic/badges/DayTradingAgent.json" alt="Visitors" />
 </p>
 
 <p align="center">🌐 <a href="README.md">English</a></p>

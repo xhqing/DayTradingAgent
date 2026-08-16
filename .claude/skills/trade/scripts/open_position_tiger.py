@@ -117,6 +117,18 @@ def main():
     if direction not in ("long", "short"):
         print(json.dumps({"ok": False, "error": f"direction 必须是 long/short，收到 '{direction}'"}))
         sys.exit(1)
+    # 止损价方向硬校验（2026-08-16 立）：做多必须 stop < entry_ref、做空必须 stop > entry_ref——
+    # 方向错的止损腿开盘即触发，且下游赔率计算因止损距 ≤0 报错（此前实现返回 inf、以最诱人形态放行）。
+    if direction == "long" and stop_loss >= entry_ref:
+        print(json.dumps({"ok": False, "error": (
+            f"做多止损价必须在参考价下方（stop_loss={stop_loss} ≥ entry_ref={entry_ref}），"
+            f"方向反了——这样的止损腿开盘即触发")}, ensure_ascii=False))
+        sys.exit(1)
+    if direction == "short" and stop_loss <= entry_ref:
+        print(json.dumps({"ok": False, "error": (
+            f"做空止损价必须在参考价上方（stop_loss={stop_loss} ≤ entry_ref={entry_ref}），"
+            f"方向反了——这样的止损腿开盘即触发")}, ensure_ascii=False))
+        sys.exit(1)
 
     try:
         config = U.load_config(account=account)

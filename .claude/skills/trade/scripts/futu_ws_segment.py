@@ -157,9 +157,12 @@ def main():
             for sym, d in seg.items():
                 if d['last'] is None:
                     continue
-                # ts,code,last,bid,ask,买卖比空,量比空,high,low,额空,止损空
+                # ts,code,last,bid,ask,买卖比空,量比空,high,low,额空,止损空（共 11 列）
+                # 2026-08-16 修复：last 后少写一个逗号（4 个空位 bid/ask/ratio/vr 只写出 3 个），
+                # 10 字段入 11 列表头致 high 落进 vr 列、low 落进 high 列、low 与 stop_price 整列丢失，
+                # 下游 monitor_summary 的日高/日低/量比数据全错（08-14 当天复盘数据已被污染）。
                 with open(logs[sym], 'a') as f:
-                    f.write(f'{cur_sec},{sym},{d["last"]},,,,{d["high"]},{d["low"]},,\n')
+                    f.write(f'{cur_sec},{sym},{d["last"]},,,,,{d["high"]},{d["low"]},,\n')
         time.sleep(0.2)
 
     try:
