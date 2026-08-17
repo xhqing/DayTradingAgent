@@ -113,7 +113,13 @@ recent_turnover_rate = (
 print(f"=== {SYMBOL} 全貌摘要（{first_t}-{last_t}，{n} 点）===")
 print(f"开={open_p} 现={cur_p} ({(cur_p/open_p-1)*100:+.2f}%) | 当日 high={day_high} low={day_low} 振幅={amp:.1f}%")
 print(f"箱体测试：顶({day_high})触及 {top_test} 次 / 底({day_low})触及 {bot_test} 次")
-print(f"买卖比演变：前半 {r_first:+.0f} → 后半 {r_last:+.0f}（{'恶化↘' if r_last < r_first else '改善↗'}）" if r_first is not None else "买卖比：N/A（ws log 无此字段）")
+# 2026-08-16 修：买卖比行补 r_last 双非 None 守卫——原实现只判 r_first 就进 f-string，
+# r_last=None（后半全为 ws 行、ratio 空）时 f-string 内 r_last < r_first 抛 TypeError、
+# 当日全貌摘要必崩（量比行 :97 早已正确判了双非 None，同文件两行口径不一致）。
+if r_first is not None and r_last is not None:
+    print(f"买卖比演变：前半 {r_first:+.0f} → 后半 {r_last:+.0f}（{'恶化↘' if r_last < r_first else '改善↗'}）")
+else:
+    print("买卖比：N/A（log 无此字段或仅半段有值）")
 print(f"量比演变：前半 {v_first:.1f} → 后半 {v_last:.1f}（{'缩量↘' if v_last < v_first else '放量↗'}）" if v_first is not None and v_last is not None else "量比：N/A（ws log 无此字段）")
 print(f"价格4段均价：{[round(x, 2) for x in seg]}（{'递增' if seg[-1]>seg[0] else '递减' if seg[-1]<seg[0] else '走平'}）")
 print(f"额：当前 {turnovers[-1]:.1f}亿 | 近{recent_n}点（约{recent_n * _sample_secs / 60.0:.0f}分钟）均速 {recent_turnover_rate:.2f}亿/分（turnover 采样间隔≈{_sample_secs:.0f}s/点）" if len(turnovers) > 1 else "额：N/A（ws log 无此字段）")

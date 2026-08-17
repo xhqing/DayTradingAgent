@@ -30,6 +30,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import trade_utils_tiger_us as U
+import trade_utils_tiger as T   # 2026-08-16：降档循环用 _is_ambiguous_timeout_error 判模糊失败
 
 
 def _downscale_sequence(quantity, lot_size=1):
@@ -48,6 +49,50 @@ def _downscale_sequence(quantity, lot_size=1):
             break
         q = int(q // 2 // lot) * lot
     return seq
+
+
+def _risk_params_from_config():
+    """读 skill config.json 的 risk 节（2026-08-16 修，同港股版：原硬编码 0.02/0.10，
+    config「修改本文件即可调参」契约不生效）。缺失回退默认。"""
+    import json as _json
+    try:
+        _cfg = _json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                            "..", "config.json")))
+        risk = _cfg.get("risk", {})
+        return (float(risk.get("risk_fraction", 0.02)),
+                float(risk.get("f_max", 0.10)))
+    except Exception:
+        return 0.02, 0.10
+
+
+def _enforce_explicit_quantity_risk(quantity, entry_ref, stop_loss, equity):
+    """显式传量路径的风控校验（2026-08-16 立，同港股版：原显式传量绕过 f_max /
+    max_leverage 全部上限、唯一护栏是券商保证金拒单）。超限拒绝下单。
+    返回 (ok, error_or_none)。"""
+    import json as _json
+    _, f_max = _risk_params_from_config()
+    stop_distance = abs(entry_ref - stop_loss)
+    actual_max_loss = quantity * stop_distance
+    notes = []
+    if equity:
+        max_loss_cap = equity * f_max
+        if actual_max_loss > max_loss_cap:
+            notes.append(f"实际 max_loss {actual_max_loss:,.2f} 超过 equity×f_max 上限 "
+                         f"{max_loss_cap:,.2f}（equity {equity:,.2f} × {f_max}）")
+        try:
+            _cfg = _json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                "..", "config.json")))
+            max_leverage = float(_cfg.get("risk", {}).get("max_leverage", 10))
+        except Exception:
+            max_leverage = 10.0
+        notional = quantity * entry_ref
+        notional_cap = equity * max_leverage
+        if notional > notional_cap:
+            notes.append(f"开仓市值 {notional:,.2f} 超过 equity×max_leverage 上限 "
+                         f"{notional_cap:,.2f}（equity {equity:,.2f} × {max_leverage}）")
+    if notes:
+        return False, "；".join(notes) + "。显式传量同样受风控上限约束（f_max / max_leverage），拒绝下单——请调小数量或改用 0 自动算仓位"
+    return True, None
 
 
 def main():
@@ -142,7 +187,9 @@ def main():
         print(json.dumps(result_base, ensure_ascii=False))
         sys.exit(1)
 
-    # 自动算仓位（quantity=0）：equity 取老虎账户 USD 净值、lot_size 从 get_contract 取（美股默认 1）
+    # 自动算仓位（quantity=0）：equity 取老虎账户 USD 净值、lot_size 从 get_contract 取（美股默认 1）。
+    # risk_fraction / f_max 从 config.json 读（2026-08-16 修，同港股版：原硬编码 0.02/0.10）。
+    lot_size = None
     if quantity == 0:
         tc = U.new_trade_client(config)
         equity, currency = U.load_equity_us(config)
@@ -154,8 +201,9 @@ def main():
         if not lot_size:
             lot_size = 1  # 美股默认 1 股/手
         stop_distance = abs(entry_ref - stop_loss)
+        risk_fraction, f_max = _risk_params_from_config()
         quantity, max_loss, budget_B = U.calc_position_size(
-            equity, 0.02, 0.10, stop_distance, lot_size, entry_price=entry_ref)
+            equity, risk_fraction, f_max, stop_distance, lot_size, entry_price=entry_ref)
         if quantity <= 0:
             result_base.update({"ok": False, "error": "仓位为 0（止损距太大或权益不足）"})
             print(json.dumps(result_base, ensure_ascii=False))
@@ -164,6 +212,50 @@ def main():
                             "lot_size": lot_size, "budget_B": round(budget_B, 2),
                             "max_loss": round(max_loss, 2)})
     result_base["quantity"] = quantity
+
+    # 止损价 tick 取整（2026-08-16 修，同港股版：原止损价原样传入，不合 tick 的附加腿
+    # 会连累主单整体被拒、降档循环烧完全部档）。美股统一 0.01。
+    _stop_raw = stop_loss
+    stop_loss = U.round_to_tick_us(stop_loss)
+    if stop_loss != _stop_raw:
+        result_base["stop_loss_adjusted"] = f"{_stop_raw} → {stop_loss}（取整到美股 tick 0.01）"
+
+    # 显式传量的风控校验（2026-08-16 立，同港股版：显式传量不再绕过 f_max / max_leverage）
+    if not result_base.get("auto_sized"):
+        try:
+            equity, currency = U.load_equity_us(config)
+        except Exception:
+            equity, currency = None, None
+        if equity is None:
+            result_base["risk_check_note"] = "账户净值取不到，跳过 f_max / max_leverage 校验"
+        ok, err = _enforce_explicit_quantity_risk(quantity, entry_ref, stop_loss, equity)
+        if not ok:
+            result_base.update({"ok": False, "error": err,
+                                "equity": equity, "equity_currency": currency})
+            print(json.dumps(result_base, ensure_ascii=False))
+            sys.exit(1)
+        result_base["risk_checked"] = True
+
+    # 购买力上限（2026-08-16 立，同港股版：可买股数上限 = buying_power × long_initial_margin
+    # ÷ 参考价；美股 get_contract 已实测返回 long_initial_margin 字段、USD 同币种无汇率偏差）。
+    _bp_shares, _bp_val, _bp_margin = T.get_buying_power_tiger(config, symbol, entry_ref)
+    if _bp_shares is not None and quantity > _bp_shares:
+        _lot_bp = lot_size if lot_size else 1
+        capped = max(int(_bp_shares // _lot_bp) * _lot_bp, 0)
+        result_base["capped_by_buying_power"] = True
+        result_base["buying_power"] = _bp_val
+        result_base["margin_rate"] = _bp_margin
+        result_base["buying_power_max_shares"] = _bp_shares
+        result_base["target_quantity"] = quantity
+        result_base["quantity"] = capped
+        result_base["warning"] = (
+            f"目标量 {quantity} 股超购买力上限 {_bp_shares} 股（buying_power {_bp_val:,.0f} × "
+            f"保证金率 {_bp_margin} ÷ 参考价 {entry_ref}），下单前主动降档到 {capped} 股——减少被动拒单")
+        if capped <= 0:
+            result_base.update({"ok": False, "error": "购买力上限降档后为 0（buying_power 不足以开 1 股）"})
+            print(json.dumps(result_base, ensure_ascii=False))
+            sys.exit(1)
+        quantity = capped
 
     # 参考价（主单已改 MKT 市价单，此价仅作输出参考）：做多取 ask / 做空取 bid，取整到美股 tick 0.01
     if direction == "long":
@@ -177,21 +269,43 @@ def main():
     #
     # 失败自动降档重试（2026-08-11 立，00100 待办，与港股 open_position_tiger 同逻辑）：
     # 目标量被拒（提交抛异常 / 回查 Invalid）时按降档序列逐次减半重试到可下上限，每次失败
-    # 输出 reason。两种失败不降档：① cross-trading（账户已有同标的未成交挂单，新单与其
+    # 输出 reason。不降档的失败：① cross-trading（账户已有同标的未成交挂单，新单与其
     # 交叉成交被拒，2026-08-11 用户纠正：与持仓止损单无关——开仓=空仓建仓），与量无关、
     # 降档无意义，须改单或撤单再重挂；② 挂起超时未成交（可能是盘口问题而非被拒，
-    # 撤单退出由 AI 决策）。
-    lot = U.get_lot_size_us(U.new_trade_client(config), symbol)
+    # 撤单退出由 AI 决策）；③ 提交超时模糊失败（2026-08-16 立，请求可能已达券商，
+    # 降档=重复开仓路径，立即停止）；④ 部分成交超时（PartiallyFilled，2026-08-16 立，
+    # 已成交部分已建仓、不降档叠仓，读实际成交量如实上报）。
+    lot = lot_size if lot_size else (U.get_lot_size_us(U.new_trade_client(config), symbol) or 1)
     attempts = _downscale_sequence(quantity, lot)
     failures = []
     order_id = None
     fill_price = None
     status = ""
+    filled = False   # 2026-08-16 修（同港股版）：全部档位 submit 抛异常时不再 UnboundLocalError
+    part_filled_qty = None
     for qty in attempts:
+        # 重复下单防抖（2026-08-16 立，同港股版）：上一档超时可能实际已在场
+        try:
+            has_active, active_ids = U.has_active_open_order_us(config, symbol, side_str)
+            if has_active:
+                result_base.update({"lo_price": lo_price,
+                                    "ok": False,
+                                    "error": f"重复下单防抖：{symbol} 已有活动开仓方向委托单 {active_ids}，拒绝继续降档下单——先查当日订单确认状态",
+                                    "failures": failures, "blocked_by": "active_open_order_dedup"})
+                print(json.dumps(result_base, ensure_ascii=False))
+                sys.exit(1)
+        except Exception as de:
+            failures.append({"qty": qty, "status": "dedup_check_failed", "reason": str(de),
+                             "note": "防抖检查查询失败，为避免重复下单风险停止降档"})
+            break
         try:
             order_id = U.submit_order_with_stop_us(config, symbol, side_str, qty, lo_price, stop_loss)
         except Exception as e:
             msg = str(e)
+            if "模糊失败" in msg or T._is_ambiguous_timeout_error(e):
+                failures.append({"qty": qty, "status": "submit_timeout_ambiguous", "reason": msg,
+                                 "hint": "请求可能已达券商，禁止降档续下——先查当日订单确认是否已成交，未确认前不得再下单"})
+                break  # 模糊失败：可能已下单成功，降档=双倍持仓
             if "cross" in msg.lower() and "pending" in msg.lower():
                 failures.append({"qty": qty, "status": "submit_exception", "reason": msg,
                                  "hint": "账户已有同标的未成交委托单（之前下单残留），改单或撤销该挂单后再重新挂单"})
@@ -201,8 +315,14 @@ def main():
         filled, fill_price, status, reason = U.check_order_filled_us(config, order_id, timeout=8)
         if filled:
             break
+        if status == "PartiallyFilled":
+            part_filled_qty = U.get_order_filled_qty_us(config, order_id)
+            failures.append({"qty": qty, "status": status,
+                             "filled_qty": part_filled_qty,
+                             "reason": reason or "部分成交未在超时内全额成交——已成交部分已建仓，请按 filled_qty 复核持仓，勿重复开仓"})
+            break
         if "Invalid" not in status:
-            # 挂起超时 / 其它非被拒状态：撤单退出（不降档，让 AI 决策）
+            # 挂起超时 / 轮询异常 / 其它非被拒状态：撤单退出（不降档，让 AI 决策）
             try:
                 U.cancel_order_us(config, order_id)
                 cancel_note = "已撤主单及附加止损"
@@ -220,6 +340,16 @@ def main():
         if hint:
             break  # cross-trading 与量无关，降档无意义
     if not filled:
+        if part_filled_qty:
+            result_base.update({"lo_price": lo_price,
+                                "ok": True, "part_filled": True, "quantity": part_filled_qty,
+                                "order_id": order_id,
+                                "fill_price": fill_price,
+                                "warning": f"部分成交 {part_filled_qty}/{quantity} 股（超时未全成）——已按实际成交量上报，请复核持仓与残留附加止损腿",
+                                "failures": failures, "main_status": status,
+                                "method": "market+attached_stop"})
+            print(json.dumps(result_base, ensure_ascii=False))
+            sys.exit(0)
         result_base.update({"lo_price": lo_price,
                             "ok": False, "error": f"开仓全部失败（尝试 {len(failures)} 档）", "failures": failures})
         print(json.dumps(result_base, ensure_ascii=False))

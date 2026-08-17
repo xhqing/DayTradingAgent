@@ -6,13 +6,17 @@
 不在场，watcher 仍能通过系统通知叫醒用户）——外部监督的工程化辅助。
 
 判定逻辑（2026-08-12 用户立：盯盘窗口在 Running 且后台采样脚本在正常采样 → 不报，
-两者都不活跃才报；「会话在 Running」用补丁 012 写盘的 state 文件判定，不用阈值猜）：
+两者都不活跃才报；「会话在 Running」用补丁 012 写盘的 state 文件判定，不用阈值猜；
+2026-08-17 补第四检查：采样在跑也要查分析心跳，堵「采样在跑 → 一律放行」的空转盲区）：
   盘中对**每个已注册的盯盘会话**独立判定，优先级如下：
     1. **死会话自动剔除（兜底自愈）**：会话 jsonl 停更 > DEAD_SESSION_SECONDS（30 分钟）
        → 视作已结束（停盯没注销、美股会话残留等），自动从注册列表移除、不再报。
-    2. **采样在跑 → 正常**：任一密采样脚本（monitor_segment.py / ws_segment.py /
-       futu_ws_segment.py）进程存活 → 说明有会话正在采样、盯盘窗口正常 Running
-       → 本轮所有注册会话都判正常、一律不报。
+    2. **采样在跑 → 先做空转检查（第四检查，2026-08-17 立）再走原掩蔽提示**：
+       - 分析心跳（tmp/analysis_beat_{date}_{mode}.csv，AI 每段分析追加）停更 >
+         ANALYSIS_BEAT_STALE_SECONDS（180 秒）→ **报空转警报**（采样链活着、分析链
+         死了——2026-08-17 实录：52 次纯重启采样、0 分析文本，原逻辑全系统绿灯）。
+       - 当天无心跳文件且采样已跑 ≥180 秒 → 从未分析过，同样报空转。
+       - 心跳新鲜 → 不报空转，继续原「掩蔽提示」低频逻辑。
     3. **采样没在跑 → 读会话 state 文件内容判定会话是否在 Running**：
        - state = running / thinking → 会话 state 显示在 Running；但补丁 012 事件驱动写盘、
          会话进程崩溃后 state 会停在 running 永不更新，故再用 jsonl 活跃度兜一道：
@@ -116,6 +120,81 @@ DEAD_SESSION_SECONDS = 30 * 60
 #   段间重启 / 其它工具调用）时生效，故可放宽到 90 秒：正常分析 + 重启 + 工具开销 < 90s，
 #   > 90s 采样既没跑、jsonl 也没更新 = 确认中断。检查间隔 10s → 最坏检测延迟 100s。
 STALE_SECONDS = 90
+
+# 同一中断事件的通知冷却（秒，2026-08-16 立）。背景：launchd 每 10 秒触发一次 watcher，
+# 条件持续成立（waiting_input / jsonl 停更 / 陈旧 running）时旧实现每轮都发 macOS 通知
+# = 每分钟 6 条通知风暴。冷却期内不重复报同一类事件；冷却文件写在 tmp/ 下（mtime 即上次
+# 通知时间，内容为原因摘要）。
+NOTIFY_COOLDOWN_SECONDS = 300   # 同一会话同一类中断 5 分钟内不重复报
+
+# 空转检测（第四检查，2026-08-17 立红灯「盯盘空转」修法③）：采样在跑但分析心跳 >
+# 此阈值 → 报空转警报。参数依据：段循环 40 秒 + 分析重启开销 ≈ 55-65 秒/段，心跳每段
+# 一写；3 分钟 ≈ 3 个段周期无心跳，正常循环绝不触发，触发 = 分析链确定死了（采样还在
+# 空转跑）。注意这是「采样在跑」分支内的检查——原逻辑「采样在跑 → 一律不报」恰好放行
+# 空转（2026-08-17 实录：52 次纯重启采样、0 分析文本、全系统绿灯），本检查补上该盲区。
+ANALYSIS_BEAT_STALE_SECONDS = 180
+
+
+def analysis_beat_fresh():
+    """分析心跳是否新鲜（2026-08-17 立）：tmp/analysis_beat_{date}_{mode}.csv 的 mtime
+    距今 < ANALYSIS_BEAT_STALE_SECONDS 即新鲜（signal/auto 任一 mode 新鲜就算新鲜——
+    watcher 拿不到会话与 mode 的对应关系，任一路分析在跑 = 不是全空转）。
+
+    心跳文件由 AI 每段分析时追加（monitoring.md「每段最小输出模板 + 分析心跳」节）。
+    两类合法缺省：
+    - **当天还没有任何心跳文件**（盯盘刚启动第一段还没结束 / 只跑采样脚本验证）：视为
+      不确定 → 返回 None（调用方结合「采样跑了多久」判断，采样 log 也不足 3 分钟时不报）。
+    - 文件存在但停更 > 阈值 → 返回停更秒数（报空转）。
+    """
+    import glob
+    today = datetime.datetime.now().strftime("%Y%m%d")
+    beats = glob.glob(os.path.join(_PROJECT_ROOT, "tmp", f"analysis_beat_{today}_*.csv"))
+    if not beats:
+        return None  # 当天无心跳文件：无法判定（调用方结合采样 log 时长决定）
+    newest = max(os.path.getmtime(p) for p in beats)
+    age = time.time() - newest
+    return age if age < ANALYSIS_BEAT_STALE_SECONDS else -age
+    # 正数 = 新鲜；负数 = 停更超过阈值（绝对值即停更秒数）；None = 无文件无法判定
+
+
+def _sampling_log_age_seconds():
+    """当天采样已运行多久（秒）：读当天（按文件名日期）monitor_log 文件**首行采样时刻**
+    （跳过表头的第一行 time 字段），取最早的距今时长——即「今天这批采样最早从何时开始跑」。
+    用于空转检查的「无心跳文件」分支：采样已跑 ≥3 分钟仍零心跳 = 从未分析过。
+    无当天文件 / 全部读不出首行返回 None。
+
+    为什么读文件内容首行而不用 ctime（2026-08-17 实测教训）：ctime 会因 rename 等元数据
+    操作被重置（测试中一次 rename 还原就让 15 个文件的 ctime 全部变成「刚刚」），语义不稳；
+    log 首行的 time 是采样脚本自己写的、不可变的事实，跨午夜时按「首行时分 > 当前时分则
+    视作昨天」推断日期（同 monitor_segment 哨兵口径）。
+    """
+    import glob
+    today = datetime.datetime.now().strftime("%Y%m%d")
+    logs = glob.glob(os.path.join(_PROJECT_ROOT, "tmp", f"monitor_log_*_{today}_*.csv"))
+    if not logs:
+        return None
+    now = datetime.datetime.now()
+    oldest_start = None
+    for p in logs:
+        try:
+            with open(p) as lf:
+                for line in lf:
+                    line = line.strip()
+                    if not line or line.startswith("time,"):
+                        continue  # 跳表头 / 空行
+                    first_t = line.split(",", 1)[0]
+                    ft = datetime.datetime.strptime(first_t, "%H:%M:%S").time()
+                    # 跨午夜推断：首行时分 > 当前时分 → 首行属昨天（美股跨午夜采样）
+                    fdate = (now.date() - datetime.timedelta(days=1)) if ft > now.time() else now.date()
+                    start = datetime.datetime.combine(fdate, ft)
+                    if oldest_start is None or start < oldest_start:
+                        oldest_start = start
+                    break  # 只看首行
+        except Exception:
+            continue
+    if oldest_start is None:
+        return None
+    return (now - oldest_start).total_seconds()
 
 
 def in_trading_session():
@@ -282,8 +361,27 @@ def interrupted_sessions(sessions):
     return interrupted
 
 
-def notify(msg):
-    """发 macOS 系统通知（独立于 Claude Code，用户能看到）。"""
+def notify(msg, key=None):
+    """发 macOS 系统通知（独立于 Claude Code，用户能看到）。
+
+    2026-08-16 立通知冷却：launchd 每 10 秒触发一次，条件持续成立时旧实现每轮都发通知
+    = 每分钟 6 条通知风暴。key 给定时（形如 "<sid 前 8 位>:<原因类别>"），冷却文件
+    tmp/watcher_notify_<key>.stamp 的 mtime 距今 < NOTIFY_COOLDOWN_SECONDS 则跳过本次。"""
+    if key is not None:
+        import re as _re
+        safe_key = _re.sub(r"[^A-Za-z0-9_-]", "_", key)
+        stamp = os.path.join(_PROJECT_ROOT, "tmp", f"watcher_notify_{safe_key}.stamp")
+        try:
+            if os.path.isfile(stamp) and (time.time() - os.path.getmtime(stamp)) < NOTIFY_COOLDOWN_SECONDS:
+                return   # 冷却期内，不重复报
+        except OSError:
+            pass
+        try:
+            os.makedirs(os.path.dirname(stamp), exist_ok=True)
+            with open(stamp, "w") as f:
+                f.write(msg[:200])
+        except OSError:
+            pass
     try:
         subprocess.run(
             ["osascript", "-e",
@@ -306,20 +404,62 @@ def main():
     if not sessions:
         return  # 剔除后无活跃会话
 
-    # ② 采样在跑 → 盯盘窗口正常 Running、本轮一律不报（采样 Bash 是盯盘最长工具调用、
-    #    它活着 = 一切正常；绕开「采样期间 jsonl 停更」盲区）。
+    # ② 采样在跑 → 先做第四检查（空转检测，2026-08-17 立）：采样在跑但分析心跳 >
+    #    3 分钟 → 报空转警报。原「采样在跑 → 一律不报」恰好放行空转（采样链活着、
+    #    分析链死了，2026-08-17 实录全系统绿灯）；心跳文件（AI 每段分析时追加）是
+    #    分析链唯一的外部可检测信号。
+    #    - 心跳新鲜（>0）→ 空转不成立，继续原有掩蔽提示逻辑。
+    #    - 心跳停更（<0）→ 报空转警报（带冷却）。
+    #    - 当天无心跳文件（None）→ 结合采样 log 时长：log 也不足 3 分钟 = 盯盘刚启动，
+    #      不报；log 已跑 ≥3 分钟仍无任何心跳 = 从未分析过，报空转。
     if sampling_running():
+        beat = analysis_beat_fresh()
+        if beat is not None and beat < 0:
+            notify(
+                f"⚠️ 盯盘空转警报：采样进程在跑，但分析心跳已停更 {int(-beat)} 秒"
+                f"（> {ANALYSIS_BEAT_STALE_SECONDS}s）——采样链活着、分析链疑似死亡"
+                f"（只重启采样不分析）。有持仓 = 漏移损 / 漏平仓风险。"
+                f"请回盯盘会话叫 AI 恢复每段分析（一行式判断 + 写心跳）。",
+                key="analysis_beat_stale",
+            )
+        elif beat is None:
+            # 当天无心跳文件：采样已跑 ≥3 分钟仍零心跳 = 从未分析过（空转的极端形态）
+            log_min_age = _sampling_log_age_seconds()
+            if log_min_age is not None and log_min_age >= ANALYSIS_BEAT_STALE_SECONDS:
+                notify(
+                    f"⚠️ 盯盘空转警报：采样已运行约 {int(log_min_age)} 秒，但当天分析心跳"
+                    f"为零（analysis_beat 文件不存在）——只采样、从未分析。"
+                    f"请回盯盘会话叫 AI 恢复每段分析（一行式判断 + 写心跳）。",
+                    key="analysis_beat_missing",
+                )
+        # 空转检查后继续原掩蔽提示逻辑（不 return 掉，空转与掩蔽可同轮各报各的——
+        # 冷却机制各自限频，不叠加成风暴）
+        masked = []
+        for sid in sessions:
+            st = session_state(sid)
+            jage = jsonl_age(sid)
+            if (st in ("waiting_input", "idle")) or (jage is not None and jage > RUNNING_SILENCE_SECONDS):
+                masked.append((sid, f"state={st}, jsonl 停更 {int(jage) if jage is not None else '?'}s"))
+        if masked:
+            parts = ", ".join(f"{sid[:8]}（{r}）" for sid, r in masked)
+            notify("注意：采样进程在跑，但注册会话中有疑似不活跃的（可能被采样进程掩蔽）："
+                   + parts + "。若该会话本应盯盘，请检查。", key="masked_hint")
         return
 
     # ③ 采样没在跑 → 读会话 state 文件（补丁 012 写盘）判定会话是否在 Running：
     #    running/thinking = 在 Running 不报；waiting_input/idle = 没在 Running 报中断；
     #    state 文件无（012 未生效）→ fallback jsonl 停更判定。
+    #    通知带冷却 key（2026-08-16）：同一会话的中断 5 分钟内不重复报，止通知风暴。
     interrupted = interrupted_sessions(sessions)
     if not interrupted:
         return
-    parts = [f"{sid[:8]}（{reason}）" for sid, reason in interrupted]
-    notify("密采样中断（会话 " + ", ".join(parts) + "）：采样进程不在、会话也没在 Running。"
-           "请回 Claude Code 盯盘会话唤醒 AI 并重启采样。")
+    for sid, reason in interrupted:
+        kind = "state" if reason.startswith("state=") else "jsonl"
+        notify(
+            f"密采样中断（会话 {sid[:8]}：{reason}）：采样进程不在、会话也没在 Running。"
+            f"请回 Claude Code 盯盘会话唤醒 AI 并重启采样。",
+            key=f"{sid[:8]}_{kind}",
+        )
 
 
 if __name__ == "__main__":

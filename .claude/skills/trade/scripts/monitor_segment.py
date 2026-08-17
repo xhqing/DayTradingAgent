@@ -195,6 +195,9 @@ def main():
     # （正常段间循环 < 1 分钟）= 断网/暂停/故障致断层——警告 AI 先跑恢复协议再继续，别用过时
     # 数据发信号。2026-07-28 中芯事故根因：断层期未察觉、用过时参考价发信号（13:45 数据 →
     # 15:34 才响铃）。哨兵让 AI 即便没主动意识到断层，脚本也强制提醒。
+    # 港股午休感知（2026-08-16 立）：港股 12:00-13:00 休市、正常不采样，每个交易日 13:00
+    # 重启首段时 gap ≈ 61 分钟必报「疑似断层」——狼来了效应削弱真警告。午休窗口内的 gap
+    # 不按断层报、降级为提示。
     try:
         for sym in syms:
             log_file = state[sym]["log_file"]
@@ -214,6 +217,19 @@ def main():
             last_dt = datetime.combine(last_date, last_time)
             gap_min = (now - last_dt).total_seconds() / 60
             if gap_min >= 5:
+                # 港股午休感知：last 在 11:55-12:00、now 在 12:55-13:05 附近 = 正常午休 gap，
+                # 降级提示不按断层报警（每天午后首段必现，误报削弱真警告的狼来了效应）
+                t_noon_end = now.replace(hour=13, minute=5, second=0, microsecond=0)
+                t_noon_start = now.replace(hour=11, minute=50, second=0, microsecond=0)
+                if (not sym.startswith("US.")) and now.weekday() < 5 and \
+                   t_noon_start <= last_dt <= now.replace(hour=12, minute=0, second=0) and \
+                   now.time() <= t_noon_end.time():
+                    print(
+                        f"ℹ️ 午休间隔：{sym} 上次采样 {last_t} → 现在 {now:%H:%M}（港股午休 12:00-13:00 "
+                        f"正常不采样），非断层。",
+                        flush=True,
+                    )
+                    continue
                 print(
                     f"⚠️ 时间断层哨兵：{sym} 距上次采样 {gap_min:.0f} 分钟（上次 {last_t} → 现在），"
                     f"疑似断网/暂停/故障致断层！先跑 `python3 scripts/resume.py` 重建上下文、"
@@ -243,10 +259,14 @@ def main():
     stop_prices = {}
     while time.time() - start < DURATION:
         try:
-            # 每轮采样都查一次最新止损单（用户可能在 App 中途手动加止损，频率随采样间隔走）
+            # 每轮采样都查一次最新止损单（用户可能在 App 中途手动加止损，频率随采样间隔走）。
+            # 2026-08-16 修复缓存只增不清：止损单撤销/成交后 fresh 不再含该标的，旧实现
+            # stop_prices.update(fresh) 保留旧价 → 后续每轮持续显示已不存在的止损（误导
+            # 「持仓有止损保护」判断，与「每轮现查、不凭记忆」设计意图相反）。现以 fresh
+            # 为准整体替换——fresh 非空即 replace、fresh 为空（查询失败）才保留上一轮值。
             fresh = query_stop_prices(syms)
             if fresh:
-                stop_prices.update(fresh)
+                stop_prices = dict(fresh)
 
             ret, df = ctx.get_market_snapshot(syms)
             if ret != 0 or df is None or len(df) == 0:
@@ -402,6 +422,11 @@ def main():
                 continue
             n = len(lasts)
             recent = " ".join(f"{r['last']}({r['ratio']})" for r in rows[-5:])
+            # 空列表跳过该指标（2026-08-16 修）：纯 ws 采样写出的 log ratio/vr 列全空（已实测
+            # 19099 行全空 ratio），原实现 sum/len 直接 ZeroDivisionError、被外层 except 吞掉后
+            # 该块对剩余标的统计一并丢失。
+            ratio_avg = f"{sum(ratios)/len(ratios):.0f}" if ratios else "N/A（ws log 无此列）"
+            vr_avg = f"{sum(vrs)/len(vrs):.1f}" if vrs else "N/A（ws log 无此列）"
             # 连续性指标（2026-08-04 立 C7）：距首次采样分钟数，与点数并列让 AI 和用户一眼看出降频
             # （密采样正常 = 点数多且距首采样合理；降频 = 点数少-距首采样久，明显不匹配）。
             mins_str = ""
@@ -416,7 +441,7 @@ def main():
             print(
                 f"  {sym}: 点数={n}{mins_str} 开={lasts[0]:.2f} 末={lasts[-1]:.2f} "
                 f"high={max(lasts):.2f} low={min(lasts):.2f} "
-                f"买卖比均={sum(ratios)/len(ratios):.0f} 量比均={sum(vrs)/len(vrs):.1f} "
+                f"买卖比均={ratio_avg} 量比均={vr_avg} "
                 f"| 近5点(价 买卖比): {recent}",
                 flush=True,
             )

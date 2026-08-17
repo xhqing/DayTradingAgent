@@ -90,10 +90,28 @@ print(f"📈 美股：{us_status()}")
 # ---------- 时间断层检测（核心）----------
 # 上次活动时间 = 今日 monitor_log 最后采样时间 与 ring-log 最后响铃时间 的最近者。
 # 断层（断网/暂停/故障）期间既不采样也不响铃，这两个时间戳会停在断层前，距 now 的间隔就能暴露断层。
+def _log_date_tag(path):
+    """从 monitor_log 文件名解析市场标签（HK_/US_ 前缀在 symbol 段），用于按市场对齐日期口径。"""
+    base = os.path.basename(path)
+    if "_US_" in base:
+        return "US"
+    return "HK"
+
+
 def last_monitor_time():
-    """今日所有 monitor_log_*.csv 里最晚的一条采样时间。"""
-    date_str = now.strftime("%Y%m%d")
-    logs = glob.glob(os.path.join(TMP_DIR, f"monitor_log_*_{date_str}_{MODE}.csv"))
+    """今日所有 monitor_log_*.csv 里最晚的一条采样时间。
+
+    2026-08-16 修复：日期口径按市场对齐——美股 log 按美东交易日命名（北京 −12h 夏令时；
+    实锤：08-11 会话跨午夜后仍写 20260811 文件、末行 01:56）。原实现用北京日期 glob，
+    北京 00:00-04:00（美股后半场）glob 不到任何美股 log → 输出「今日无采样记录」假安心，
+    恰在最需要断层检测的时段失明。现美股按（北京 −12h）取美东交易日日期 glob。"""
+    hk_date = now.strftime("%Y%m%d")
+    us_date = (now - datetime.timedelta(hours=12)).strftime("%Y%m%d")
+    logs = []
+    for lg in glob.glob(os.path.join(TMP_DIR, f"monitor_log_HK_*_{hk_date}_{MODE}.csv")):
+        logs.append(lg)
+    for lg in glob.glob(os.path.join(TMP_DIR, f"monitor_log_US_*_{us_date}_{MODE}.csv")):
+        logs.append(lg)
     best = None
     for lg in logs:
         try:
@@ -101,7 +119,14 @@ def last_monitor_time():
                 rows = list(csv.reader(f))
             if len(rows) > 1:
                 t = rows[-1][0]  # "HH:MM:SS"
-                dt = datetime.datetime.strptime(f"{now.strftime('%Y-%m-%d')} {t}", "%Y-%m-%d %H:%M:%S")
+                # 美股 log 跨午夜：行内时分若「大于」当前时分，说明末行是昨天/今天凌晨写的
+                # （美东交易日内、北京已跨日），按北京今天拼会把它推到未来 → 判为跨午夜、
+                # 把日期回退一天。与 monitor_segment 哨兵的跨午夜推断同口径。
+                t_time = datetime.datetime.strptime(t, "%H:%M:%S").time()
+                row_date = now.date()
+                if t_time > now.time():
+                    row_date = now.date() - datetime.timedelta(days=1)
+                dt = datetime.datetime.combine(row_date, t_time)
                 if best is None or dt > best:
                     best = dt
         except Exception:
@@ -110,7 +135,12 @@ def last_monitor_time():
 
 
 def last_ring_time():
-    """ring-log.csv 最后一条响铃时间（含日期；仅 signal 模式读——auto 不响铃，读 signal 会话的 ring-log 会把别会话响铃误当本会话活动时间）。"""
+    """ring-log.csv 最后一条响铃时间（含日期；仅 signal 模式读——auto 不响铃，读 signal 会话的
+    ring-log 会把别会话响铃误当本会话活动时间）。
+
+    2026-08-16 修复：末行日期校验——原实现取物理末行不校验日期，周一开盘会把周五最后
+    响铃当「上次活动」必报假断层（狼来了）。现末行日期非今日则返回 None（非当日响铃
+    不作为断层判据；ring-log 含日期字段、直接比对）。"""
     if MODE != "signal":
         return None
     ring = os.path.join(SIGNALS_DIR, "ring-log.csv")
@@ -121,7 +151,10 @@ def last_ring_time():
             rows = [r for r in csv.reader(f) if r and r[0] and not r[0].startswith("timestamp")]
         if not rows:
             return None
-        return datetime.datetime.strptime(rows[-1][0].strip(), "%Y-%m-%d %H:%M:%S")
+        last = datetime.datetime.strptime(rows[-1][0].strip(), "%Y-%m-%d %H:%M:%S")
+        if last.date() != now.date():
+            return None   # 非当日响铃：不当断层判据（周一开盘不拿周五响铃报假断层）
+        return last
     except Exception:
         return None
 

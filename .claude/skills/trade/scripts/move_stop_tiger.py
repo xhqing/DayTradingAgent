@@ -33,10 +33,14 @@ import trade_utils_tiger as U
 
 
 def _is_stop_order(o):
-    """订单是否为止损单（STP/STOP 类型）。"""
+    """止损单判定（STP/STOP/TRAIL/LOSS 附加腿，2026-08-16 对齐美股版口径——原港股版
+    只认 STP/STOP，App 手动挂的 TRAIL 单查活动止损时看不见）。"""
     otype = getattr(o, "order_type", None)
     otype_val = otype.value if hasattr(otype, "value") else str(otype)
-    return "STP" in str(otype_val).upper() or "STOP" in str(otype_val).upper()
+    upper = str(otype_val).upper()
+    legs = getattr(o, "order_legs", None) or []
+    return ("STP" in upper or "STOP" in upper or "TRAIL" in upper
+            or any(str(getattr(leg, "leg_type", "")).upper() == "LOSS" for leg in legs))
 
 
 def _status_str(o):
@@ -174,19 +178,37 @@ def main():
     try:
         tc.modify_order(stp, aux_price=trig)
     except Exception as e:
-        # modify 抛异常 → fallback「先下新 STP + 撤旧」（保证仓位有止损保护）
+        # modify 抛异常 → fallback「先下新 STP + 撤旧」（保证仓位有止损保护）。
+        # 分步报告（2026-08-16 修）：原实现「新单提交成功、撤旧失败」时整体报 ok:false
+        # 「fallback 也失败」——实际新止损已活着，AI 误信「无止损」再补挂会多重止损。
+        # 现按两步各自状态如实报告：新单成 + 旧撤败 = ok:true + warning 提示撤旧；
+        # 新单提交超时（模糊失败，2026-08-16）也不盲目再下，如实报「可能已提交」。
         result_base["modify_failed_fallback"] = f"modify 抛异常 {e}，回退到「先下新 STP + 撤旧」"
+        new_id = None
+        new_err = None
         try:
             new_id = U.submit_stop_order_tiger(config, symbol, stop_side, quantity, trig)
-            U.cancel_order_tiger(config, stp_id)
-            result_base.update({"ok": True, "stop_order_id": new_id, "trigger_price": trig,
-                                "stop_method": "fallback：先下新 STP + 撤旧（modify 失败）"})
-            print(json.dumps(result_base, ensure_ascii=False))
-            sys.exit(0)
         except Exception as e2:
-            result_base.update({"ok": False, "error": f"modify 失败且 fallback 也失败: {e2}"})
+            new_err = e2
+        if new_id is None:
+            result_base.update({"ok": False, "error": (
+                f"modify 失败，且 fallback 新 STP 提交也失败（旧止损单仍在场、触发价未变"
+                f"{old_aux}）: {new_err}——注意：若失败原因是提交超时（模糊失败），新 STP 可能"
+                f"已在券商侧受理，补挂前须先查当日订单确认，否则会多重止损")},
+                ensure_ascii=False)
             print(json.dumps(result_base, ensure_ascii=False))
             sys.exit(1)
+        # 新单已提交成功 → 仓位已有新止损保护，ok:true；撤旧失败只 warning
+        cancel_warn = None
+        try:
+            U.cancel_order_tiger(config, stp_id)
+        except Exception as e3:
+            cancel_warn = f"撤旧止损单 {stp_id} 失败（需手动撤，防止旧触发价 {old_aux} 的止损仍生效）: {e3}"
+        result_base.update({"ok": True, "stop_order_id": new_id, "trigger_price": trig,
+                            "stop_method": "fallback：先下新 STP + 撤旧（modify 失败）",
+                            **({"fallback_cancel_warning": cancel_warn} if cancel_warn else {})})
+        print(json.dumps(result_base, ensure_ascii=False))
+        sys.exit(0)
 
     # 验证 modify（aux_price 是否真的改到 trig）
     time.sleep(1.5)

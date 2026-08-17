@@ -55,13 +55,18 @@ HKD 单笔预算 B ÷ 当日真实汇率（`exchange-rate` 命令查，勿估）
 
 `loss_limit_scope` 默认 `per_trade`（每笔独立，无日累计上限，但 AI 自行在连亏后控制开仓频率）。
 
-## 权益更新（从账户 API 取真实总资产，禁用占位/累加值）
+## 权益更新（从账户 API 取真实总资产，禁用占位/累加值——**auto 模式口径；signal 模式见下方分叉**）
 
-**equity 必须从实际交易账户 API 取真实总资产，禁止用 config 占位值或 equity-log 手动累加值**（2026-07-31 用户立）：
+**按执行模式分叉（2026-08-16 补声明，消除与 signal-mode.md 的口径矛盾）**：
+
+- **auto 模式：equity 必须从实际交易账户 API 取真实总资产**，禁止用 config 占位值或 equity-log 手动累加值（2026-07-31 用户立）。**signal 模式：equity 走 `signals/equity-log.csv` 末行累加值**——signal 不连账户下单是模式定义（见 `signal-mode.md`「signal 模式权益更新」），equity-log 累加是 signal 模式的**正当口径**、不是违规；无记录时回退 `config.risk.initial_equity`。
+- **signal 模式的只读查询例外（2026-08-12 立）**：signal 模式禁止的是**自动下单**等写操作，只读查询（查费率用的当月订单数、查账户资产看一眼）是允许的——signal 模式下为算阶梯平台费而查账户订单数不算「连账户」违规；但 equity 取值仍走 equity-log（只读查询是费率精算需要，不改变 equity 口径）。
+
+**auto 模式的账户选择**：
 
 - **默认账户**：用户未指定账户时，从默认账户取——港股用老虎开放平台模拟账户（`load_equity_tiger` HKD 口径 `get_prime_assets`）、美股用老虎开放平台模拟账户（`load_equity_us` 直取 USD 净值）。
 - **指定账户**：用户明确指定账户时，从指定账户取。
-- **`config.risk.initial_equity`（100000 HKD）仅开发期占位、不是真实资产**；`signals/equity-log.csv` 是早期信号模式手动累加值、亦非真实账户资产——两者都不得当 equity 真值用。preflight 与算仓位前一律**现查账户 API**取最新 net_assets 作 equity。
+- **`config.risk.initial_equity`（100000 HKD）仅开发期占位、不是真实资产**——auto 模式下不得当 equity 真值用（signal 模式无记录时的回退除外）。preflight 与算仓位前一律**现查账户 API**取最新 net_assets 作 equity。
 - **币种**：账户总资产如实返回（老虎美股账户 USD 计价），按账户返回币种用，换算用当日真实汇率（见上「美股换算」）。
 
 按实际权益动态算单笔预算 B = `risk_fraction` × equity（权益缩水→B 缩、权益增长→B 放大）。

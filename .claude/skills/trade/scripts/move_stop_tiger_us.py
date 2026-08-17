@@ -168,19 +168,34 @@ def main():
     try:
         tc.modify_order(stp, aux_price=trig)
     except Exception as e:
-        # modify 抛异常 → fallback「先下新 STP + 撤旧」（保证仓位有止损保护）
+        # modify 抛异常 → fallback「先下新 STP + 撤旧」。分步报告（2026-08-16 修，同港股版）：
+        # 新单提交成功 + 撤旧失败 = ok:true + warning（原实现整体报 ok:false、AI 误信无止损
+        # 再补挂 → 多重止损）；新单提交超时（模糊失败）如实报「可能已提交、先查订单再补挂」。
         result_base["modify_failed_fallback"] = f"modify 抛异常 {e}，回退到「先下新 STP + 撤旧」"
+        new_id = None
+        new_err = None
         try:
             new_id = U.submit_stop_order_us(config, symbol, stop_side, quantity, trig)
-            U.cancel_order_us(config, stp_id)
-            result_base.update({"ok": True, "stop_order_id": new_id, "trigger_price": trig,
-                                "stop_method": "fallback：先下新 STP + 撤旧（modify 失败）"})
-            print(json.dumps(result_base, ensure_ascii=False))
-            sys.exit(0)
         except Exception as e2:
-            result_base.update({"ok": False, "error": f"modify 失败且 fallback 也失败: {e2}"})
+            new_err = e2
+        if new_id is None:
+            result_base.update({"ok": False, "error": (
+                f"modify 失败，且 fallback 新 STP 提交也失败（旧止损单仍在场、触发价未变"
+                f"{old_aux}）: {new_err}——注意：若失败原因是提交超时（模糊失败），新 STP 可能"
+                f"已在券商侧受理，补挂前须先查当日订单确认，否则会多重止损")},
+                ensure_ascii=False)
             print(json.dumps(result_base, ensure_ascii=False))
             sys.exit(1)
+        cancel_warn = None
+        try:
+            U.cancel_order_us(config, stp_id)
+        except Exception as e3:
+            cancel_warn = f"撤旧止损单 {stp_id} 失败（需手动撤，防止旧触发价 {old_aux} 的止损仍生效）: {e3}"
+        result_base.update({"ok": True, "stop_order_id": new_id, "trigger_price": trig,
+                            "stop_method": "fallback：先下新 STP + 撤旧（modify 失败）",
+                            **({"fallback_cancel_warning": cancel_warn} if cancel_warn else {})})
+        print(json.dumps(result_base, ensure_ascii=False))
+        sys.exit(0)
 
     # 验证 modify（aux_price 是否真的改到 trig）
     time.sleep(1.5)
