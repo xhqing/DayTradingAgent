@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+### 变更（平台费口径全面改固定模式 + 美股费用结构按官网核改：成本计算统一，2026-08-17）
+
+- **为什么改**：2026-08-12 立的阶梯平台费口径与账户实际计费套餐不符——所有成本计算（前瞻净赔率 / 复盘净盈亏 / EV / 贝叶斯）的平台费改用**固定模式**（用户 2026-08-17 19:11 立，橙灯待办）；且旧美股费率「佣金 0.029% 最低 15 按额计」是把港股结构硬套美股的简化——老虎美股实际**按股计**（官网 https://www.itigerup.com/hans/help/detail/74820992 2026-08-17 实查核实：佣金 0.0039 USD/股、平台费固定式 0.004 USD/股 每笔最低 1 USD、两者上限均为总交易额 × 0.5%）。固定模式另一收益：费率与订单数解耦，**不再需要查当月累计订单数**——signal 模式「为算阶梯平台费查当月订单数的只读查询例外」随之取消，费率计算不再需要任何账户查询。
+- **改了什么**：
+  - [`fee_schedule.py`](.claude/skills/trade/scripts/fee_schedule.py) 重写：港美分流——港股按额 + 按笔（佣金 max(15, ×0.029%) + 印花税个股 0.1%/ETF 免 + 征费 + 固定平台费 15 HKD/笔）、美股按股（佣金 0.0039/股 cap 0.5%×额 + 平台费 0.004/股 最低 1/笔 cap 0.5%×额 + 代收近似 0.00396/股）；阶梯表降为备查（`PLATFORM_TIERED_HK`，不再被调用）；`fee_per_side` 新增 `shares` 参数（美股必传）、旧 `order_index_in_month`/`platform_mode` 参数保留签名兼容但被忽略。港股大单口径收敛值从 ≈14.17/4.17 bps 变为 ≈14.32/4.32 bps（含固定平台费）。
+  - [`trade_utils_tiger.py`](.claude/skills/trade/scripts/trade_utils_tiger.py)：`build_fee_ctx` 退化为纯属性打包 {shares, sec_type, market}（不再查账户订单数）；`get_month_order_count_tiger` 移出费率链路、留诊断用途（docstring 标注已废弃）；`_net_odds` 调 `FS.fee_per_side` 显式传 shares。
+  - [`review.py`](.claude/skills/trade/scripts/review.py) / [`bayes_evolution.py`](.claude/skills/trade/scripts/bayes_evolution.py)：删「(自然月, 市场)」订单序号计数器与月分档逻辑，fee 调用统一传 shares。
+  - 文档六处同步：[`risk-management.md`](.claude/skills/trade/references/risk-management.md)「费率与成本」整节重写（港美分流结构 + 固定模式 + signal 只读查询例外简化）；[`SKILL.md`](.claude/skills/trade/SKILL.md) 6 要素第 4 条；[`trading-strategy.md`](.claude/skills/trade/references/trading-strategy.md) 赔率三阶段费率表述；[`review-and-evaluation.md`](.claude/skills/trade/references/review-and-evaluation.md) 净盈亏定义公式；[`auto-mode.md`](.claude/skills/trade/references/auto-mode.md) / [`signal-mode.md`](.claude/skills/trade/references/signal-mode.md) 平仓必填节。
+- **实现中发现并修正一个反向 max() bug**：美股平台费 cap（总交易额 × 0.5%）官网语义是**上限**（低价股场景封顶），初版实现写成 `max(按股值, 最低 1, cap)` 把 cap 当成了下限——MU 106 股 @865 的大单被算出 458 USD 平台费（正确值 1 USD，按股值 0.424 触发每笔最低 1）。实算对照发现后修正为 `min(max(按股值, 最低 1), cap)`，cap 只在股价 < 0.8 USD 时触发的正确语义。
+- **验证**：七脚本 py_compile 通过；fee_schedule 自检（港股大单 stock 14.32 bps / etf 4.32 bps；美股 MU 106 股 @865 单边 1.83 USD；低价股 1000 股 @0.5 cap 触发 8.96）；review.py 实跑港股 42 笔（EV +0.47）与港美合并 61 笔（EV +0.24，美股 20 行按股计费正常）；bayes_evolution 出图 7 张无报错。
+- **口径影响（如实说明）**：历史统计数字会随费率口径变化——港股 42 笔 EV 由阶梯口径的值略变（固定 15/笔 vs 阶梯 30/15/10 混合，费差不大）；美股费用大幅下降（旧口径 MU 单笔双边佣金 ≥30 USD，新口径 ≈2.5 USD + 平台费 2 USD），合并 61 笔 EV 从旧实现的 −0.07 修正为 +0.24（旧美股按额佣金结构高估成本）。历史复盘报告中的 EV 数字是当时口径的结果，不回改。
+- **⚠️ 回归风险提醒（依「CHANGELOG 记录纪律」溯源）**：① 与 2026-08-12「真实费率改造」条目对照——本次保留其「费率统一走 fee_schedule 单一来源」架构，只改费率表与结构，三处共享（复盘 / 前瞻 / bayes）不分叉的设计不动；② `get_month_order_count_tiger` 未删（2026-08-12 立的接口），仅移出费率链路——若日后切回阶梯套餐，把 `build_fee_ctx` 的订单数查询恢复即可；③ `fee_per_side` 旧位置参数 `order_index_in_month` 若有外部脚本按位置传第四参，现在会被当 `shares` 误读——已 grep 确认仓库内无此类调用（review / bayes / trade_utils 均已改为关键字传参），但仓外个人脚本若有直调需自查。
+
 ### 修复（老虎 WebSocket 白名单下 access forbidden：WS 链路补挂 socks 代理，2026-08-17）
 
 - **为什么改**：IP 白名单当日 13:05 上线后，`ws_segment.py`（老虎 PushClient 行情推送）从 13:28 起全部连不上——`code=4 access forbidden`。排查实锤根因：**PushClient 的 WebSocket 走 SDK transport 层的 `socket.create_connection` 裸 TCP 直连，从不经过 `apply_proxy` 换掉的 `web_utils.http_pool`（那只覆盖 REST）**——白名单上线前直连放行（无 IP 限制）、上线后直连出口（家宽 IP 120.239.54.80，非白名单成员）被网关拒。WS 从未走过代理，白名单把这个盲区暴露。三层对照实证：REST 直连被拒（报文带 `request ip ... is not in ip whitelist`）、REST 走代理通（出口 23.106.131.103 = 白名单 JMS 节点）、WS 直连被拒（同 REST 直连根因）。**实盘下单不受影响**（下单走 REST、一直在代理内；实测实盘走代理查资产 net_liquidation 14,753.1 USD / buying_power 59,012.38 USD 正常）。

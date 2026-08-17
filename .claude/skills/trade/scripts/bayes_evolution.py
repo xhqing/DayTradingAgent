@@ -12,7 +12,7 @@ from statistics import mean, stdev
 from scipy import stats as ss
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import fee_schedule as FS   # 真实费率（市场+类型+成交额+阶梯平台费），2026-08-12 立
+import fee_schedule as FS   # 真实费率（市场+类型+成交额/股数+固定平台费），2026-08-12 立、08-17 改固定模式
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # 自身目录（scripts/），与 review.py 同目录
 from review import p_g_pos, p_sum_y_pos, p_g_target, p_sum_y_target
 
@@ -36,8 +36,9 @@ def ppos_emp(xbar, n, sigma):
     mu = pd * xbar / (pp + pd)
     return ss.norm.cdf(mu * math.sqrt(pp + pd))
 
-# 单边费率（2026-08-12 改真实费率，复用 fee_schedule）：按市场 + 标的类型 + 成交额精确算，
-# 含佣金(max(15,×0.029%)) + 印花税(港股个股0.1%/ETF免) + 各征费 + 阶梯平台费。
+# 单边费率（2026-08-12 改真实费率，复用 fee_schedule；2026-08-17 平台费改固定模式 + 美股按股）：
+# 港股按额计（佣金 max(15,×0.029%) + 印花税(个股0.1%/ETF免) + 征费 + 平台费 15/笔）、
+# 美股按股计（佣金 0.0039/股 + 平台费 0.004/股 + 代收近似 0.00396/股）。
 def _market_of(symbol):
     s = (symbol or '').upper()
     if s.startswith('HK.'): return 'HK'
@@ -87,7 +88,8 @@ DATE, SUFFIX = _resolve_date(sys.argv[1:])
 CSV_PATH = f"reviews/{DATE}-trades{SUFFIX}.csv"
 
 # 读累积 trades CSV（单一数据源，与 review.py 同源；每次复盘更新此 CSV）
-# R = 扣双边手续费后的净 R（与 review.py net 口径一致）；2026-08-12 起用真实费率（fee_schedule）
+# R = 扣双边手续费后的净 R（与 review.py net 口径一致）；2026-08-12 起用真实费率（fee_schedule）、
+# 2026-08-17 平台费改固定模式（不再按自然月累计订单序号分档）、美股按股计费
 rows_raw = []
 type_missing_any = False
 # direction 解析复用 review._direction 口径（2026-08-16 修）：原只认 ('long','做多')、
@@ -108,19 +110,13 @@ with open(CSV_PATH) as fh:
             'sec_type': sec_type,
         })
 rows_raw.sort(key=lambda x: (x['date'], x['symbol']))
-# 按「(自然月, 市场)」累计订单序号算阶梯平台费——港美平台费完全独立、各自计档（2026-08-12 用户纠正）。
-# 开仓、平仓各 1 笔；日内交易开平同日同月。
-month_counter = {}
+# 平台费 2026-08-17 改固定模式：费项与订单数无关，不再按「(自然月, 市场)」累计订单序号分档。
 trades = []
 for x in rows_raw:
-    ym = x['date'][:7]
     market = _market_of(x['symbol'])
-    key = (ym, market)
-    month_counter[key] = month_counter.get(key, 0) + 1; idx_open = month_counter[key]
-    month_counter[key] = month_counter.get(key, 0) + 1; idx_close = month_counter[key]
     P_gross = (x['exit'] - x['entry']) * x['shares'] * x['sign']              # 毛盈亏
-    fee_open = FS.fee_per_side(market, x['sec_type'], x['entry'] * x['shares'], idx_open)
-    fee_close = FS.fee_per_side(market, x['sec_type'], x['exit'] * x['shares'], idx_close)
+    fee_open = FS.fee_per_side(market, x['sec_type'], x['entry'] * x['shares'], shares=x['shares'])
+    fee_close = FS.fee_per_side(market, x['sec_type'], x['exit'] * x['shares'], shares=x['shares'])
     fee = fee_open + fee_close                                                # 开 + 平 两边手续费
     R = (P_gross - fee) / x['M']                                              # 净 R（分母 max_loss 保持毛值）
     trades.append([x['date'], x['symbol'], R])

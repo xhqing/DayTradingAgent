@@ -19,7 +19,7 @@ denied US market），get_quote_us 改富途 OpenD 单源（美股行情只有�
 - **lot_size = 1**（美股 1 股/手，从 get_contract.lot_size 取、fallback 1）。
 - **tick = 0.01**（美股统一最小报价单位、无价位表）。
 - **币种 USD**：账户 currency=USD，equity 取 net_liquidation 直用（无需港股的 HKD 保守口径换算）。
-- **费率**：真实费率（2026-08-12 改，复用 fee_schedule / trade_utils_tiger 的 _market_of + _sec_type_of + build_fee_ctx）；美股佣金 0.029% 最低 15、无印花税，大单 ≈4.17 bps/边（个股 ETF 同结构）。
+- **费率**：真实费率（2026-08-12 改，复用 fee_schedule / trade_utils_tiger 的 _market_of + _sec_type_of + build_fee_ctx；2026-08-17 美股改**按股结构**）：佣金 0.0039 USD/股（cap 0.5%×额）+ 平台费 0.004 USD/股（每笔最低 1、cap 0.5%×额）+ 代收近似 0.00396 USD/股，≈0.0087 USD/股线性、无印花税。
 - 交易时段：美东 09:30-16:00（夏令时北京 21:30-次日 04:00 / 冬令时 22:30-次日 05:00）。
 """
 
@@ -415,7 +415,8 @@ def cancel_all_stop_orders_us(config, symbol, exclude_order_id=None):
 
 # ---------------------------------------------------------------------------
 # 价格范围 / 仓位计算 / 模式（复用 trade_utils_tiger 纯函数；真实费率走 fee_ctx /
-# build_fee_ctx，旧 _fee_per_side 已随 2026-08-12 真实费率改造删除——此处别名同步删，
+# build_fee_ctx——2026-08-17 起固定平台费 + 美股按股结构，fee_ctx = {shares, sec_type,
+# market}；旧 _fee_per_side 已随 2026-08-12 真实费率改造删除——此处别名同步删，
 # 修复 import 即崩的存量破损）
 # ---------------------------------------------------------------------------
 
