@@ -206,7 +206,11 @@ def submit_order_with_stop_us(config, symbol, side, quantity, submitted_price,
     2026-08-07 主单改市价单（与港股版同日改造对齐）：高波动标的（MU 等）限价单 + 8 秒超时撤单
     极易错过成交（22:08 实测：MU 做空 LMT 挂 bid 859.27、现价快速下探 8 秒内未成交被撤，开仓失败），
     市价单立即成交、附加止损腿同一次提交无裸奔空窗。submitted_price 保留参数作参考（不再作限价）。
-    附加止损腿方向与触发语义由券商按主单方向自动定（与港股一致）。"""
+    附加止损腿方向与触发语义由券商按主单方向自动定（与港股一致）。
+
+    ⚠️ 超时类模糊失败不自动重试（2026-08-16 修，同港股版）：请求已达券商但响应超时时，
+    重试=真实重复下单路径（MKT 即时成交、第二笔不被 cross-trading 挡住）。此类异常直接
+    抛出并注明「须先查当日订单确认」。"""
     from tigeropen.trade.domain.order import OrderLeg
     last_err = None
     for attempt in range(retries):
@@ -217,17 +221,24 @@ def submit_order_with_stop_us(config, symbol, side, quantity, submitted_price,
             return _make_order_us(tc, config, symbol, action, "MKT", quantity, order_legs=legs)
         except Exception as e:
             last_err = e
+            if T._is_ambiguous_timeout_error(e):
+                raise RuntimeError(
+                    f"美股开仓（MKT+附加止损）提交超时（模糊失败，订单可能已在券商侧受理）"
+                    f" {symbol} {side} qty={quantity} price={submitted_price} stop={stop_loss_price}: {e}"
+                    f"——禁止盲目重试，须先查当日订单确认是否已成交，未确认前不得再下单") from e
             if attempt < retries - 1:
                 time.sleep(0.5 * (attempt + 1))
                 continue
     raise RuntimeError(
-        f"美股开仓（LMT+附加止损）提交失败 {symbol} {side} qty={quantity} "
+        f"美股开仓（MKT+附加止损）提交失败 {symbol} {side} qty={quantity} "
         f"price={submitted_price} stop={stop_loss_price}: {last_err}"
     )
 
 
 def submit_market_order_us(config, symbol, side, quantity, retries=3):
-    """美股市价单 MKT（平仓 fallback 用）。返回 order_id。"""
+    """美股市价单 MKT（平仓 fallback 用）。返回 order_id。
+
+    超时类模糊失败不自动重试（2026-08-16，同港股版）。"""
     last_err = None
     for attempt in range(retries):
         try:
@@ -236,6 +247,10 @@ def submit_market_order_us(config, symbol, side, quantity, retries=3):
             return _make_order_us(tc, config, symbol, action, "MKT", quantity)
         except Exception as e:
             last_err = e
+            if T._is_ambiguous_timeout_error(e):
+                raise RuntimeError(
+                    f"美股 MKT 提交超时（模糊失败，订单可能已在券商侧受理）"
+                    f" {symbol} {side} {quantity}: {e}——禁止盲目重试，须先查当日订单确认") from e
             if attempt < retries - 1:
                 time.sleep(0.5 * (attempt + 1))
                 continue
@@ -243,7 +258,9 @@ def submit_market_order_us(config, symbol, side, quantity, retries=3):
 
 
 def submit_stop_order_us(config, symbol, side, quantity, trigger_price, retries=3):
-    """美股独立止损单 STP（移损 fallback 用；aux_price=触发价）。返回 order_id。"""
+    """美股独立止损单 STP（移损 fallback 用；aux_price=触发价）。返回 order_id。
+
+    超时类模糊失败不自动重试（2026-08-16，同港股版——重试可能产生重复止损单）。"""
     last_err = None
     for attempt in range(retries):
         try:
@@ -253,6 +270,11 @@ def submit_stop_order_us(config, symbol, side, quantity, trigger_price, retries=
                                   aux_price=trigger_price)
         except Exception as e:
             last_err = e
+            if T._is_ambiguous_timeout_error(e):
+                raise RuntimeError(
+                    f"美股独立止损 STP 提交超时（模糊失败，订单可能已在券商侧受理）"
+                    f" {symbol} {side} qty={quantity} trigger={trigger_price}: {e}"
+                    f"——禁止盲目重试，须先查当日订单确认") from e
             if attempt < retries - 1:
                 time.sleep(0.5 * (attempt + 1))
                 continue
@@ -265,10 +287,44 @@ def submit_stop_order_us(config, symbol, side, quantity, trigger_price, retries=
 # 成交回查 / 持仓 / 撤单（复用通用 + 美股 symbol 过滤）
 # ---------------------------------------------------------------------------
 
-# 成交回查（不分市场，复用港股）
+# 成交回查（不分市场，复用港股——2026-08-16 起含部分成交严格匹配 / 轮询异常捕获）
 check_order_filled_us = T.check_order_filled_tiger
+# 已成交数量查询（部分成交复查，2026-08-16 立；不分市场复用）
+get_order_filled_qty_us = T.get_order_filled_qty_tiger
 # 撤单（不分市场，复用）
 cancel_order_us = T.cancel_order_tiger
+
+
+def has_active_open_order_us(config, symbol, side=None):
+    """重复下单防抖检查（2026-08-16 立，同港股版）：该美股标的当日已有活动开仓方向
+    委托单（非止损单）时返回 True。symbol 过滤用美股裸代码。返回 (has, order_ids)。"""
+    tc = new_trade_client(config)
+    target = to_tiger_symbol_us(symbol)
+    active_ids = []
+    for o in (tc.get_orders() or []):
+        contract = getattr(o, "contract", None)
+        order_sym = getattr(contract, "symbol", None) if contract else None
+        if order_sym is None or str(order_sym) != target:
+            continue
+        raw_status = getattr(o, "status", "")
+        status = raw_status.value if hasattr(raw_status, "value") else str(raw_status)
+        if any(s in status for s in ("Filled", "Cancelled", "Inactive", "Invalid",
+                                     "Expired", "PendingCancel")):
+            continue
+        raw_otype = getattr(o, "order_type", "")
+        otype = (raw_otype.value if hasattr(raw_otype, "value") else str(raw_otype) or "")
+        legs = getattr(o, "order_legs", None) or []
+        is_stop = str(otype).upper() in ("STP", "STOP", "TRAIL") or any(
+            str(getattr(leg, "leg_type", "")).upper() == "LOSS" for leg in legs)
+        if is_stop:
+            continue   # 止损单不算开仓委托
+        action = str(getattr(o, "action", "")).upper()
+        if side is not None:
+            want = "BUY" if side == "Buy" else "SELL"
+            if action != want:
+                continue
+        active_ids.append(getattr(o, "id", None) or getattr(o, "order_id", None))
+    return (len(active_ids) > 0), active_ids
 
 
 def get_open_position_us(config, symbol=None):
@@ -358,10 +414,11 @@ def cancel_all_stop_orders_us(config, symbol, exclude_order_id=None):
 
 
 # ---------------------------------------------------------------------------
-# 价格范围 / 仓位计算 / 模式（复用 trade_utils_tiger 纯函数；_fee_per_side 已支持 US.）
+# 价格范围 / 仓位计算 / 模式（复用 trade_utils_tiger 纯函数；真实费率走 fee_ctx /
+# build_fee_ctx，旧 _fee_per_side 已随 2026-08-12 真实费率改造删除——此处别名同步删，
+# 修复 import 即崩的存量破损）
 # ---------------------------------------------------------------------------
 
-_fee_per_side = T._fee_per_side              # 按 symbol 前缀判（US. → 3bps）
 _net_odds = T._net_odds
 calc_entry_range = T.calc_entry_range
 check_price_in_range = T.check_price_in_range

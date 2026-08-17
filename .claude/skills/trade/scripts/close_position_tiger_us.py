@@ -105,6 +105,30 @@ def main():
             direction = pos["side"]
         if quantity is None:
             quantity = pos["quantity"]
+    else:
+        # 显式传参路径复核持仓（2026-08-16 立，同港股版：原不读持仓不校验方向——
+        # direction=short 而无空仓时 close_side=Buy 的 MO 凭空开多仓）。持仓不存在 /
+        # 方向不匹配 / 超量均拒绝。
+        pos = U.get_open_position_us(config, symbol)
+        if pos is None:
+            print(json.dumps({"ok": False, "error": f"未找到美股 {symbol} 持仓——显式传参平仓拒绝执行（防止凭空反向开仓）"},
+                             ensure_ascii=False))
+            sys.exit(1)
+        if pos["side"] != direction:
+            print(json.dumps({"ok": False, "error": (
+                f"direction={direction} 与实际持仓方向 {pos['side']} 不符（{symbol} {pos['quantity']} 股）"
+                f"——按错误方向平仓会凭空反向开仓，拒绝执行")},
+                ensure_ascii=False))
+            sys.exit(1)
+        if quantity > pos["quantity"]:
+            print(json.dumps({"ok": False, "error": (
+                f"平仓量 {quantity} 超过持仓量 {pos['quantity']}——超量 MO 会反向开仓，拒绝执行")},
+                ensure_ascii=False))
+            sys.exit(1)
+        if quantity < pos["quantity"]:
+            print(json.dumps({"ok": True, "warning": (
+                f"平仓量 {quantity} < 持仓量 {pos['quantity']}，平仓后将有剩余持仓（非全平）")},
+                ensure_ascii=False))
 
     if direction not in ("long", "short"):
         print(json.dumps({"ok": False, "error": f"direction 非法 '{direction}'"}))
@@ -178,6 +202,9 @@ def main():
                                 "fill_price_source": fill_src,
                                 "method": "modify_stop_trigger（止损单触发 MO 平仓、无撤单 race）",
                                 "main_status": status})
+            # 平仓成交后复查并撤掉全部残留止损单（2026-08-16 立，同港股版：残留兄弟止损单
+            # 日后零持仓触发会反向开仓）
+            _cancel_residual_stops(config, symbol, result_base, exclude=stp_id)
             _attach_process_metrics(result_base, config, symbol, direction, entry_price, stop_dist)
             print(json.dumps(result_base, ensure_ascii=False))
             sys.exit(0)
@@ -209,8 +236,22 @@ def main():
     result_base.update({"ok": True, "order_id": order_id, "fill_price": fill_price,
                         "fill_price_source": fill_src, "method": "market（无活动止损单）",
                         "main_status": status})
+    # 平仓成交后撤残留止损单（2026-08-16 立，同港股版）
+    _cancel_residual_stops(config, symbol, result_base)
     _attach_process_metrics(result_base, config, symbol, direction, entry_price, stop_dist)
     print(json.dumps(result_base, ensure_ascii=False))
+
+
+def _cancel_residual_stops(config, symbol, result_base, exclude=None):
+    """平仓成交后复查并撤掉该美股标的全部残留止损单（2026-08-16 立，同港股版）。
+    撤单失败不阻断输出（warning 提示手动处理）。"""
+    try:
+        n, ids = U.cancel_all_stop_orders_us(config, symbol, exclude_order_id=exclude)
+        if n > 0:
+            result_base["residual_stop_orders_cancelled"] = n
+            result_base["cancelled_order_ids"] = ids
+    except Exception as e:
+        result_base["residual_stop_cancel_warning"] = f"平仓后撤残留止损单失败（需手动检查，防日后反向开仓）: {e}"
 
 
 def _attach_process_metrics(result_base, config, symbol, direction, entry_price, stop_dist):

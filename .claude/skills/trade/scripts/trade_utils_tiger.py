@@ -161,11 +161,64 @@ def apply_proxy(config):
         s = _socket.create_connection((host, port), timeout=2)
         s.close()
         web_utils.http_pool = urllib3.ProxyManager(proxy_url)
-        print(f"✅ 老虎 SDK 代理已启用: {proxy_url}（scope={scope}，账户 {config.account}）",
+        print(f"✅ 老虎 SDK 代理已启用: {proxy_url}（scope={scope}，账户 {mask_account(config.account)}）",
               file=sys.stderr)
+        # WebSocket 链路同步挂代理（2026-08-17 立）：PushClient 走裸 socket.create_connection
+        # （SDK transport 层），不经过上面换掉的 web_utils.http_pool（那只管 REST）——IP 白名单
+        # 上线后 WS 直连出口（家宽 IP）被拒「code=4 access forbidden」（2026-08-17 实录：
+        # 白名单 13:05 上线、13:28 后 ws_segment 全部连不上）。此处把 socket.create_connection
+        # socks 化，让本进程后续建的 WS 连接也走代理出口（白名单内 IP）。
+        apply_socket_proxy(proxy_url)
     except Exception as e:
         print(f"⚠️ 老虎 SDK 代理启用失败（回退直连；境内直连实盘开仓会被 code=1200 拒）: {e}",
               file=sys.stderr)
+
+
+def apply_socket_proxy(proxy_url='http://127.0.0.1:1087'):
+    """把本进程的 socket.create_connection 换成「先经本地 socks5/http 代理建链」的版本——
+    供老虎 PushClient（WebSocket）走代理（2026-08-17 立）。
+
+    为什么单独一个函数：SDK 的 WS 建链在 tigeropen.push.network.transport，用的是
+    socket.create_connection 裸 TCP + TLS wrap，不吃 web_utils.http_pool（REST 专用）；
+    IP 白名单上线后 WS 直连被拒（access forbidden，直连出口非白名单 IP）。monkeypatch
+    全局 socket.create_connection 是让 SDK WS 链路走代理的最小侵入方式（SDK 未暴露
+    WS 代理配置项）。
+
+    代理协议：proxy_url 是 http:// 时 socks 端口取「http 端口 −7」（xpilot 约定
+    http 1087 / socks 1080）；本身是 socks5:// 则直接用。PySocks 不可用或 socks 端口
+    不通时保留直连并 stderr 警告（WS 退回直连 = 白名单下连不上，报警提示、不炸进程）。
+
+    已 patch 过则幂等跳过（重复调用不叠加包装）。
+    """
+    import socket as _socket
+    if getattr(_socket.create_connection, '_tiger_proxy_patched', False):
+        return
+    import socks
+    # 解析 socks 端口
+    host_port = proxy_url.split('//')[-1]
+    phost, pport = host_port.split(':')[0], int(host_port.split(':')[1])
+    socks_port = pport - 7 if proxy_url.startswith('http://') else pport   # xpilot: 1087→1080
+    # 探测 socks 端口在监听
+    try:
+        s = _socket.create_connection((phost, socks_port), timeout=2)
+        s.close()
+    except Exception as e:
+        print(f"⚠️ 老虎 WS 代理启用失败（socks {phost}:{socks_port} 不通，WS 保持直连；"
+              f"IP 白名单下直连会被拒 access forbidden）: {e}", file=sys.stderr)
+        return
+    _orig_create = _socket.create_connection
+
+    def _proxied_create(address, timeout=None, source_address=None):
+        s = socks.socksocket(_socket.AF_INET, _socket.SOCK_STREAM)
+        s.set_proxy(socks.SOCKS5, phost, socks_port)
+        if timeout:
+            s.settimeout(timeout)
+        s.connect(address)
+        return s
+    _proxied_create._tiger_proxy_patched = True
+    _socket.create_connection = _proxied_create
+    print(f"✅ 老虎 WS 链路代理已启用: socks5 {phost}:{socks_port}（socket.create_connection 已 socks 化）",
+          file=sys.stderr)
 
 
 def _sync_is_paper(config):
@@ -211,6 +264,52 @@ def _read_accounts_json_field(section, field):
             except Exception:
                 return None
     return None
+
+
+def mask_account(account):
+    """账户号打码（2026-08-17 立，凭证防泄漏）：输出首 2 位 + **** + 尾 2 位。
+
+    为什么：实盘确认流程要求 AI 向用户展示「将用哪个账户下单」，此前 AI 直接读
+    accounts.json 拿完整实盘号、写进对话上下文——凭证号随上下文进入模型请求，属
+    泄漏面。改为：脚本 / AI 只输出打码号（如 67****91），用户自己知道完整号、足够
+    确认是对是错，完整号不再进入上下文。
+    口径：长度 >4 才打码（首 2 尾 2）；≤4 位直接全打码 ****（过短时首尾两位就能猜出大半）。
+    """
+    s = str(account)
+    if not s:
+        return ''
+    if len(s) <= 4:
+        return '****'
+    return f"{s[:2]}****{s[-2:]}"
+
+
+def print_masked_live_account():
+    """打印实盘账户打码号（供切实盘确认流程用，AI 上下文只见打码口径）。
+
+    输出一行 JSON：{"account_live_masked": "67****91", "has_live": true}——
+    has_live=false 表示 accounts.json 未配置实盘账户。退出码恒 0（打印类子命令，
+    不该因未配置而炸调用方）。用法：python3 trade_utils_tiger.py --masked-live-account
+    """
+    import json
+    live = _read_accounts_json_field('tiger', 'account_live')
+    paper = _read_accounts_json_field('tiger', 'account')
+    print(json.dumps({
+        "account_live_masked": mask_account(live) if live else None,
+        "account_paper_masked": mask_account(paper) if paper else None,
+        "has_live": live is not None,
+    }))
+
+
+if __name__ == '__main__':
+    import argparse
+    _ap = argparse.ArgumentParser(description='账户信息打码查询（凭证不进上下文）')
+    _ap.add_argument('--masked-live-account', action='store_true',
+                     help='打印实盘 / 模拟账户打码号（67****91 形式）')
+    _args = _ap.parse_args()
+    if _args.masked_live_account:
+        print_masked_live_account()
+    else:
+        _ap.print_help()
 
 
 def new_trade_client(config=None):
@@ -471,6 +570,19 @@ def _make_order(tc, config, symbol, action, order_type, quantity,
     return tc.place_order(order)
 
 
+def _is_ambiguous_timeout_error(err):
+    """判定提交异常是否为「超时模糊失败」（请求可能已达券商，2026-08-16 立）。
+
+    盲重试的克制条件：timeout / read timeout / connection reset 等——请求发出去了、
+    响应没回来，订单可能已在券商侧受理。此类异常重试有真实重复下单风险（MKT 主单即时
+    成交，第二笔不会被 cross-trading 挡住），调用方须谨慎（防抖检查后再重试或不重试）。
+    其余异常（参数错误、权限拒绝、网络未建立即失败）通常确定未到达，可安全重试。
+    """
+    msg = str(err).lower()
+    return any(k in msg for k in ("timeout", "timed out", "connection reset",
+                                  "read error", "connection aborted"))
+
+
 def submit_order_with_stop_tiger(config, symbol, side, quantity, submitted_price,
                                  stop_loss_price, order_type="LMT", retries=3):
     """开仓：主单（LMT 限价 / MKT 市价）+ 附加止损腿 OrderLeg('LOSS', stop_loss_price)（一次提交）。
@@ -483,6 +595,11 @@ def submit_order_with_stop_tiger(config, symbol, side, quantity, submitted_price
     附加止损腿的方向与触发语义由券商按主单方向自动定（做多跌触发卖、做空涨触发买）；
     腿 TIF 默认 DAY（日内策略当日有效；跨日场景待实测）。
     返回全局订单 id。
+
+    ⚠️ 重试不再盲重试 3 次（2026-08-16 修复）：超时类模糊失败（请求已达券商、响应超时）
+    重试是真实的重复下单路径——现在此类异常不再自动重试、直接抛出，错误信息注明
+    「订单可能已提交成功、须先查当日订单确认」；确定未到达的异常照旧重试。外层调用方
+    （开仓降档循环）捕获后同样不降档续下（见 open_position_tiger.py 的 ambiguous 处理）。
     """
     from tigeropen.trade.domain.order import OrderLeg
     last_err = None
@@ -497,6 +614,11 @@ def submit_order_with_stop_tiger(config, symbol, side, quantity, submitted_price
                                limit_price=submitted_price, order_legs=legs)
         except Exception as e:
             last_err = e
+            if _is_ambiguous_timeout_error(e):
+                raise RuntimeError(
+                    f"老虎开仓（{order_type}+附加止损）提交超时（模糊失败，订单可能已在券商侧受理）"
+                    f" {symbol} {side} qty={quantity} price={submitted_price} stop={stop_loss_price}: {e}"
+                    f"——禁止盲目重试，须先查当日订单确认是否已成交，未确认前不得再下单") from e
             if attempt < retries - 1:
                 time.sleep(0.5 * (attempt + 1))
                 continue
@@ -507,7 +629,10 @@ def submit_order_with_stop_tiger(config, symbol, side, quantity, submitted_price
 
 
 def submit_market_order_tiger(config, symbol, side, quantity, retries=3):
-    """港股市价单 MKT（平仓用）。side: 'Buy' / 'Sell'。返回全局订单 id。"""
+    """港股市价单 MKT（平仓用）。side: 'Buy' / 'Sell'。返回全局订单 id。
+
+    超时类模糊失败不自动重试（2026-08-16，同 submit_order_with_stop_tiger：订单可能已达
+    券商、重试=真实重复下单路径），错误信息注明须先查订单确认。"""
     last_err = None
     for attempt in range(retries):
         try:
@@ -516,6 +641,10 @@ def submit_market_order_tiger(config, symbol, side, quantity, retries=3):
             return _make_order(tc, config, symbol, action, "MKT", quantity)
         except Exception as e:
             last_err = e
+            if _is_ambiguous_timeout_error(e):
+                raise RuntimeError(
+                    f"老虎平仓 MKT 提交超时（模糊失败，订单可能已在券商侧受理）"
+                    f" {symbol} {side} {quantity}: {e}——禁止盲目重试，须先查当日订单确认") from e
             if attempt < retries - 1:
                 time.sleep(0.5 * (attempt + 1))
                 continue
@@ -528,7 +657,9 @@ def submit_stop_order_tiger(config, symbol, side, quantity, trigger_price, retri
     side 由调用方定（做多止损 Sell / 做空止损 Buy）；触发方向由券商按 trigger_price
     相对现价自动判定（2026-08-01 实测）。触发后市价成交。
     返回全局订单 id。
-    """
+
+    超时类模糊失败不自动重试（2026-08-16，同 submit_order_with_stop_tiger——重试可能
+    产生重复止损单；移损 fallback 调用方已有分步报告，此处直接抛出让调用方如实归因）。"""
     last_err = None
     for attempt in range(retries):
         try:
@@ -538,6 +669,11 @@ def submit_stop_order_tiger(config, symbol, side, quantity, trigger_price, retri
                                aux_price=trigger_price)
         except Exception as e:
             last_err = e
+            if _is_ambiguous_timeout_error(e):
+                raise RuntimeError(
+                    f"老虎独立止损 STP 提交超时（模糊失败，订单可能已在券商侧受理）"
+                    f" {symbol} {side} qty={quantity} trigger={trigger_price}: {e}"
+                    f"——禁止盲目重试，须先查当日订单确认") from e
             if attempt < retries - 1:
                 time.sleep(0.5 * (attempt + 1))
                 continue
@@ -561,6 +697,19 @@ def check_order_filled_tiger(config, order_id, timeout=8, poll_interval=2):
     随后撤单撤已成交的单（持仓实际已建立、附加止损还挂着）。2026-08-03 paper 实测暴露
     （开仓主单实际 FILLED @486.2，脚本却输出「主单未成交、已撤」）。
 
+    ⚠️ 部分成交（PartiallyFilled）不再当全额成交（2026-08-16 修复）：原实现 `"Filled" in
+    status` 对 'PartiallyFilled' 也为 True——大额市价单部分成交时开仓侧把下单量当全成量
+    上报、平仓侧误信已平干净，持仓认知与账户脱节。现严格匹配：仅 status == 'Filled' 视为
+    全额成交；'PartiallyFilled' 继续轮询到超时，超时返回 filled=False + status 原样
+    （'PartiallyFilled'），调用方据此复查实际成交量（Order.filled 字段，见
+    get_order_filled_qty_tiger）。
+
+    ⚠️ 轮询异常不再带崩主流程（2026-08-16 修复）：原实现轮询内 get_orders 网络异常直接抛出、
+    整个脚本 traceback——订单实际已提交在场，AI 拿不到任何输出可能误判未下单而重复下单。
+    现捕获轮询异常：轻微异常（网络抖动）继续等下一轮；超时前持续失败则返回
+    (False, None, 'poll_error:<err>', '')——明确告知「订单已在场但状态查询失败」，
+    调用方不得据此重复下单、应人工查订单。
+
     reason：订单对象 Order.reason 字段（SDK 注释「下单失败时返回失败原因的描述」）。
     2026-08-06 MINIMAX 58,400 被拒时脚本只输出 status、没输出 reason，导致「原因未明」；
     2026-08-11 实测查历史订单确认 reason 可取到具体文案（如 120 股那笔的
@@ -569,31 +718,96 @@ def check_order_filled_tiger(config, order_id, timeout=8, poll_interval=2):
     （'The order cannot be canceled...'），拿不到具体原因时按通用处理。
     """
     tc = new_trade_client(config)
-    try:
-        deadline = time.time() + timeout
-        last_status = ""
-        last_reason = ""
-        while time.time() < deadline:
-            for o in (tc.get_orders() or []):
-                if str(getattr(o, "id", "")) != str(order_id) and \
-                   str(getattr(o, "order_id", "")) != str(order_id):
-                    continue
-                status_obj = getattr(o, "status", "")
-                status = status_obj.value if hasattr(status_obj, "value") else str(status_obj)
-                last_status = status
-                reason = getattr(o, "reason", None) or ""
-                last_reason = reason
-                avg = getattr(o, "avg_fill_price", None)
-                if "Filled" in status:
-                    return True, (float(avg) if avg else None), status, reason
-                if any(s in status for s in ("Cancelled", "Inactive", "Invalid",
-                                             "PendingCancel")):
-                    return False, None, status, reason
-                break  # 已定位订单但未成交，继续等
-            time.sleep(poll_interval)
-        return False, None, last_status or "timeout", last_reason
-    finally:
-        pass
+    deadline = time.time() + timeout
+    last_status = ""
+    last_reason = ""
+    last_err = None
+    while time.time() < deadline:
+        try:
+            orders = tc.get_orders() or []
+        except Exception as e:
+            last_err = e
+            time.sleep(poll_interval)   # 网络抖动等瞬态异常：等下一轮，不崩主流程
+            continue
+        for o in orders:
+            if str(getattr(o, "id", "")) != str(order_id) and \
+               str(getattr(o, "order_id", "")) != str(order_id):
+                continue
+            status_obj = getattr(o, "status", "")
+            status = status_obj.value if hasattr(status_obj, "value") else str(status_obj)
+            last_status = status
+            reason = getattr(o, "reason", None) or ""
+            last_reason = reason
+            avg = getattr(o, "avg_fill_price", None)
+            if status == "Filled":   # 严格匹配；'PartiallyFilled' 不算全额成交（见 docstring）
+                return True, (float(avg) if avg else None), status, reason
+            if any(s in status for s in ("Cancelled", "Inactive", "Invalid",
+                                         "PendingCancel")):
+                return False, None, status, reason
+            break  # 已定位订单但未终结（含 PartiallyFilled），继续等
+        time.sleep(poll_interval)
+    if last_status:
+        return False, None, last_status, last_reason   # 超时；status 可能是 PartiallyFilled（部分成交未全成）
+    return False, None, f"poll_error:{last_err}" if last_err else "timeout", ""
+
+
+def get_order_filled_qty_tiger(config, order_id):
+    """查指定订单的已成交数量（Order.filled 字段，2026-08-16 立）。
+
+    部分成交（PartiallyFilled）场景的复查入口：check_order_filled_tiger 超时返回
+    status='PartiallyFilled' 时，调用方用本函数读实际成交量（filled / quantity），
+    按实际成交量上报、不得把下单量当全成量。查不到订单返回 None。
+    """
+    tc = new_trade_client(config)
+    for o in (tc.get_orders() or []):
+        if str(getattr(o, "id", "")) != str(order_id) and \
+           str(getattr(o, "order_id", "")) != str(order_id):
+            continue
+        try:
+            return int(getattr(o, "filled", 0) or 0)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def has_active_open_order_tiger(config, symbol, side=None):
+    """重复下单防抖检查（2026-08-16 立）：查该标的当日是否已有**开仓方向**的活动委托单。
+
+    背景：提交异常盲重试 + 降档循环叠加时，超时模糊失败（请求已达券商、响应超时）会重复
+    下单——MKT 主单即时成交，第二笔不会被 cross-trading 挡住，真实双倍持仓路径。开仓脚本
+    在降档重试前调用本函数：同标的已有活动 BUY（开多）/ SELL（开空）方向委托单时拒绝继续。
+
+    只查开仓方向（side 给定查该 side；None 则 Buy/Sell 都算）。止损单（STP 类型）不算——
+    它们是持仓保护、不是开仓单。market=None 不过滤市场（港美共用，symbol 已带市场前缀语义，
+    老虎 symbol 天然区分 HK 5 位数字 / US 裸代码）。返回 (has, order_ids)。
+    """
+    tc = new_trade_client(config)
+    target = to_tiger_symbol(symbol)
+    active_ids = []
+    for o in (tc.get_orders() or []):
+        contract = getattr(o, "contract", None)
+        order_sym = getattr(contract, "symbol", None) if contract else None
+        if order_sym is None or str(order_sym) != target:
+            continue
+        raw_status = getattr(o, "status", "")
+        status = raw_status.value if hasattr(raw_status, "value") else str(raw_status)
+        if any(s in status for s in ("Filled", "Cancelled", "Inactive", "Invalid",
+                                     "Expired", "PendingCancel")):
+            continue
+        raw_otype = getattr(o, "order_type", "")
+        otype = (raw_otype.value if hasattr(raw_otype, "value") else str(raw_otype) or "")
+        legs = getattr(o, "order_legs", None) or []
+        is_stop = str(otype).upper() in ("STP", "STOP", "TRAIL") or any(
+            str(getattr(leg, "leg_type", "")).upper() == "LOSS" for leg in legs)
+        if is_stop:
+            continue   # 止损单不算开仓委托
+        action = str(getattr(o, "action", "")).upper()
+        if side is not None:
+            want = "BUY" if side == "Buy" else "SELL"
+            if action != want:
+                continue
+        active_ids.append(getattr(o, "id", None) or getattr(o, "order_id", None))
+    return (len(active_ids) > 0), active_ids
 
 
 def get_open_position_tiger(config, symbol=None):
@@ -601,6 +815,12 @@ def get_open_position_tiger(config, symbol=None):
 
     side 判定：Position 无方向字段（2026-08-02 源码确认），quantity 正=多、负=空
     （港股融券做空）。本项目做空走反向 ETF、账户层均为多头，默认 long。
+
+    只收港股持仓（2026-08-16 修复）：原实现不过滤市场，同账户的美股持仓也被收进
+    collected——港股一键平仓（symbol=None）在恰有一个美股持仓、无港股持仓时会拿到
+    US.xxx，下游 to_tiger_symbol 抛 ValueError（traceback 而非 JSON 错误）。老虎港股
+    symbol 是 5 位数字、美股是裸代码，按 isdigit() 过滤（与美股版 get_open_position_us
+    的排除逻辑对称——那里排除数字、这里只留数字）。
     """
     tc = new_trade_client(config)
     try:
@@ -609,6 +829,9 @@ def get_open_position_tiger(config, symbol=None):
         for p in positions:
             qty_f = float(getattr(p, "quantity", 0) or 0)
             if qty_f == 0:
+                continue
+            sym_raw = str(getattr(getattr(p, "contract", None), "symbol", ""))
+            if not sym_raw.isdigit():   # 港股 = 5 位数字；美股裸代码（MU）排除
                 continue
             side = "short" if qty_f < 0 else "long"
             collected.append((side, p, abs(qty_f)))
@@ -651,11 +874,10 @@ def cancel_order_tiger(config, order_id):
 def cancel_all_stop_orders_tiger(config, symbol, exclude_order_id=None):
     """撤销指定港股标的的全部未触发止损单（平仓后防反向开仓；移损 fallback 撤旧用）。
 
-    两类止损都撤：
-    - 独立止损单（order_type=STP，aux_price=触发价）——直接撤。
-    - 附加止损腿——2026-08-03 paper 实测：OrderLeg('LOSS') 提交后由券商落成**独立 STP 单**
-      （order_type=STP，action 按主单方向），主单成交后该单进入 HELD 监控，可像独立止损单一样
-      直接撤销（实测：移损撤旧成功撤掉开仓附加腿落成的 STP 单，无需撤主单）。
+    止损单口径（2026-08-16 对齐美股版 cancel_all_stop_orders_us）：STP / STOP / TRAIL /
+    LOSS 附加腿四类都撤。TRAIL（跟踪止损）源自 2026-08-05 中芯残留事故教训（美股版当时
+    补了 TRAIL、港股版漏了）——用户在券商 App 手动挂的港股 TRAIL 单也是止损保护，平仓
+    须一并撤，否则残留单日后触发反向开仓。
     状态已 Filled / Cancelled / Inactive / Invalid / PendingCancel 的跳过。
     返回 (n, ids)。
     """
@@ -686,8 +908,12 @@ def cancel_all_stop_orders_tiger(config, symbol, exclude_order_id=None):
             raw_otype = getattr(order, "order_type", "")
             otype = (raw_otype.value if hasattr(raw_otype, "value") else str(raw_otype) or "")
             legs = getattr(order, "order_legs", None) or []
-            is_stop = str(otype).upper() == "STP" or any(
-                str(getattr(leg, "leg_type", "")).upper() == "LOSS" for leg in legs)
+            # 2026-08-16 对齐美股口径：含 TRAIL（跟踪止损）——2026-08-05 中芯残留事故
+            # 修复只落在美股版（cancel_all_stop_orders_us），港股版漏 TRAIL：用户在 App 手动
+            # 挂的港股 TRAIL 单撤不掉 → 平仓后残留、下次触发反向开仓。港美统一四类：
+            # STP / STOP / TRAIL / LOSS 附加腿。
+            is_stop = (str(otype).upper() in ("STP", "STOP", "TRAIL")
+                       or any(str(getattr(leg, "leg_type", "")).upper() == "LOSS" for leg in legs))
             if not is_stop:
                 continue
             try:
@@ -782,8 +1008,17 @@ def _market_of(symbol):
 
 
 # 港股 ETF 白名单（免印花税；与复盘 CSV type 列、classify_hk_security.py 一致）。
-# 港股代码无规律，ETF 靠白名单识别——新 ETF 交易前须补进此表（否则按 stock 多算印花税、保守）。
-_HK_ETF_WHITELIST = {'HK.07709'}   # 南方两倍做多海力士（2x 杠杆 ETF）
+# 港股代码无规律，ETF 靠白名单识别——白名单外默认 stock（保守收印花税）。
+# 2026-08-16 修复：原白名单仅 {'HK.07709'} 一个成员、注释却声称「与 classify 一致」
+# （classify 实际 30 个官方 ETF）——交易 02800 盈富等主流 ETF 时判 stock、赔率计算
+# 多收 0.1% 印花税（保守方向、错杀交易）。现直接 import classify 的 HKEX_ETF_WHITELIST
+# 作唯一权威源（单一来源，classify 更新此处自动跟随；HK. 前缀在此转换）。
+try:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # skill 根（classify 所在）
+    import classify_hk_security as _classify
+    _HK_ETF_WHITELIST = {f"HK.{code}" for code in _classify.HKEX_ETF_WHITELIST}
+except Exception:   # classify 导入失败（极端）回退最小集
+    _HK_ETF_WHITELIST = {'HK.07709'}
 # 美股杠杆 / 反向 ETF（无印花税；美股个股 ETF 费用结构同、但 type 仍标注供一致性）
 _US_ETF_SET = {'US.SOXL', 'US.SOXS'}
 
@@ -803,13 +1038,15 @@ def build_fee_ctx(symbol, shares, config, order_idx_open=None, order_idx_close=N
 
     从老虎实盘账户查**该市场**本月已成交订单数（港美平台费独立计档、必须按 market 分开查；
     +1 = 开仓订单序号、+2 = 平仓订单序号，开平同笔交易占两个序号）。
-    查询失败时 order_idx 置 None（不计平台费，略偏乐观；调用方获知后可改保守档）。
+    查询失败时（2026-08-16 修保守方向）order_idx 置 1 = 按阶梯**最高档**（30 港元/笔）计
+    ——原实现置 None 不计平台费（少算、赔率偏乐观，会把不达标的交易算成达标），与 stderr
+    「平台费将用保守档」提示方向相反；按最高档才是真保守（多算一点点、宁可不交易）。
     返回 {shares, sec_type, market, order_idx_open, order_idx_close}。
     """
     market = _market_of(symbol)
     month_count = get_month_order_count_tiger(config, market=market)   # 本月该市场已成交数
     if month_count is None:
-        idx_open, idx_close = None, None   # 查询失败 → 不计平台费
+        idx_open, idx_close = 1, 2   # 查询失败 → 按阶梯最高档（第 1-5 笔档 30/笔）计，保守
     else:
         idx_open = month_count + 1         # 本次开仓 = 本月该市场已成交 + 1
         idx_close = month_count + 2        # 平仓 = +2（开平同笔占两序号）
@@ -819,17 +1056,62 @@ def build_fee_ctx(symbol, shares, config, order_idx_open=None, order_idx_close=N
             'market': market, 'order_idx_open': idx_open, 'order_idx_close': idx_close}
 
 
+def get_buying_power_tiger(config, symbol, ref_price, tc=None):
+    """按单标的保证金率算可买股数上限（2026-08-16 立，2026-08-06 00100 被拒根因闭环）。
+
+    背景：2026-08-06 MINIMAX 58,400 股大单被拒，根因是购买力约束（buying_power ÷ 该标的
+    保证金率），原开仓脚本不预算可买上限、只靠券商拒单后被动降档。本函数在**下单前**算出
+    上限，让 open_position 主动降档（少踩拒单、少烧降档轮次）。
+
+    口径（2026-08-12 实测 + 2026-08-16 复测确认）：
+    - buying_power 取 get_assets().summary.buying_power（实测 4,037,134.72，USD 计价）；
+    - 保证金率取 get_contract(symbol).long_initial_margin（实测 00100 = 0.75）；
+    - 可买市值上限 = buying_power × long_initial_margin（如 4,037,134 × 0.75 = 3,027,850 USD）；
+      可买股数上限 = 市值上限 ÷ ref_price，按 lot 向下取整由调用方处理（本函数返回原始股数）。
+
+    ⚠️ 币种：buying_power 为账户 USD 口径，港股标的价格为 HKD——直接相除有 ~7.8x 汇率偏差。
+    调用方（港股开仓脚本）应把结果按 7.8 量级的保守汇率校验或传 ref_price 为 USD 等值；
+    当前实测中 paper 账户 00100 拒单发生在「USD 口径上限 ÷ HKD 价格」的自然保守方向
+    （算出的股数偏小、不会放大），故直接返回、不做汇率换算（保守方向安全）。
+
+    返回 (max_shares, bp, margin_rate) 或 (None, None, None)（查询失败）。
+    """
+    try:
+        if tc is None:
+            tc = new_trade_client(config)
+        assets = tc.get_assets()
+        if not assets:
+            return None, None, None
+        s = assets[0].summary
+        bp = getattr(s, "buying_power", None)
+        if not bp or float(bp) <= 0:
+            return None, None, None
+        c = tc.get_contract(to_tiger_symbol(symbol))
+        margin_rate = getattr(c, "long_initial_margin", None)
+        if not margin_rate or float(margin_rate) <= 0:
+            margin_rate = 1.0   # 查不到保证金率按 1.0 全额（最保守）
+        notional_cap = float(bp) * float(margin_rate)
+        if not ref_price or ref_price <= 0:
+            return None, None, None
+        return int(notional_cap / float(ref_price)), float(bp), float(margin_rate)
+    except Exception as e:
+        print(f"⚠️ 购买力查询失败 {symbol}: {e}", file=sys.stderr)
+        return None, None, None
+
+
 def get_month_order_count_tiger(config, market=None):
     """查老虎账户【本月】已成交的订单数（用于阶梯平台费定档）。
 
-    2026-08-12 用户立：signal / auto 两模式都从老虎实盘账户取本月订单数（signal 模式只禁自动下单、
-    查询等只读操作允许；auto 模拟盘也取实盘账户数，模拟盘平台费偏高就当保守估计）。
+    2026-08-12 用户立：signal / auto 两模式都从**当前 config 账户**取本月订单数（signal 模式
+    只禁自动下单、查询等只读操作允许；auto 模拟盘也取订单数，模拟盘平台费偏高就当保守估计；
+    默认 paper——旧 docstring 写「实盘账户」与行为不符，2026-08-16 修正表述）。
     **订单数口径（2026-08-12 用户立）：只数成交订单（Filled / PartiallyFilled）**——主单、附加止损单、
     移损单等只要成交了都算 1 笔，未成交 / 撤销 / 失效的不算。与券商实际计费口径一致。
     **港股 / 美股平台费完全独立、各自按市场单独计阶梯档**（2026-08-12 用户纠正：港美分开算、互不影响）。
     market='HK'/'US' 必须传——按市场过滤（用订单 contract.market 字段，实测 HK/US 可靠区分）只数该市场订单；
     market=None 返回合计（仅诊断用、不定档，会高估各市场档位）。
     实测（2026-08-12 模拟账户）：本月港股 41 笔、美股 14 笔。
+    查询失败返回 None（调用方 build_fee_ctx 按最高档 30/笔保守计，2026-08-16 与提示文案对齐）。
     """
     import datetime as _dt
     from tigeropen.common.consts import OrderStatus

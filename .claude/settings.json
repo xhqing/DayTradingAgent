@@ -18,7 +18,9 @@
       "Bash(bash .claude/skills/keep-awake/scripts/on.sh *)"
     ],
     "deny": [
-      "CronCreate"
+      "CronCreate",
+      "Read(.claude/skills/trade/accounts.json)",
+      "Read(//Users/xhq/Documents/Projects/DayTradingAgent/.claude/skills/trade/accounts.json)"
     ]
   },
   "hooks": {
@@ -27,6 +29,12 @@
         "matcher": "Bash",
         "hooks": [
           { "type": "command", "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/monitor_guard.py pretool" }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/secret_guard.py pretool" }
         ]
       },
       {

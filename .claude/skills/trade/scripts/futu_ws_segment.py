@@ -27,12 +27,19 @@ connection」）——2026-08-07 盘中实测：auto 会话占着老虎连接跑
 连接：OpenQuoteContext('127.0.0.1', 11111)。富途 OpenD 是本地网关，
 多客户端可并存连接（与老虎单连接互踢的本质区别）。订阅权限：港股 TICKER
 属 Level1 免费行情，OpenD 默认可用；订阅失败（ret != 0）即退出报错。
+
+2026-08-17 补分析锚点（红灯「盯盘空转」修法①，对齐 ws_segment / monitor_segment）：
+段结束输出补三样——📊 VWAP 检查（复用本脚本的 OpenQuoteContext 查 avg_price）、
+⏰ 每 10 分钟方向重估提醒（marker 文件去重）、👉 空转防护提示行（先给本段判断 +
+写分析心跳，再重启下一段）。为什么：段输出只剩裸数字时，分析链失去「下一步该分析」
+的锚点、会退化为纯重启采样（2026-08-17 空转实录）。
 """
 import os
 import sys
 import time
 import signal
-from datetime import date
+import csv
+from datetime import date, datetime
 
 from futu import OpenQuoteContext, SubType, TickerHandlerBase, RET_OK
 
@@ -171,6 +178,7 @@ def main():
         pass
     ctx.close()
     finish()
+    return
 
 
 def finish():
@@ -195,6 +203,82 @@ def finish():
             broke.append((sym, f'↓破支撑{dn} 段低{d["low"]}'))
     if broke:
         print(f'!!! 破关键位: {broke} !!!')
+
+    # ⏰ 每 10 分钟方向重估提醒（2026-08-17 补，逻辑对齐 monitor_segment / ws_segment）。
+    try:
+        syms = [t[0] for t in targets]
+        marker_file = os.path.join(TMP, f'reassess_marker_{TODAY}_{MODE}.txt')
+        reminded = set()
+        if os.path.exists(marker_file):
+            with open(marker_file) as mf:
+                reminded = {int(x) for x in mf.read().split() if x.strip().isdigit()}
+        elapsed_min = None
+        first_log = logs[syms[0]]
+        if os.path.exists(first_log):
+            with open(first_log) as lf:
+                rdr = csv.reader(lf)
+                next(rdr, None)  # 跳表头
+                first_row = next(rdr, None)
+            if first_row:
+                first_dt = datetime.strptime(f'{TODAY} {first_row[0]}', '%Y%m%d %H:%M:%S')
+                elapsed_min = (datetime.now() - first_dt).total_seconds() / 60
+        if elapsed_min is not None and elapsed_min >= 10:
+            ten_mark = int(elapsed_min // 10) * 10
+            if ten_mark not in reminded:
+                reminded.add(ten_mark)
+                with open(marker_file, 'w') as mf:
+                    mf.write(' '.join(str(h) for h in sorted(reminded)))
+                print(
+                    f'⏰ 重估方向提醒（已盯盘 {int(elapsed_min)} 分钟、满 {ten_mark} 分钟）：'
+                    f'过动态修正方向 5 触发（①破阻力 ②破支撑 ③站上/跌破VWAP ④箱体假突破≥2次 '
+                    f'⑤持续单向运动≥1h）+ 自问「方向/趋势/行情是否仍与开盘一致」，不固守开盘判断。',
+                    flush=True,
+                )
+    except Exception as e:
+        print(f'[重估提醒检查 err:{e}]', flush=True)
+
+    # 📊 VWAP 检查（2026-08-17 补，锚点对齐 monitor_segment / ws_segment）：逐笔推送只有
+    # 成交价、无 VWAP，段结束用富途 OpenD 快照补查 avg_price（本脚本本就走 OpenD 网关）。
+    try:
+        vwap_lines = []
+        try:
+            _vctx = OpenQuoteContext('127.0.0.1', 11111)
+            try:
+                ret, df = _vctx.get_market_snapshot([t[0] for t in targets])
+                if ret != 0 or df is None or len(df) == 0 or 'avg_price' not in df.columns:
+                    raise RuntimeError(f'snapshot ret={ret}')
+                syms = [t[0] for t in targets]
+                if 'code' in df.columns:
+                    rows = {r['code']: r for _, r in df.iterrows()}
+                else:
+                    rows = {syms[i]: df.iloc[i] for i in range(min(len(syms), len(df)))}
+                for sym in syms:
+                    row = rows.get(sym)
+                    if row is None:
+                        vwap_lines.append(f'  {sym}: 无快照')
+                        continue
+                    cur, vwap = row.get('last_price'), row.get('avg_price')
+                    if cur is None or vwap is None or (isinstance(vwap, float) and vwap != vwap):
+                        vwap_lines.append(f'  {sym}: VWAP 获取失败')
+                        continue
+                    cur, vwap = float(cur), float(vwap)
+                    diff = cur - vwap
+                    who = '上方（多头占优）' if diff > 0 else ('下方（空头占优）' if diff < 0 else '持平')
+                    vwap_lines.append(f'  {sym}: 现价 {cur:.2f} | VWAP {vwap:.2f} | {who} {diff:+.2f}')
+            finally:
+                _vctx.close()
+        except Exception as e:
+            vwap_lines.append(f'  OpenD 不可用（{e}）——AI 必须自行跑 snapshot/monitor_summary 补 VWAP，禁止跳过')
+        print('📊 VWAP 检查（方向框架地面真相，段结束必看）:\n' + '\n'.join(vwap_lines), flush=True)
+    except Exception as e:
+        print(f'[VWAP 检查 err:{e}]', flush=True)
+
+    # 👉 空转防护提示行（2026-08-17 补，对齐 ws_segment）：先分析、写心跳，再重启下一段。
+    print(
+        '👉 空转防护：本段输出不是只读的——先用一行式模板给本段判断（现价/关键位/VWAP/结论/下次段'
+        '时间），再写分析心跳（echo 追加 tmp/analysis_beat_日期_模式.csv），最后才重启下一段采样。',
+        flush=True,
+    )
 
 
 if __name__ == '__main__':

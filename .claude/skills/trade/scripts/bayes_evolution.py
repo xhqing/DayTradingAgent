@@ -90,6 +90,11 @@ CSV_PATH = f"reviews/{DATE}-trades{SUFFIX}.csv"
 # R = 扣双边手续费后的净 R（与 review.py net 口径一致）；2026-08-12 起用真实费率（fee_schedule）
 rows_raw = []
 type_missing_any = False
+# direction 解析复用 review._direction 口径（2026-08-16 修）：原只认 ('long','做多')、
+# 其余一律当空头——CSV 出现「多」「buy」等别名时该笔 R 符号翻转、全部演化图错
+# （review.py 接受 long/short/buy/sell/做多/做空/多/空/买入/卖出 十种；当前数据只有
+# long/short 未触发、属埋雷）。现 import 同一函数，别名口径两脚本一致。
+from review import _direction as _dir_sign
 with open(CSV_PATH) as fh:
     for r in csv.DictReader(fh):
         sec_type = (r.get('type') or r.get('sec_type') or '').strip().lower()
@@ -97,7 +102,7 @@ with open(CSV_PATH) as fh:
             sec_type = 'stock'; type_missing_any = True   # 缺 type 默认 stock（保守收印花税）
         rows_raw.append({
             'date': r['date'], 'symbol': r['symbol'],
-            'sign': 1 if r['direction'].strip().lower() in ('long', '做多') else -1,
+            'sign': _dir_sign(r['direction']),
             'entry': float(r['entry_price']), 'exit': float(r['exit_price']),
             'shares': float(r['shares']), 'M': float(r['max_loss']),
             'sec_type': sec_type,
