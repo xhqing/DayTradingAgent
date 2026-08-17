@@ -209,9 +209,10 @@ def main():
         sys.exit(1)
     current_price = quote["last"]
 
-    # 真实费率上下文（2026-08-12）：含 shares / sec_type / market / 当月订单序号（阶梯平台费）
-    # quantity>0 才用真实费率；quantity==0（自动算仓位）此时 shares 未知，价格范围检查用旧百分比口径
-    # （_net_odds 按 entry/target 算每股费，不依赖 shares），算出仓位后由调用方按真实费率复核。
+    # 真实费率上下文（2026-08-12；2026-08-17 平台费改固定模式、不再查当月订单数）：
+    # 含 shares / sec_type / market。quantity>0 才用真实费率；quantity==0（自动算仓位）此时
+    # shares 未知，价格范围检查用旧百分比口径（_net_odds 按 entry/target 算每股费，
+    # 不依赖 shares），算出仓位后由调用方按真实费率复核。
     fee_ctx = U.build_fee_ctx(symbol, quantity, config) if quantity > 0 else None
     in_range, range_low, range_high, odds_at_ref, odds_at_current = U.check_price_in_range(
         direction, current_price, entry_ref, stop_loss, target, symbol, fee_ctx

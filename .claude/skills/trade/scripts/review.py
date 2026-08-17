@@ -25,15 +25,16 @@ CSV 字段（首行表头，逗号分隔；# 开头行当注释跳过）:
   5. 频率派 EV 的 95% CI（对照）
   6. 样本量规划（代入当前 s）
 
-费率扣费口径（net，2026-08-03 用户立；2026-08-12 改真实费率）:
+费率扣费口径（net，2026-08-03 用户立；2026-08-12 改真实费率；2026-08-17 平台费改固定模式 + 美股按股结构）:
   盈亏 P 与 R 一律扣双边手续费后再算：P_net = P_gross − fee，
-  fee = 开仓边费 + 平仓边费（两边各自按各自成交额计费）。
-  单边费 = 佣金(max(15, 成交额×0.029%)) + 印花税(港股个股0.1%,ETF免) + 各征费 + 阶梯平台费，
-  按「市场 + 标的类型(type列 stock/etf) + 成交额(大单/小单自动分流)」精确算——见 fee_schedule.py。
-  平台费阶梯式：按该订单在所属自然月的累计订单序号分档（开仓、平仓各 1 笔订单）。
+  fee = 开仓边费 + 平仓边费（两边各自按各自成交额/股数计费）。
+  港股单边费 = 佣金(max(15, 成交额×0.029%)) + 印花税(个股0.1%,ETF免) + 各征费 + 固定平台费(15/笔)；
+  美股单边费 = 佣金(0.0039/股, cap 0.5%×额) + 平台费(0.004/股, 最低1/笔, cap 0.5%×额) + 代收近似(0.00396/股)。
+  按「市场 + 标的类型(type列 stock/etf) + 成交额/股数」精确算，见 fee_schedule.py。
   分母 max_loss 保持毛值（开仓前定的风险预算标尺不动），故止损单净 R 可能略低于 −1。
   EV / 胜率 / 赔率 / 贝叶斯 P(EV>0) 全部基于净 R，自动跟随净口径。
-  旧「港股 18bps / 美股 3bps」笼统单值口径已废（高估个股、严重高估 ETF 成本）。
+  旧「港股 18bps / 美股 3bps」笼统单值口径已废（高估个股、严重高估 ETF 成本）；
+  2026-08-12~08-17 间用的阶梯平台费口径亦废（固定模式不需要当月订单数）。
 
 ⚠️ 盈亏按信号参考价与 max_loss 实算、扣双边手续费，不涉及真实账户资金（信号模式：AI 不管账户）。
 依赖: scipy（无则退化：t→正态近似、χ²→Wilson-Hilferty，小样本偏乐观；建议装 scipy）。
@@ -42,7 +43,7 @@ import sys, csv, math, argparse, os
 from statistics import mean, stdev
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import fee_schedule as FS   # 真实费率（市场+类型+成交额+阶梯平台费），2026-08-12 立
+import fee_schedule as FS   # 真实费率（市场+类型+成交额/股数+固定平台费），2026-08-12 立、08-17 改固定模式
 
 
 # ---------- 分布函数（scipy 优先，无则退化）----------
@@ -69,8 +70,9 @@ def _direction(s):
     if s in ('short', '做空', '空', 'sell', '卖出'): return -1
     raise ValueError(f"direction 无法解析: {s!r}")
 
-# 单边费率（2026-08-12 改真实费率，复用 fee_schedule）：按市场 + 标的类型 + 成交额精确算，
-# 含佣金(max(15,×0.029%)) + 印花税(港股个股0.1%/ETF免) + 各征费 + 阶梯平台费。
+# 单边费率（2026-08-12 改真实费率，复用 fee_schedule；2026-08-17 平台费改固定模式 + 美股按股）：
+# 港股按额计（佣金 max(15,×0.029%) + 印花税(个股0.1%/ETF免) + 征费 + 平台费 15/笔）、
+# 美股按股计（佣金 0.0039/股 + 平台费 0.004/股 + 代收近似 0.00396/股）。
 def _market_of(symbol):
     s = (symbol or '').upper()
     if s.startswith('HK.'): return 'HK'
@@ -138,26 +140,18 @@ def load_trades(path):
             t['_type_missing'] = False
         t['P_gross'] = (t['exit'] - t['entry']) * t['shares'] * t['sign']  # 毛盈亏（未扣费）
         trades.append(t)
-    # 先按 (date, symbol) 排序，再按自然月累计订单序号算阶梯平台费
-    trades.sort(key=lambda t: (t['date'], t['symbol']))  # 与 bayes_evolution.py 同排序：样本明细编号 = 序贯图横轴
-    # 阶梯平台费按「(自然月, 市场)」累计成交订单序号分档——港美平台费完全独立、各自计档（2026-08-12 用户纠正）
-    month_counter = {}   # {(YYYY-MM, market): 当月该市场已计订单数}
+    # 先按 (date, symbol) 排序（样本明细编号 = 序贯图横轴，与 bayes_evolution.py 同排序）
+    trades.sort(key=lambda t: (t['date'], t['symbol']))
+    # 平台费 2026-08-17 改固定模式：费项与订单数无关，不再按自然月累计订单序号分档。
     type_missing_any = False
     for t in trades:
-        ym = t['date'][:7]   # 自然月（YYYY-MM）；日内交易开平同日同月
-        key = (ym, t['market'])   # 港美分开累计
-        # 开仓订单（当月该市场序号）、平仓订单（下一序号）——各 1 笔，分别计阶梯平台费
-        month_counter[key] = month_counter.get(key, 0) + 1
-        idx_open = month_counter[key]
-        month_counter[key] = month_counter.get(key, 0) + 1
-        idx_close = month_counter[key]
         amt_open = t['entry'] * t['shares']
         amt_close = t['exit'] * t['shares']
-        fee_open = FS.fee_per_side(t['market'], t['sec_type'], amt_open, idx_open)
-        fee_close = FS.fee_per_side(t['market'], t['sec_type'], amt_close, idx_close)
+        fee_open = FS.fee_per_side(t['market'], t['sec_type'], amt_open, shares=t['shares'])
+        fee_close = FS.fee_per_side(t['market'], t['sec_type'], amt_close, shares=t['shares'])
         t['fee_open'] = fee_open
         t['fee_close'] = fee_close
-        t['fee'] = fee_open + fee_close  # 开仓 + 平仓 两边手续费（各自按成交额+当月该市场订单序号计费）
+        t['fee'] = fee_open + fee_close  # 开仓 + 平仓 两边手续费（各自按成交额/股数计费）
         t['P'] = t['P_gross'] - t['fee']  # 净盈亏（扣双边手续费）——复盘所有盈亏 / R 口径
         t['R'] = t['P'] / t['M']          # 净 R；分母 max_loss 保持毛值（风险预算标尺不动），
         #                                    故止损单净 R 会略低于 -1（止损实际比毛预算多亏一笔平仓费，真实）
@@ -418,7 +412,7 @@ def main():
     print(f"  确认 EV>0(80%把握): 真实 EV=0.10R→{f80 * s ** 2 / 0.10 ** 2:.0f} 笔   0.20R→{f80 * s ** 2 / 0.20 ** 2:.0f} 笔")
     print("  (鸡生蛋：基于当前 N 估的 s，初步规划、非定论；每次复盘用当下样本重算 s 重填)")
 
-    print("\n⚠️ 盈亏按信号参考价与 max_loss 实算、扣双边手续费（真实费率：老虎佣金0.029%最低15 + 港股个股印花税0.1%/ETF免 + 各征费 + 阶梯平台费，见 fee_schedule.py），不涉及真实账户资金（信号模式）。")
+    print("\n⚠️ 盈亏按信号参考价与 max_loss 实算、扣双边手续费（真实费率：港股佣金 max(15,×0.029%) + 印花税(个股0.1%/ETF免) + 征费 + 固定平台费15/笔；美股佣金0.0039/股 + 平台费0.004/股(最低1/笔) + 代收0.00396/股，见 fee_schedule.py），不涉及真实账户资金（信号模式）。")
 
 
 if __name__ == '__main__':
