@@ -2,11 +2,11 @@
   <img src="assets/logo.svg" width="160" alt="Victor logo" />
 </p>
 
-<h1 align="center">Victor —— 港股 / 美股 / A 股日内交易智能体</h1>
+<h1 align="center">Victor —— 港股 / 美股日内交易智能体</h1>
 
 <p align="center">
   <a href="LICENSE.md"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
-  <img src="https://img.shields.io/badge/Markets-HK%20%2F%20US%20%2F%20A--Share-16C784.svg" alt="Markets: HK / US / A-Share" />
+  <img src="https://img.shields.io/badge/Markets-HK%20%2F%20US-16C784.svg" alt="Markets: HK / US" />
   <img src="https://img.shields.io/badge/Mode-Signal-FF8C00.svg" alt="Mode: Signal" />
   <img src="https://img.shields.io/badge/Mode-Auto-2ECC71.svg" alt="Mode: Auto" />
   <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/xhqing/xhqing/main/traffic/badges/DayTradingAgent.json" alt="Visits/day (14d)" />
@@ -14,7 +14,7 @@
 
 <p align="center">🌐 <a href="README.md">English</a></p>
 
-**Victor** 是一个港股 / 美股 / A 股日内交易的 AI 执行智能体。它负责盯盘、分析标的、计算仓位与止损位、输出结构化交易信号——而每一笔订单都由人在券商 App 里手动执行。
+**Victor** 是一个港股 / 美股日内交易的 AI 执行智能体。它负责盯盘、分析标的、计算仓位与止损位、输出结构化交易信号——而每一笔订单都由人在券商 App 里手动执行。
 
 > 这**不是**一个传统意义上的软件项目：没有可供 `npm install` 或 `cargo run` 的应用。**这个仓库本身就是智能体**——它的全部行为方式都由 `.claude/` 下的 skills 和 rules 塑造，由运行框架（harness）加载，作为 Victor 的工作纪律。
 
@@ -22,7 +22,7 @@
 
 ## Victor 是谁？
 
-这个智能体有一个拟人化的名字——**Victor**（维克多），一位负责港股 / 美股 / A 股市场的日内交易执行助手。与其说 Victor 是一段程序，不如说它是一个**由规范塑造出来的"人格"**：它怎么思考、怎么行动——什么时候该空仓、止损该跟多紧、为什么绝不自己下单——全都写在仓库的 skills 和 rules 里，而不是写在应用代码里。
+这个智能体有一个拟人化的名字——**Victor**（维克多），一位负责港股 / 美股市场的日内交易执行助手。与其说 Victor 是一段程序，不如说它是一个**由规范塑造出来的"人格"**：它怎么思考、怎么行动——什么时候该空仓、止损该跟多紧、为什么绝不自己下单——全都写在仓库的 skills 和 rules 里，而不是写在应用代码里。
 
 **Victor** 取"胜利者、征服者"之意，寄托对盈利交易的期许。但 Victor 的优势**并不**来自激进冒险，而来自事实的严谨与铁的纪律：
 
@@ -133,7 +133,7 @@ Victor 在发出任何信号前逐条自检（完整清单见 `SKILL.md`）：
 - **由止损反推仓位（固定比例）**——单笔预算 `B = risk_fraction × equity`（默认 2%）；仓位 = 按手数取整后、实际 max_loss 最接近 B 的那档。max_loss 可略超 B 但不得超过 `equity × f_max`（默认 2.5%）——绝对上限就是权益比例。
 - **每个开仓信号必须含止损价**——取技术位，由用户在 App 挂止损。
 - **禁衍生品**——只做个股、ETF（含 2×/3× 杠杆）、REIT；不碰期权 / 窝轮 / CBBC / 期货。
-- **限盘中、收盘前平仓**——港股仅正常交易时段（09:30-12:00 / 13:00-16:00），持仓须在 12:00 午休前、16:00 收盘前平掉；美股仅盘中（美东 09:30-16:00），盯到用户喊停或收盘——无盘前 / 盘后 / 夜盘信号、不留仓过夜。
+- **限可交易时段、收盘前平仓**——港股仅正常交易时段（09:30-12:00 / 13:00-16:00），持仓须在 12:00 午休前、16:00 收盘前平掉；美股可交易时段 = 盘前 + 盘中（美东 04:00-16:00），盯到用户喊停或收盘——无盘后 / 夜盘信号、不留仓过夜。
 - **做空默认允许**——先假设全部标的可做空，除非用户反馈某标的不可空。
 - **当日平仓**——从不在任何账户持仓过夜。
 
@@ -161,7 +161,7 @@ Victor 当前处于**信号模式**：AI 发信号、人执行——这套自 20
 
 ## 风险声明
 
-日内交易伴随重大的资金损失风险。Victor 输出的是分析与信号，供账户持有人决策参考——**它不构成投资建议，也不执行任何交易。** 所有订单均由用户在自有券商账户手动下达。历史表现不代表未来收益。作者与贡献者不对任何交易损失承担责任。
+日内交易伴随重大的资金损失风险。Victor 输出的是分析与信号，供账户持有人决策参考——**它不构成投资建议，也不执行任何交易。** 所有订单均由用户在自有券商账户手动下达。历史表现不代表未来收益，任何回测或模拟盘结果亦不代表实盘表现。用户对每笔交易决策及其造成的损失承担全部责任。作者与贡献者不对任何交易损失承担责任。
 
 ---
 
@@ -170,7 +170,7 @@ Victor 当前处于**信号模式**：AI 发信号、人执行——这套自 20
 本项目以 MIT 许可证开源，额外请求使用者在**使用、二次分发或基于本项目构建衍生作品**时，注明作者并引用项目地址：
 
 - **作者：** All Contributors
-- **项目：** Victor —— 港股 / 美股 / A 股日内交易智能体
+- **项目：** Victor —— 港股 / 美股日内交易智能体
 - **地址：** https://github.com/xhqing/DayTradingAgent
 
 若你 Fork、引用代码或基于本仓库二次开发，请在文档 / README / 致谢中保留以上出处（作者、项目名、仓库地址）。

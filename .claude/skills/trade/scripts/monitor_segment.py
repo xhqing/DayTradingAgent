@@ -48,6 +48,39 @@ try:
 except ImportError:
     pass
 
+# 多会话单持仓互斥·第四层兜底（2026-08-17 立，方案 A）：与止损价查询同一次 get_orders
+# 顺带检测白名单外持仓数——脚本可控路径外的漏网（用户手机 App 手动下单等）从一个
+# 采样段内（≤40 秒 + 段间）被发现并告警，而不是静默双持仓、敞口翻倍直到收盘。
+try:
+    from trade_mutex import today_open_exposure, resident_positions
+    _MUTEX_AVAILABLE = True
+except ImportError:
+    _MUTEX_AVAILABLE = False
+
+_today_orders_cache = None   # query_stop_prices 每轮写入，第四层检测复用（同一次查单）
+
+
+def check_position_discipline(orders):
+    """第四层兜底检测：白名单外在场敞口 ≥2 → 告警（返回告警字符串或 None）。
+
+    口径与开仓闸门同源（today_open_exposure：当日订单流「开仓成交 − 平仓成交」>0 的
+    标的集合），常驻历史持仓（config resident_positions）不经当日订单流、天然不在
+    集合里。集合 ≥2 = 双持仓违规（漏网路径：用户 App 手动开仓、闸门崩溃窗口残留等）；
+    =1 正常（本系统当日一笔在场）。检测到时 AI 处置：立即查两笔持仓、平掉较新的那笔
+    （后开的仓位是漏网者；平仓脚本走 symbol 级隔离不会误伤先开仓位）。
+    """
+    if not _MUTEX_AVAILABLE or orders is None:
+        return None
+    try:
+        exposure = today_open_exposure(orders)
+    except Exception:
+        return None
+    rp = resident_positions()
+    violators = sorted(s for s in exposure if s not in rp)
+    if len(violators) >= 2:
+        return violators
+    return None
+
 
 def parse_targets(raw):
     """解析 'SYM[:up[:dn]][,SYM...]' 成 [{sym, up, dn}, ...]。
@@ -90,6 +123,8 @@ def query_stop_prices(symbols):
     try:
         config = load_config()
         orders = get_today_orders_tiger(config)
+        global _today_orders_cache   # 第四层持仓检测复用同一次查单（不再多打一次 API）
+        _today_orders_cache = orders
         result = {}
         for order in orders:
             # 老虎订单对象：contract.symbol（老虎格式，港股 5 位裸数字 / 美股裸代码）、
@@ -164,11 +199,17 @@ def main():
     # log 文件按市场对应交易日命名（2026-08-04 修 bug）：原统一用「北京 -12h」算美东交易日（为美股跨北京午夜），
     # 但对港股早盘失效——港股盘中北京 09:30-12:00，减 12h = 昨天 21:30 → log 落昨天日期，今天采样污染昨天 log、
     # 完整采样统计混入昨天数据（如开=123.60 是昨天的价）+ 哨兵读昨天末行误报断层（1069 分钟）。改为按市场区分：
-    # 港股 HK 用北京日期（盘中不跨午夜）；美股 US 仍用美东交易日（北京 -12h 夏令时 EDT=UTC-4；冬令时 EST=UTC-5 需 -13h）。
+    # 港股 HK 用北京日期（盘中不跨午夜）；美股 US 用美东交易日。
+    # 2026-08-17 修：美股日期改 zoneinfo 直接转美东时区取（与 preflight 同法）——原「北京 -12h」
+    # 是夏令时硬编码，11 月切冬令时（EST=UTC-5 需 -13h）会取错日、log 写错文件。
     def trading_date_str(sym: str) -> str:
         now = datetime.now()
         if sym.startswith("US."):
-            return (now - timedelta(hours=12)).strftime("%Y%m%d")  # 美东交易日（夏令时；冬令时改 -13h）
+            try:
+                from zoneinfo import ZoneInfo
+                return now.astimezone(ZoneInfo("America/New_York")).strftime("%Y%m%d")  # 美东交易日（自动适配 DST）
+            except Exception:
+                return (now - timedelta(hours=12)).strftime("%Y%m%d")  # zoneinfo 不可用：夏令时估兜底
         return now.strftime("%Y%m%d")  # 港股及其它：北京日期
     # 重估提醒检查（下方 marker 文件命名 + 首点时间拼算）需 date_str 与主标的 log 文件日期一致，
     # 故取主标的市场对应的交易日（港股=北京日期、美股=美东交易日）。
@@ -268,6 +309,22 @@ def main():
             if fresh:
                 stop_prices = dict(fresh)
 
+            # 第四层兜底（2026-08-17 立，方案 A）：同一次查单顺带检测白名单外双持仓。
+            # 检测到立即告警（每轮都输出直到违规消除——不是只报一次，AI / 用户反复可见）。
+            if _TIGER_AVAILABLE:
+                try:
+                    violators = check_position_discipline(_today_orders_cache)
+                    if violators:
+                        print(
+                            f"🚨 单持仓违规：白名单外在场敞口 {violators}（当日开仓成交且无对应平仓 ≥2）——"
+                            f"多会话互斥的脚本闸门拦不住的漏网路径（用户 App 手动下单等）。"
+                            f"AI 处置：立即查两笔持仓、平掉较新的那笔（平仓脚本 symbol 级隔离不误伤先开仓位），"
+                            f"恢复单持仓后本告警自动消除。",
+                            flush=True,
+                        )
+                except Exception:
+                    pass
+
             ret, df = ctx.get_market_snapshot(syms)
             if ret != 0 or df is None or len(df) == 0:
                 print(f"[{datetime.now():%H:%M:%S}] snapshot 失败 ret={ret} {df}", flush=True)
@@ -287,9 +344,22 @@ def main():
                 if row is None:
                     print(f"[{ts}] [{sym}] 无快照（snapshot 未返回该标的）", flush=True)
                     continue
-                last = row["last_price"]
-                high = row["high_price"]
-                low = row["low_price"]
+                # 美股盘前（04:00-09:30 ET）快照的 last_price 停在昨收不动、盘前真实价在
+                # pre_price / pre_high_price / pre_low_price（2026-08-19 实测：盘前 MU
+                # last_price 恒 940.76 昨收、pre_price 947.87 实时跳）；盘中 pre_* 字段为
+                # nan。取值逻辑：pre_price 非空且与昨收不同 → 用盘前字段，否则用常规字段。
+                pre = row.get("pre_price")
+                pre_ok = pre is not None and str(pre) != "nan" and not (
+                    str(pre) == str(row.get("last_price")) and row.get("pre_volume") in (None, "nan", 0)
+                )
+                if pre_ok:
+                    last = pre
+                    high = row.get("pre_high_price")
+                    low = row.get("pre_low_price")
+                else:
+                    last = row["last_price"]
+                    high = row["high_price"]
+                    low = row["low_price"]
                 bid = row["bid_price"]
                 ask = row["ask_price"]
                 ratio = row.get("bid_ask_ratio") or 0
@@ -365,14 +435,43 @@ def main():
                 print(
                     f"⏰ 重估方向提醒（已盯盘 {int(elapsed_min)} 分钟、满 {ten_mark} 分钟）："
                     f"过动态修正方向 5 触发（①破阻力 ②破支撑 ③站上/跌破VWAP ④箱体假突破≥2次 "
-                    f"⑤持续单向运动≥1h）+ 自问「方向/趋势/行情是否仍与开盘一致」，不固守开盘判断。",
+                    f"⑤持续单向运动≥1h）+ 自问「方向/趋势/行情是否仍与开盘一致」，不固守开盘判断。另：重读 SKILL.md「硬性护栏」全 8 条刷新记忆（上下文压缩后规则细节会衰减，每 10 分钟强制重读一次，2026-08-18 用户立）。",
                     flush=True,
                 )
     except Exception as e:
         print(f"[重估提醒检查 err:{e}]", flush=True)
 
+    # 临近停盯边界的开仓资格提醒（2026-08-18 立，工具强制防「自设截止线」）：
+    # 距该市场停盯边界 ≤60 分钟窗口内每段打印剩余分钟 + 规则原文要点——距停盯 >5 分钟
+    # 开仓资格就在，按压缩止盈实算净赔率 ≥1.8 照常评估；AI 无权自设「临近收盘/午休
+    # 不开仓」截止线（2026-08-17、2026-08-18 两次同类违规后用户立工具强制）。
+    # ≤5 分钟段改为打印「绝对不开仓窗口、只盯到停盯」。
+    try:
+        from trade_utils_tiger import minutes_to_session_end, OPEN_WINDOW_MIN
+        for _mkt in ("HK", "US"):
+            if any(s.startswith(f"{_mkt}.") for s in syms):
+                _mins = minutes_to_session_end(_mkt)
+                if 0 < _mins <= 60:
+                    if _mins > OPEN_WINDOW_MIN:
+                        print(
+                            f"⏰ 距{_mkt}停盯边界 {_mins:.0f} 分钟（>5）：开仓资格仍在——按压缩止盈"
+                            f"实算净赔率 ≥1.8 照常评估，禁止自设「临近收盘/午休不开仓」截止线"
+                            f"（2026-08-18 用户立；下单脚本另有 ≤5 分钟时间闸硬拦）。",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            f"⏰ 距{_mkt}停盯边界 {_mins:.0f} 分钟（≤5）：绝对不开仓窗口，"
+                            f"持仓按停盯流程处理、空仓只盯到停盯。",
+                            flush=True,
+                        )
+                break
+    except Exception as e:
+        print(f"[停盯边界提醒 err:{e}]", flush=True)
+
     # 段结束 VWAP 检查（强制锚点 2026-08-03：VWAP 位置随盘面动态变化，段结束输出自带 VWAP，
     # AI 段结束唤醒即见全貌方向，不靠记忆去跑 monitor_summary）
+    _vwap_map_mseg = {}  # {sym: vwap}——供下方赶顶检测复用（快照只查一次）
     try:
         ret, df = ctx.get_market_snapshot(syms)
         if ret == 0 and df is not None and len(df) > 0 and "avg_price" in df.columns:
@@ -386,12 +485,17 @@ def main():
                 if row is None:
                     lines.append(f"  {sym}: 无快照")
                     continue
-                cur = row.get("last_price")
+                # 美股盘前：last_price 停昨收、现价在 pre_price（同上采样逻辑，2026-08-19）；
+                # avg_price（VWAP）在盘前为昨日盘中口径，对盘前价格发现代表性弱——盘前
+                # 同时展示 pre_price 与 VWAP 差值，AI 按「盘前 VWAP 代表性弱于盘中」解读。
+                pre = row.get("pre_price")
+                cur = pre if (pre is not None and str(pre) != "nan") else row.get("last_price")
                 vwap = row.get("avg_price")
                 if cur is None or vwap is None or (isinstance(vwap, float) and vwap != vwap):
                     lines.append(f"  {sym}: VWAP 获取失败")
                     continue
                 cur, vwap = float(cur), float(vwap)
+                _vwap_map_mseg[sym] = vwap
                 diff = cur - vwap
                 who = "上方（多头占优）" if diff > 0 else ("下方（空头占优）" if diff < 0 else "持平")
                 lines.append(f"  {sym}: 现价 {cur:.2f} | VWAP {vwap:.2f} | {who} {diff:+.2f}")
@@ -400,6 +504,27 @@ def main():
             print(f"📊 VWAP 检查: snapshot 失败 ret={ret}", flush=True)
     except Exception as e:
         print(f"[VWAP 检查 err:{e}]", flush=True)
+
+    # ⚡ 加速赶极端检测（2026-08-19 立，工具强制——「动能将竭主动平仓」的在场打印）：
+    # 持仓标的段内急速赶顶/赶底 → 高亮警报逼 AI 当段显式决断（详见 account_status.blast_check）。
+    # monitor_segment 是 10 秒快照采样（段内仅 4-5 点），价格序列从当日 log 全量取
+    # （blast_check 内 len<10 门槛要求足够点数；10 秒间隔下 40 秒段太稀，用全日序列近似段窗口）。
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from account_status import blast_check
+        _prices = {}
+        for sym in syms:
+            log_file = state[sym]["log_file"]
+            if os.path.exists(log_file):
+                with open(log_file) as lf:
+                    _rows = [r for r in csv.DictReader(lf) if r.get("last", "").replace(".", "").isdigit()]
+                if _rows:
+                    _prices[sym] = [float(r["last"]) for r in _rows]
+        _blasts = blast_check(_vwap_map_mseg, prices_by_sym=_prices)
+        if _blasts:
+            print("\n".join(_blasts), flush=True)
+    except Exception as _e:
+        print(f"[赶顶检测 err:{_e}]", flush=True)
 
     # 段结束完整采样统计（2026-08-03 立）：段结束自带「从开盘到当前的完整统计」，
     # AI 看段结束即见整体（点数/开/末/high/low/买卖比均/量比均/近5点），不只看本段 4-5 点。

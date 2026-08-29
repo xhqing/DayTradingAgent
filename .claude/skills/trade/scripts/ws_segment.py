@@ -31,7 +31,8 @@
 2026-08-17 补分析锚点（红灯「盯盘空转」修法①）：段结束输出补三样——
   ⑤ 📊 VWAP 检查（富途 OpenD 查 avg_price；OpenD 不可用降级为强制提示，AI 必须自行补查）；
   ⑥ ⏰ 每 10 分钟方向重估提醒（marker 文件去重，逻辑同 monitor_segment）；
-  ⑦ 👉 空转防护提示行（先给本段判断 + 写分析心跳，再重启下一段）。
+  ⑦ 👉 空转防护提示行（2026-08-18 修订顺序：立刻分析 → 有机会当场执行 → 没机会才写
+     心跳 + 重启下一段——分析永远最先，期间不做任何别的事）。
   为什么：2026-08-07 采样源迁 ws_segment 时，monitor_segment 段输出的强制锚点（VWAP 检查
   + 重估提醒）没跟着搬，ws 段输出只剩裸数字——分析链失去「下一步该分析」的锚点后空转
   一下午（2026-08-17 实录：52 次纯重启采样、0 分析文本）。本批把锚点补齐对齐 monitor_segment。
@@ -84,12 +85,17 @@ def parse_targets(argv):
 
 def trading_date_str(sym):
     """log 日期按市场对应交易日命名（2026-08-16 修，与 monitor_segment 同口径）：
-    港股用北京日期；美股用美东交易日（北京 −12h 夏令时；冬令时 EST 需 −13h）——
-    否则美股跨北京午夜时 ws_segment 写今天文件、monitor_summary 读美东交易日文件，
-    午夜后采样在 summary 里消失。"""
+    港股用北京日期；美股用美东交易日——否则美股跨北京午夜时 ws_segment 写今天文件、
+    monitor_summary 读美东交易日文件，午夜后采样在 summary 里消失。
+    2026-08-17 修：美股日期改 zoneinfo 直接转美东时区取（与 preflight 同法）——原「北京 −12h」
+    是夏令时硬编码，11 月切冬令时（EST=UTC-5 需 −13h）会取错日、log 写错文件。"""
     now = datetime.now()
     if sym.startswith("US."):
-        return (now - timedelta(hours=12)).strftime('%Y%m%d')
+        try:
+            from zoneinfo import ZoneInfo
+            return now.astimezone(ZoneInfo("America/New_York")).strftime('%Y%m%d')
+        except Exception:
+            return (now - timedelta(hours=12)).strftime('%Y%m%d')  # zoneinfo 不可用：夏令时估兜底
     return now.strftime('%Y%m%d')
 
 
@@ -206,7 +212,7 @@ def main():
 
     connected = [False]
     # WS 链路走代理（2026-08-17 立）：老虎 IP 白名单上线后，PushClient 裸 socket 直连出口
-    # （家宽 IP）被网关拒「code=4 access forbidden」（白名单只放行 [订阅商] 代理 6 IP）。
+    # （本地出口）被网关拒「code=4 access forbidden」（白名单只放行代理节点 IP）。
     # apply_socket_proxy 按 config.json proxy 节把 socket.create_connection socks 化——
     # enabled=false / socks 不通时保持直连（apply_socket_proxy 内部处理并警告）。
     import json as _json
@@ -314,11 +320,37 @@ def finish():
                 print(
                     f'⏰ 重估方向提醒（已盯盘 {int(elapsed_min)} 分钟、满 {ten_mark} 分钟）：'
                     f'过动态修正方向 5 触发（①破阻力 ②破支撑 ③站上/跌破VWAP ④箱体假突破≥2次 '
-                    f'⑤持续单向运动≥1h）+ 自问「方向/趋势/行情是否仍与开盘一致」，不固守开盘判断。',
+                    f'⑤持续单向运动≥1h）+ 自问「方向/趋势/行情是否仍与开盘一致」，不固守开盘判断。另：重读 SKILL.md「硬性护栏」全 8 条刷新记忆（上下文压缩后规则细节会衰减，每 10 分钟强制重读一次，2026-08-18 用户立）。',
                     flush=True,
                 )
     except Exception as e:
         print(f'[重估提醒检查 err:{e}]', flush=True)
+
+    # ⏰ 临近停盯边界的开仓资格提醒（2026-08-18 立，对齐 monitor_segment / futu_ws_segment）：
+    # 距停盯 ≤60 分钟每段打印剩余分钟 + 「>5 分钟开仓资格仍在、禁止自设截止线」。
+    try:
+        from trade_utils_tiger import minutes_to_session_end, OPEN_WINDOW_MIN
+        _syms = [t[0] for t in targets]
+        for _mkt in ('HK', 'US'):
+            if any(s.startswith(f'{_mkt}.') for s in _syms):
+                _mins = minutes_to_session_end(_mkt)
+                if 0 < _mins <= 60:
+                    if _mins > OPEN_WINDOW_MIN:
+                        print(
+                            f'⏰ 距{_mkt}停盯边界 {_mins:.0f} 分钟（>5）：开仓资格仍在——按压缩止盈'
+                            f'实算净赔率 ≥1.8 照常评估，禁止自设「临近收盘/午休不开仓」截止线'
+                            f'（2026-08-18 用户立；下单脚本另有 ≤5 分钟时间闸硬拦）。',
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            f'⏰ 距{_mkt}停盯边界 {_mins:.0f} 分钟（≤5）：绝对不开仓窗口，'
+                            f'持仓按停盯流程处理、空仓只盯到停盯。',
+                            flush=True,
+                        )
+                break
+    except Exception as e:
+        print(f'[停盯边界提醒 err:{e}]', flush=True)
 
     # 📊 VWAP 检查（2026-08-17 补，锚点对齐 monitor_segment）：段结束自动打印每个被采标的的
     # 现价 / VWAP / 相对位置——段结束唤醒 AI 后第一眼必看这段输出，作为方向框架的地面真相。
@@ -358,11 +390,12 @@ def finish():
     except Exception as e:
         print(f'[VWAP 检查 err:{e}]', flush=True)
 
-    # 👉 空转防护提示行（2026-08-17 补）：每次段结束都提醒 AI「先给本段判断 + 写分析心跳，
-    # 再重启下一段」——堵「收到段结束通知 → 只重启采样 → 不分析」的空转路径。
+    # 👉 空转防护提示行（2026-08-17 补；2026-08-18 修订顺序）：每次段结束都提醒 AI
+    # 「立刻分析 → 有机会当场下单 → 没机会才写心跳 + 重启下一段」——堵两条错误路径：
+    # ① 收到段结束通知只重启采样不分析（空转）；② 先启下一段再回来分析（把最新数据放旧）。
     print(
-        '👉 空转防护：本段输出不是只读的——先用一行式模板给本段判断（现价/关键位/VWAP/结论/下次段'
-        '时间），再写分析心跳（echo 追加 tmp/analysis_beat_日期_模式.csv），最后才重启下一段采样。',
+        '👉 空转防护：拿到本段数据立刻分析（期间不做任何别的事，不先启下一段）；分析后有机会当场执行'
+        '（下单不排队），没机会才写分析心跳（echo 追加 tmp/analysis_beat_日期_模式.csv）+ 重启下一段采样。',
         flush=True,
     )
 

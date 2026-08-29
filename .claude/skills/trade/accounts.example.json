@@ -5,6 +5,7 @@
     "tiger_id": "<tiger_id>",
     "account": "<account_paper模拟账户号>",
     "account_live": "<account_live实盘账户号，auto模式备选；用户明确说切实盘才用、切实盘前必须额外确认>",
+    "live_unlock_salt": "<实盘解锁 token 盐，随机 64 位 hex；本机生成：python3 scripts/live_unlock.py --init-salt>",
     "license": "<TBNZ等>"
   }
 }

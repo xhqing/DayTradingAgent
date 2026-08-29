@@ -7,6 +7,11 @@
 # 归档目录（历史 memory 快照 + 历史信号日志），含账户号/tiger_id/凭证路径等敏感信息，仅本地保留
 archive/
 
+# 实盘开仓解锁文件与授权凭证（live_unlock / live_auth_witness 消费，按会话 ID 分文件）：token
+# 原料含实盘账户号，仅本机保留
+.claude/skills/trade/live-unlock.*.local
+.claude/skills/trade/live-auth.*.local
+
 # 临时产物目录（预览图、调试快照等），不入库
 tmp/
 

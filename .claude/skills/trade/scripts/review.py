@@ -4,14 +4,18 @@
 
 CSV 字段（首行表头，逗号分隔；# 开头行当注释跳过）:
   date, symbol, direction, entry_price, exit_price, shares, max_loss
-  [, entry_time, exit_time, raw_high, raw_low]
+  [, entry_time, exit_time, raw_high, raw_low, shadow]
   - symbol: 富途格式带市场前缀（HK.03690 / US.SOXL），--fetch-futu 时直接传富途
   - direction: long / short（也接受 做多/做空/多/空）
-  - max_loss: 该笔最大损失金额（本币，config 风险额度向下取整后的实际值）
+  - max_loss: 该笔毛最大损失金额（本币，仓位×每股止损距；净 max_loss = 毛值+开仓费+止损价
+    平仓费，脚本内部反推止损价自动算，CSV 仍记毛值、口径不变）
   - entry_time / exit_time: 开/平仓时刻 'YYYY-MM-DD HH:MM:SS'，写该标的【交易所当地时区】
     （港股 HKT、美股 ET）；仅 --fetch-futu 时需要，用于拉持仓期间分钟 K
   - raw_high / raw_low: 持仓期间最高/最低价，可选；提供则直接用（优先于 --fetch-futu 拉取），
     缺失则 --fetch-futu 时自动从富途拉、否则跳过过程指标
+  - shadow: 影子样本标记，可选（1=影子）；2026-08-27 立——auto 模式被互斥闸拦下的机会的
+    纸面记录（见 auto-mode.md「影子交易」节）。主统计默认剔除 shadow=1 行（真实样本口径
+    不变），--shadow-only 反向只统计影子子集
 
 用法:
   python3 review.py <trades.csv>                  # 用 CSV 自带 raw_high/raw_low
@@ -25,13 +29,16 @@ CSV 字段（首行表头，逗号分隔；# 开头行当注释跳过）:
   5. 频率派 EV 的 95% CI（对照）
   6. 样本量规划（代入当前 s）
 
-费率扣费口径（net，2026-08-03 用户立；2026-08-12 改真实费率；2026-08-17 平台费改固定模式 + 美股按股结构）:
+费率扣费口径（net，2026-08-03 用户立；2026-08-12 改真实费率；2026-08-17 平台费改固定模式 + 美股按股结构；
+2026-08-28 分母改净口径——用户立「max_loss 加止损价成交的手续费，最大亏损不深于 −1R」）:
   盈亏 P 与 R 一律扣双边手续费后再算：P_net = P_gross − fee，
   fee = 开仓边费 + 平仓边费（两边各自按各自成交额/股数计费）。
   港股单边费 = 佣金(max(15, 成交额×0.029%)) + 印花税(个股0.1%,ETF免) + 各征费 + 固定平台费(15/笔)；
   美股单边费 = 佣金(0.0039/股, cap 0.5%×额) + 平台费(0.004/股, 最低1/笔, cap 0.5%×额) + 代收近似(0.00396/股)。
   按「市场 + 标的类型(type列 stock/etf) + 成交额/股数」精确算，见 fee_schedule.py。
-  分母 max_loss 保持毛值（开仓前定的风险预算标尺不动），故止损单净 R 可能略低于 −1。
+  R 分母 = 净 max_loss = 毛 M + 开仓边费 + 止损价平仓边费（止损价由 M/shares 反推）——
+  止损价精确成交的笔净 R 恰好 −1.000，最大亏损不深于 −1R（仅剩滑点一层）。
+  旧「分母毛值、止损 R 略低于 −1」口径废止（2026-08-28 前）。
   EV / 胜率 / 赔率 / 贝叶斯 P(EV>0) 全部基于净 R，自动跟随净口径。
   旧「港股 18bps / 美股 3bps」笼统单值口径已废（高估个股、严重高估 ETF 成本）；
   2026-08-12~08-17 间用的阶梯平台费口径亦废（固定模式不需要当月订单数）。
@@ -49,6 +56,15 @@ import fee_schedule as FS   # 真实费率（市场+类型+成交额/股数+固�
 # ---------- 分布函数（scipy 优先，无则退化）----------
 def _norm_cdf(x):
     return 0.5 * (1 + math.erf(x / math.sqrt(2)))
+
+
+def _log1p_fR(R, f):
+    """Y = ln(1+fR)，带定义域保护（2026-08-17 立）：1+fR ≤ 0（如 f=0.50 档、净 R ≤ −2 的
+    爆亏单）时 math.log 抛 ValueError 会把整个复盘 / 演化脚本崩掉。保护方式：把 1+fR 压到
+    极小正数下限（1e-12）再取对数——对应 Y ≈ −27.6 的极端亏损样本，方向正确（重度惩罚该 f）、
+    数值有界（不产生 -inf 污染后续统计），且正常样本（1+fR > 0）完全不受影响。"""
+    _EPS = 1e-12
+    return [math.log(max(1 + f * r, _EPS)) for r in R]
 
 try:
     from scipy import stats as _ss
@@ -98,8 +114,8 @@ def compute_process(t):
         else:               # 做空：涨不利 / 跌有利
             adv, fav = t['hi'] - t['entry'], t['entry'] - t['lo']
         mae_amt, mfe_amt = max(0, adv) * t['shares'], max(0, fav) * t['shares']
-        t['MAE_R'] = -mae_amt / t['M']            # 浮亏峰值（负值，越接近 0 越好）
-        t['MFE_R'] =  mfe_amt / t['M']            # 浮盈峰值（正值，越大越好）
+        t['MAE_R'] = -mae_amt / t['M_net']        # 浮亏峰值（负值，越接近 0 越好；净分母同 R 口径）
+        t['MFE_R'] =  fav * t['shares'] / t['M_net']  # 浮盈峰值（正值，越大越好）
         t['tuhui'] = max(t['MFE_R'] - t['R'], 0)  # 回吐（越小越好）
         t['eta']   = t['R'] / t['MFE_R'] if t['MFE_R'] > 0 else None  # 锁利效率（仅盈利单）
     else:
@@ -111,8 +127,11 @@ def load_trades(path):
         rows = list(csv.DictReader(_strip_comments(f)))
     if not rows: sys.exit("❌ CSV 无数据行")
     trades = []
+    shadow_any = False
     for i, r in enumerate(rows, 1):
         try:
+            _is_shadow = (r.get('shadow') or '').strip() not in ('', '0', 'false', 'False')
+            shadow_any = shadow_any or _is_shadow
             t = dict(date=r['date'].strip(), symbol=r['symbol'].strip(),
                      sign=_direction(r['direction']),
                      entry=float(r['entry_price']), exit=float(r['exit_price']),
@@ -120,7 +139,8 @@ def load_trades(path):
                      hi=_opt_float(r.get('raw_high')), lo=_opt_float(r.get('raw_low')),
                      entry_time=(r.get('entry_time') or '').strip() or None,
                      exit_time=(r.get('exit_time') or '').strip() or None,
-                     sec_type=(r.get('type') or r.get('sec_type') or '').strip().lower() or None)
+                     sec_type=(r.get('type') or r.get('sec_type') or '').strip().lower() or None,
+                     shadow=_is_shadow)
         except Exception as e:
             sys.exit(f"❌ 第{i}行解析失败: {e}\n  {r}")
         # 跨日交易校验（2026-08-12 用户立：本项目纯日内、不存在跨日；entry_time/exit_time
@@ -143,6 +163,11 @@ def load_trades(path):
     # 先按 (date, symbol) 排序（样本明细编号 = 序贯图横轴，与 bayes_evolution.py 同排序）
     trades.sort(key=lambda t: (t['date'], t['symbol']))
     # 平台费 2026-08-17 改固定模式：费项与订单数无关，不再按自然月累计订单序号分档。
+    # 2026-08-28 分母改净口径（用户立「max_loss 加止损价成交的手续费」）：M_net = 毛 M
+    # + 开仓边费 + 止损价平仓边费。CSV 无止损价列，由 M/shares（每股止损距）反推：
+    # 做多 stop = entry − M/shares、做空 stop = entry + M/shares——毛 M 精确记录时反推
+    # 数学上精确（与开仓记录同源）。止损价精确成交的笔净 R 恰好 −1.000（最大亏损不深于
+    # −1R，仅滑点除外）。
     type_missing_any = False
     for t in trades:
         amt_open = t['entry'] * t['shares']
@@ -153,13 +178,21 @@ def load_trades(path):
         t['fee_close'] = fee_close
         t['fee'] = fee_open + fee_close  # 开仓 + 平仓 两边手续费（各自按成交额/股数计费）
         t['P'] = t['P_gross'] - t['fee']  # 净盈亏（扣双边手续费）——复盘所有盈亏 / R 口径
-        t['R'] = t['P'] / t['M']          # 净 R；分母 max_loss 保持毛值（风险预算标尺不动），
-        #                                    故止损单净 R 会略低于 -1（止损实际比毛预算多亏一笔平仓费，真实）
+        # 净 max_loss：反推止损价 → 算止损价平仓边费（注意与 fee_close 区分：fee_close 按实际
+        # 平仓价算、用于分子；止损边费按止损价算、只进分母的最大亏损场景）
+        per_share_dist = t['M'] / t['shares'] if t['shares'] > 0 else 0.0
+        stop_implied = t['entry'] - per_share_dist * t['sign']   # 做多止损在下方（sign=+1）、做空上方（−1）
+        fee_stop = FS.fee_per_side(t['market'], t['sec_type'],
+                                   abs(stop_implied * t['shares']), shares=t['shares'])
+        t['M_net'] = t['M'] + fee_open + fee_stop
+        t['fee_stop'] = fee_stop
+        t['R'] = t['P'] / t['M_net']    # 净 R；分母净 max_loss（毛 M + 开仓费 + 止损价平仓费）
         compute_process(t)
         type_missing_any = type_missing_any or t['_type_missing']
     if type_missing_any:
         sys.stderr.write("⚠️ 部分/全部行缺 type 列，已按 stock（收印花税）计费；"
                          "ETF 漏标会多算印花税，建议补 type 列（stock/etf）精算。\n")
+    t['shadow_any'] = shadow_any   # 无 shadow 列时 False（老 CSV 兼容，行为不变）
     return trades
 
 
@@ -211,7 +244,7 @@ def p_g_pos(R, f):
     注：不用 NIG(b0=1)——该先验假设 σ²~1，对 R（σ²~5）几乎无影响；但小 f 时 Y 被压缩到
     σ²~1e-4，b0=1 先验会主导后验、严重扭曲 P(g>0)（实测 f=0.5% 把 P 从~94% 压到 52%）。
     频率派 t 用样本 sY、不受先验尺度扭曲；与 p_sum_y_pos 同框架。"""
-    Y = [math.log(1 + f * r) for r in R]
+    Y = _log1p_fR(R, f)   # 带定义域保护（1+fR≤0 时压下限，防 ValueError 崩脚本）
     N = len(Y); ybar = mean(Y)
     if N < 2:
         return dict(P_pos=float('nan'), lo=None, hi=None, g_hat=ybar, s_Y=0.0)
@@ -229,7 +262,7 @@ def p_sum_y_pos(R, f, n=40):
     频率派 t 预测近似（NIG 后验预测的简化）：t_stat=√(nN/(N+n))·ȳ_Y/sY, df=N-1。
     σ 不确定区间用正态（固定 σ）两端。N<2 返回 nan。
     与 p_g_pos 的区别：p_g_pos 回答「长期是否有 edge」(N→∞)，本函数回答「接下来 n 笔不亏」(有限 n)。"""
-    Y = [math.log(1 + f * r) for r in R]
+    Y = _log1p_fR(R, f)   # 带定义域保护（1+fR≤0 时压下限，防 ValueError 崩脚本）
     N = len(Y); ybar = mean(Y)
     if N < 2:
         return dict(P_pos=float('nan'), lo=None, hi=None, g_hat=ybar, s_Y=0.0)
@@ -246,7 +279,7 @@ def p_g_target(R, f, n, target):
     """P(g ≥ ln(1+target)/n)：每笔对数增长率 g 的后验，「n 笔累计收益率 ≥ target 所需 g」成立的概率。
     g 后验（频率派 t）~ t(ȳ_Y, s_Y/√N)，P(g≥c)=t_cdf(√N(ȳ-c)/s_Y, N-1)，c=ln(1+target)/n。
     target=0 时 c=0、退化为 P(g>0)（但本函数绑 n；p_g_pos 不绑 n、语义是「长期不亏」）。"""
-    Y = [math.log(1 + f * r) for r in R]
+    Y = _log1p_fR(R, f)   # 带定义域保护（1+fR≤0 时压下限，防 ValueError 崩脚本）
     N = len(Y); ybar = mean(Y)
     c = math.log(1 + target) / n
     if N < 2:
@@ -263,7 +296,7 @@ def p_g_target(R, f, n, target):
 def p_sum_y_target(R, f, n, target):
     """P(∑_{i=1}^n Y_i ≥ ln(1+target))：未来 n 笔累计收益率 ≥ target 的预测概率（有限 n）。
     预测和 ∑Y ~ t(n·ȳ_Y, s_Y·√(n(1+n/N)), df=N-1)。target=0 退化为 p_sum_y_pos。"""
-    Y = [math.log(1 + f * r) for r in R]
+    Y = _log1p_fR(R, f)   # 带定义域保护（1+fR≤0 时压下限，防 ValueError 崩脚本）
     N = len(Y); ybar = mean(Y)
     c = math.log(1 + target)
     if N < 2:
@@ -301,12 +334,31 @@ def main():
     ap.add_argument('csv', help="已平仓交易清单 CSV 路径")
     ap.add_argument('--fetch-futu', action='store_true',
                     help="缺 raw_high/raw_low 时连富途按 entry_time/exit_time 拉分钟 K 取 high/low")
+    ap.add_argument('--shadow-only', action='store_true',
+                    help="只统计 shadow 列=1 的影子样本（auto 互斥闸被拦机会的纸面记录，"
+                         "2026-08-27 立）——单独跑影子子集，与真实样本分开统计")
     args = ap.parse_args()
 
     if not _HAVE_SCIPY:
         print("⚠️ 未装 scipy：t 分布用正态近似(小样本偏乐观)、χ²用 Wilson-Hilferty 近似。建议 pip install scipy。\n")
 
     trades = load_trades(args.csv)
+
+    # 影子样本口径（2026-08-27 立，auto-mode.md「影子交易」决策点 4）：
+    # CSV 有 shadow=1 行时默认剔除（主统计 = 真实样本口径不变）；--shadow-only 反向只留影子。
+    # 两模式互斥；--shadow-only 但 CSV 无影子行时报错退出（防误跑空样本得出 N=0 假统计）。
+    _n_shadow = sum(1 for t in trades if t['shadow'])
+    if args.shadow_only:
+        if _n_shadow == 0:
+            sys.exit("❌ --shadow-only 但 CSV 无 shadow=1 行——先按 auto-mode.md「影子交易」落影子样本")
+        trades = [t for t in trades if t['shadow']]
+        print(f"【影子子集】shadow=1 共 {_n_shadow} 笔（决策时刻价近似、无真实滑点、被拦机会样本，"
+              f"与真实样本不同质——只单独看、不并入主统计）\n")
+    elif _n_shadow:
+        _n_real = len(trades) - _n_shadow
+        print(f"【影子剔除】CSV 含 shadow=1 影子样本 {_n_shadow} 笔，主统计已剔除（剩真实样本 {_n_real} 笔）——"
+              f"影子单独跑：python3 review.py <csv> --shadow-only\n")
+        trades = [t for t in trades if not t['shadow']]
 
     if args.fetch_futu:
         try:
@@ -342,12 +394,13 @@ def main():
     print("=" * 66)
 
     # 1. 样本明细
-    print("\n【样本明细】（P / R 均为扣双边手续费后的净额；fee = 开+平两边手续费）")
-    print(f"{'#':<3}{'日期':<11}{'标的':<16}{'向':<4}{'entry→exit':<18}{'P净':>9}{'fee':>8}{'max_loss':>10}{'R净':>9}")
+    print("\n【样本明细】（P / R 均为扣双边手续费后的净额；fee = 开+平两边手续费；"
+          "净M = 毛 M + 开仓费 + 止损价平仓费（2026-08-28 分母净口径））")
+    print(f"{'#':<3}{'日期':<11}{'标的':<16}{'向':<4}{'entry→exit':<18}{'P净':>9}{'fee':>8}{'净M':>10}{'R净':>9}")
     for i, t in enumerate(trades, 1):
         d = '多' if t['sign'] > 0 else '空'
         ee = f"{t['entry']}→{t['exit']}"
-        print(f"{i:<3}{t['date']:<11}{t['symbol']:<16}{d:<4}{ee:<18}{t['P']:>+9.1f}{t['fee']:>8.1f}{t['M']:>10.0f}{t['R']:>+9.3f}")
+        print(f"{i:<3}{t['date']:<11}{t['symbol']:<16}{d:<4}{ee:<18}{t['P']:>+9.1f}{t['fee']:>8.1f}{t['M_net']:>10.0f}{t['R']:>+9.3f}")
 
     # 2. 终局统计量
     print("\n【终局统计量】")
@@ -358,8 +411,10 @@ def main():
 
     # 3. 过程指标
     if trades[0]['MAE_R'] is not None:
+        # 分组口径与 summarize 一致（2026-08-17 修）：R=0（平手）归败——原来 Ld 用 R<0，
+        # R=0 的笔从两组都消失，过程指标 n 加总 < N、与终局统计（summarize 把 R=0 归败）打架。
         Wd = [t for t in trades if t['R'] > 0]
-        Ld = [t for t in trades if t['R'] < 0]
+        Ld = [t for t in trades if t['R'] <= 0]
         def g(td, k):
             v = [t[k] for t in td if t[k] is not None]
             return mean(v) if v else float('nan')
@@ -412,7 +467,7 @@ def main():
     print(f"  确认 EV>0(80%把握): 真实 EV=0.10R→{f80 * s ** 2 / 0.10 ** 2:.0f} 笔   0.20R→{f80 * s ** 2 / 0.20 ** 2:.0f} 笔")
     print("  (鸡生蛋：基于当前 N 估的 s，初步规划、非定论；每次复盘用当下样本重算 s 重填)")
 
-    print("\n⚠️ 盈亏按信号参考价与 max_loss 实算、扣双边手续费（真实费率：港股佣金 max(15,×0.029%) + 印花税(个股0.1%/ETF免) + 征费 + 固定平台费15/笔；美股佣金0.0039/股 + 平台费0.004/股(最低1/笔) + 代收0.00396/股，见 fee_schedule.py），不涉及真实账户资金（信号模式）。")
+    print("\n⚠️ 盈亏按信号参考价与 max_loss 实算、扣双边手续费（真实费率：港股佣金 max(15,×0.029%) + 印花税(个股0.1%/ETF免) + 征费 + 固定平台费15/笔；美股佣金0.0039/股 + 平台费0.004/股(最低1/笔) + 代收0.00396/股，见 fee_schedule.py），不涉及真实账户资金（信号模式）。R 分母 = 净 max_loss（毛 M + 开仓费 + 止损价平仓费，2026-08-28 净口径）——止损价精确成交的笔净 R 恰好 −1.000。")
 
 
 if __name__ == '__main__':

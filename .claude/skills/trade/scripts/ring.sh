@@ -24,6 +24,11 @@
 #   PROJECT_ROOT=xxx   覆盖项目根（默认 = 脚本上四级）
 #   SOUND=xxx          覆盖音色（默认按 type 映射）
 #   NOW=xxx            覆盖响铃时间戳（默认 date 实测，精确到秒）
+#   RING_LOG=xxx       覆盖响铃 log 文件名（默认 ring-log.csv；auto 模式开仓响铃
+#                      传 ring-log-auto.csv——signal 的 ring-log.csv 末行被
+#                      log_action.sh（signal 读末行当拍板时刻）与 resume.py
+#                      （signal 读末行做断层检测）消费，auto 写入会污染两会话数据，
+#                      必须隔离。2026-08-19 立，随「auto 开仓成功响铃」待办）
 # 调整：想更响/换音色改下方 SOUND 映射；系统音清单 ls /System/Library/Sounds/
 
 set -uo pipefail
@@ -57,8 +62,17 @@ SOUND="${SOUND:-$DEFAULT_SOUND}"
 afplay "/System/Library/Sounds/${SOUND}.aiff" 2>/dev/null &
 
 # 记 ring-log（响铃时刻 = 下单基准，事后匹配响铃时刻价、判成交）
-LOG_FILE="$SIGNALS_DIR/ring-log.csv"
+# 2026-08-17 修：NOTE 含逗号时按 CSV 规范双引号包裹（内部双引号翻倍转义）——裸逗号会
+# 把一行拆成多列、破坏 CSV 列结构。消费方兼容性已核：resume.py 用 csv.reader（正确解析
+# 引号字段、只读首列时间戳）、log_action.sh 用 cut -d',' -f1（只取首列、不受影响）。
+# 2026-08-19 立 RING_LOG 覆盖：auto 模式开仓响铃写 ring-log-auto.csv（与 signal 的
+# ring-log.csv 隔离，见头部注释）。
+LOG_FILE="$SIGNALS_DIR/${RING_LOG:-ring-log.csv}"
 if [ ! -f "$LOG_FILE" ]; then
   echo "timestamp,type,symbol,note" > "$LOG_FILE"
 fi
-echo "${NOW},${TYPE},${SYMBOL},${NOTE}" >> "$LOG_FILE"
+NOTE_CSV="$NOTE"
+if [ -n "$NOTE_CSV" ]; then
+  NOTE_CSV="\"${NOTE_CSV//\"/\"\"}\""
+fi
+echo "${NOW},${TYPE},${SYMBOL},${NOTE_CSV}" >> "$LOG_FILE"

@@ -89,7 +89,9 @@ CSV_PATH = f"reviews/{DATE}-trades{SUFFIX}.csv"
 
 # 读累积 trades CSV（单一数据源，与 review.py 同源；每次复盘更新此 CSV）
 # R = 扣双边手续费后的净 R（与 review.py net 口径一致）；2026-08-12 起用真实费率（fee_schedule）、
-# 2026-08-17 平台费改固定模式（不再按自然月累计订单序号分档）、美股按股计费
+# 2026-08-17 平台费改固定模式（不再按自然月累计订单序号分档）、美股按股计费；
+# 2026-08-28 分母改净口径（与 review.py 同步）：净 M = 毛 M + 开仓边费 + 止损价平仓边费
+# （止损价由 M/shares 反推；做多 entry − d、做空 entry + d），止损价精确成交的笔 R 恰好 −1.000
 rows_raw = []
 type_missing_any = False
 # direction 解析复用 review._direction 口径（2026-08-16 修）：原只认 ('long','做多')、
@@ -99,6 +101,11 @@ type_missing_any = False
 from review import _direction as _dir_sign
 with open(CSV_PATH) as fh:
     for r in csv.DictReader(fh):
+        # 影子样本剔除（2026-08-27 立，与 review.py 同口径）：shadow=1 的行（auto 互斥闸
+        # 被拦机会的纸面记录）不进演化图——演化图画的是真实资金曲线的信念累积，影子是
+        # 近似样本（决策时刻价、无滑点），混入会污染。老 CSV 无 shadow 列时行为不变。
+        if (r.get('shadow') or '').strip() not in ('', '0', 'false', 'False'):
+            continue
         sec_type = (r.get('type') or r.get('sec_type') or '').strip().lower()
         if not sec_type:
             sec_type = 'stock'; type_missing_any = True   # 缺 type 默认 stock（保守收印花税）
@@ -118,7 +125,12 @@ for x in rows_raw:
     fee_open = FS.fee_per_side(market, x['sec_type'], x['entry'] * x['shares'], shares=x['shares'])
     fee_close = FS.fee_per_side(market, x['sec_type'], x['exit'] * x['shares'], shares=x['shares'])
     fee = fee_open + fee_close                                                # 开 + 平 两边手续费
-    R = (P_gross - fee) / x['M']                                              # 净 R（分母 max_loss 保持毛值）
+    # 净 max_loss（2026-08-28，与 review.py 同步）：止损价由 M/shares 反推
+    _d = x['M'] / x['shares'] if x['shares'] > 0 else 0.0
+    _stop = x['entry'] - _d * x['sign']                                       # 做多止损在下方、做空上方
+    _fee_stop = FS.fee_per_side(market, x['sec_type'], abs(_stop * x['shares']), shares=x['shares'])
+    M_net = x['M'] + fee_open + _fee_stop
+    R = (P_gross - fee) / M_net                                               # 净 R（分母净 max_loss）
     trades.append([x['date'], x['symbol'], R])
 if type_missing_any:
     sys.stderr.write("⚠️ 部分/全部行缺 type 列，已按 stock（收印花税）计费；"
@@ -282,18 +294,27 @@ out3 = f'reviews/{DATE}{SUFFIX}-winrate-evolution.png'
 plt.savefig(out3, dpi=120)
 print(f'✅ 图已存 {out3}')
 
+# ④-⑦ 与终局统计全部要求 N≥2（N=1 算不出 σ；pg_xs 为空时循环里 pts[-1] 会 IndexError
+# 整脚本崩、前面已出的图也白出）。样本不足时输出提示直接收尾（2026-08-17 修）。
+if len(trades) < 2:
+    print(f'\n⚠️ 样本仅 {len(trades)} 笔（< 2，算不出 σ）：跳过 P(g>0) / P(∑Y≥0) 系列'
+          '（图④-⑦）与终局统计——前 3 张演化图已正常输出，凑够 2 笔后重跑得全套。')
+    sys.exit(0)
+
 # ④⑤ P(g>0) / P(∑_{1}^{40} Y≥0) 演化（多 f 折线）
 #   g = E[ln(1+fR)]，累计收益率 ≈ e^(n·g)-1；P(g>0) 回答「长期是否有 edge」
 #   P(∑_{1}^{40} Y≥0) 回答「接下来 40 笔不亏」（有限 n 预测，n=40 固定）
 #   两者都随样本逐笔累积，不同 f 各一条线（f 越大方差惩罚越重）
-FS = [0.005, 0.02, 0.10, 0.25, 0.50]   # 保守→f_max→激进→凯利f*→2f*临界（覆盖到能看出 f 对 P 的影响）
+# 2026-08-17 修：变量名 FS → FEE_FRACS——原名 FS 遮蔽了顶部 `import fee_schedule as FS` 的
+# 模块别名（本行之后若再调 FS.fee_per_side 会把列表当模块用、AttributeError 崩）。
+FEE_FRACS = [0.005, 0.02, 0.10, 0.25, 0.50]   # 保守→f_max→激进→凯利f*→2f*临界（覆盖到能看出 f 对 P 的影响）
 pg_xs = list(range(2, len(trades) + 1))   # N>=2 起（N=1 算不出 σ）
 colors = plt.cm.tab10.colors
 
 # ④ P(g>0) 演化图
 fig4, ax4 = plt.subplots(figsize=(13, 6.5))
 ends4 = []
-for fi, f in enumerate(FS):
+for fi, f in enumerate(FEE_FRACS):
     pg_pts = [p_g_pos(r_cum[:i], f)['P_pos'] * 100 for i in pg_xs]
     ax4.plot(pg_xs, pg_pts, '-o', color=colors[fi], linewidth=1.8, markersize=4.5,
              label=f'f={f*100:.1f}%')
@@ -318,7 +339,7 @@ print(f'\n✅ 图已存 {out4}')
 # ⑤ P(∑_{i=1}^{40} Y_i ≥ 0) 演化图（固定 n=40）
 fig5, ax5 = plt.subplots(figsize=(13, 6.5))
 ends5 = []
-for fi, f in enumerate(FS):
+for fi, f in enumerate(FEE_FRACS):
     ps_pts = [p_sum_y_pos(r_cum[:i], f, 40)['P_pos'] * 100 for i in pg_xs]
     ax5.plot(pg_xs, ps_pts, '-o', color=colors[fi], linewidth=1.8, markersize=4.5,
              label=f'f={f*100:.1f}%')
@@ -347,7 +368,7 @@ TARGET = 0.20   # 累计收益率目标 20%
 # ⑥ P(g ≥ ln(1+target)/40) 演化图
 fig6, ax6 = plt.subplots(figsize=(13, 6.5))
 ends6 = []
-for fi, f in enumerate(FS):
+for fi, f in enumerate(FEE_FRACS):
     pts = [p_g_target(r_cum[:i], f, 40, TARGET)['P_pos'] * 100 for i in pg_xs]
     ax6.plot(pg_xs, pts, '-o', color=colors[fi], linewidth=1.8, markersize=4.5,
              label=f'f={f*100:.1f}%')
@@ -371,7 +392,7 @@ print(f'✅ 图已存 {out6}')
 # ⑦ P(∑_{1}^{40} Y ≥ ln(1+target)) 演化图（n=40 固定）
 fig7, ax7 = plt.subplots(figsize=(13, 6.5))
 ends7 = []
-for fi, f in enumerate(FS):
+for fi, f in enumerate(FEE_FRACS):
     pts = [p_sum_y_target(r_cum[:i], f, 40, TARGET)['P_pos'] * 100 for i in pg_xs]
     ax7.plot(pg_xs, pts, '-o', color=colors[fi], linewidth=1.8, markersize=4.5,
              label=f'f={f*100:.1f}%')
@@ -393,14 +414,14 @@ print(f'✅ 图已存 {out7}')
 
 # 打印终局（N=全部）关键值，便于写进复盘文字
 print('\n=== 终局（全部样本）P(g>0) 与 P(S₄₀≥0) ===')
-for f in FS:
+for f in FEE_FRACS:
     G = p_g_pos(r_cum, f); S40 = p_sum_y_pos(r_cum, f, 40)
     print(f'f={f*100:>4.1f}%: ĝ={G["g_hat"]*100:+.3f}%/笔  '
           f'P(g>0)={G["P_pos"]*100:5.1f}%[σ不确定 {G["lo"]*100:.0f}~{G["hi"]*100:.0f}%]  '
           f'P(∑40Y≥0)={S40["P_pos"]*100:5.1f}%')
 
 print(f'\n=== 终局（全部样本）P(累计≥{TARGET*100:.0f}%) ===')
-for f in FS:
+for f in FEE_FRACS:
     G20 = p_g_target(r_cum, f, 40, TARGET); S20 = p_sum_y_target(r_cum, f, 40, TARGET)
     print(f'f={f*100:>4.1f}%: P(g≥ln1.2/40)={G20["P_pos"]*100:5.1f}%[σ不确定 {G20["lo"]*100:.0f}~{G20["hi"]*100:.0f}%]  '
           f'P(∑40Y≥ln1.2)={S20["P_pos"]*100:5.1f}%[σ不确定 {S20["lo"]*100:.0f}~{S20["hi"]*100:.0f}%]')

@@ -27,10 +27,16 @@ import trade_utils_tiger_us as U
 
 
 def _is_stop_order(o):
+    """止损单判定（同港股版 2026-08-23 增补：排除止盈单 PROFIT 腿落成单，防误改误撤）。"""
     otype = getattr(o, "order_type", None)
     otype_val = otype.value if hasattr(otype, "value") else str(otype)
     upper = str(otype_val).upper()
     legs = getattr(o, "order_legs", None) or []
+    if any(str(getattr(leg, "leg_type", "")).upper() == "PROFIT" for leg in legs):
+        return False
+    attr = str(getattr(o, "attr_desc", "") or "")
+    if "止盈" in attr:
+        return False
     return ("STP" in upper or "STOP" in upper or "TRAIL" in upper
             or any(str(getattr(leg, "leg_type", "")).upper() == "LOSS" for leg in legs))
 
@@ -53,13 +59,22 @@ def main():
     new_stop_price = float(sys.argv[3])
     quantity = int(float(sys.argv[4]))
     # 账户选择（2026-08-12 立）：默认 None=paper；--account live 切实盘。⚠️ live=真钱须用户已确认。
+    # 2026-08-17 修：--account 缺值（参数是最后一个 token）原来落 None → 报错文案显示
+    # 「收到 'None'」难懂；改成与 open_position 相同的明确用法提示。
     account = None
     if "--account" in sys.argv:
         idx = sys.argv.index("--account")
-        account = sys.argv[idx + 1].lower() if idx + 1 < len(sys.argv) else None
+        if idx + 1 >= len(sys.argv):
+            print("用法错误：--account 需要一个值：live / paper", file=sys.stderr)
+            sys.exit(1)
+        account = sys.argv[idx + 1].lower()
         if account not in ("live", "paper"):
             print(json.dumps({"ok": False, "error": f"--account 必须是 live/paper，收到 '{account}'"}))
             sys.exit(1)
+    # 实盘解锁前置闸（2026-08-21 立，实盘误开防护检查点①）：--account live 且解锁文件
+    # 无效 → blocked_by:"live_locked" 结构化拒单（详见 scripts/live_unlock.py）。
+    import live_unlock
+    live_unlock.live_gate_for_order_scripts(account, "move_stop_tiger_us")
 
     if not symbol.startswith("US."):
         print(json.dumps({"ok": False, "error": f"本脚本只处理美股（US.xxx），收到 {symbol}"}))
@@ -162,11 +177,13 @@ def main():
         stp_orders = [keep]
 
     # 路径分支 1：单个活动止损单 → modify aux_price（主路径）
+    # outside_rth=True（2026-08-18 美股盘前可交易）：modify 请求也带盘前标志——SDK 原生支持
+    # （modify_order 签名含 outside_rth），盘前 modify 止损价与盘前下单同窗口，不带可能被券商拒绝。
     stp = stp_orders[0]
     stp_id = getattr(stp, "id", None)
     old_aux = float(getattr(stp, "aux_price", 0) or 0)
     try:
-        tc.modify_order(stp, aux_price=trig)
+        tc.modify_order(stp, aux_price=trig, outside_rth=True)
     except Exception as e:
         # modify 抛异常 → fallback「先下新 STP + 撤旧」。分步报告（2026-08-16 修，同港股版）：
         # 新单提交成功 + 撤旧失败 = ok:true + warning（原实现整体报 ok:false、AI 误信无止损

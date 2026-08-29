@@ -24,11 +24,17 @@ from trade_utils_tiger import parse_mode  # 模式标识：log 按 mode 分文�
 MODE = parse_mode()
 
 # log 日期按市场对应交易日（与 monitor_segment.py 的 trading_date_str 同口径）：港股用北京日期、
-# 美股用美东交易日（北京 -12h 夏令时；冬令时 EST 需 -13h）——否则美股跨北京午夜时 summary 找不到 segment 写的 log。
+# 美股用美东交易日——否则美股跨北京午夜时 summary 找不到 segment 写的 log。
+# 2026-08-17 修：美股日期改 zoneinfo 直接转美东时区取（与 preflight/monitor_guard 同法）——
+# 原「北京 −12h」是夏令时硬编码，11 月切冬令时（EST=UTC-5 需 −13h）会取错日、找不到 log。
 def _trading_date_str(symbol):
     now = datetime.now()
     if symbol.startswith("US."):
-        return (now - timedelta(hours=12)).strftime("%Y%m%d")
+        try:
+            from zoneinfo import ZoneInfo
+            return now.astimezone(ZoneInfo("America/New_York")).strftime("%Y%m%d")
+        except Exception:
+            return (now - timedelta(hours=12)).strftime("%Y%m%d")  # zoneinfo 不可用：夏令时估兜底
     return now.strftime("%Y%m%d")
 
 LOG_FILE = os.path.join(
@@ -86,9 +92,15 @@ r_last = statistics.mean(ratios[half:]) if len(ratios[half:]) > 0 else None
 v_first = statistics.mean(vrs[:half]) if len(vrs[:half]) > 0 else None
 v_last = statistics.mean(vrs[half:]) if len(vrs[half:]) > 0 else None
 
-# 价格 4 段均价（看全天走势方向）
-quart = max(1, n // 4)
-seg = [statistics.mean(s) for i in range(4) if (s := lasts[i * quart : (i + 1) * quart])]
+# 价格 4 段均价（看全天走势方向）。
+# 2026-08-17 修：段边界用浮点索引取整（start = n*i/4 向下取整），保证 4 段首尾相接、
+# 覆盖全部 n 个点——原来 quart = n//4 在 n 不整除时只覆盖 4*(n//4) 个点，尾部最多
+# 3 个最新点被丢掉，末段均价偏向旧数据（对刚发生的走势反应滞后）。
+seg = []
+for i in range(4):
+    _s, _e = int(n * i / 4), int(n * (i + 1) / 4)
+    if _s < _e:
+        seg.append(statistics.mean(lasts[_s:_e]))
 
 # 额增速：最后 5 分钟 vs 全程均速。
 # 2026-08-16 修复：不再假设「每点=1 秒」——log 实际采样间隔因数据源而异（monitor_segment
@@ -125,19 +137,23 @@ print(f"价格4段均价：{[round(x, 2) for x in seg]}（{'递增' if seg[-1]>s
 print(f"额：当前 {turnovers[-1]:.1f}亿 | 近{recent_n}点（约{recent_n * _sample_secs / 60.0:.0f}分钟）均速 {recent_turnover_rate:.2f}亿/分（turnover 采样间隔≈{_sample_secs:.0f}s/点）" if len(turnovers) > 1 else "额：N/A（ws log 无此字段）")
 
 # VWAP（富途 avg_price）——日内多空分界 + 趋势日判断，看全貌必看（2026-07-22 用户立）
+# 2026-08-17 修：_q.close() 从 try 体内挪到 finally——原来 get_market_snapshot 抛异常时
+# close 不执行，OpenQuoteContext 连接泄漏（长盯盘会话反复跑 summary 会累积泄漏连接）。
 try:
     from futu import OpenQuoteContext
     _q = OpenQuoteContext('127.0.0.1', 11111)
-    _ret, _df = _q.get_market_snapshot([SYMBOL])
-    _q.close()
-    if _ret == 0 and len(_df) > 0 and 'avg_price' in _df.columns:
-        _vwap = float(_df['avg_price'].iloc[0])
-        _diff = cur_p - _vwap
-        _pos = "上方" if _diff > 0 else ("下方" if _diff < 0 else "贴合")
-        _who = "多头占优" if _diff > 0 else ("空头占优" if _diff < 0 else "多空均衡")
-        print(f"VWAP={_vwap:.2f} | 现价 {_pos} VWAP {_diff:+.2f}（{_who}；VWAP 是日内多空分界 + 趋势日判断关键，必看）")
-    else:
-        print(f"VWAP 获取失败：ret={_ret}（富途 OpenD 未登录或无该标的）")
+    try:
+        _ret, _df = _q.get_market_snapshot([SYMBOL])
+        if _ret == 0 and len(_df) > 0 and 'avg_price' in _df.columns:
+            _vwap = float(_df['avg_price'].iloc[0])
+            _diff = cur_p - _vwap
+            _pos = "上方" if _diff > 0 else ("下方" if _diff < 0 else "贴合")
+            _who = "多头占优" if _diff > 0 else ("空头占优" if _diff < 0 else "多空均衡")
+            print(f"VWAP={_vwap:.2f} | 现价 {_pos} VWAP {_diff:+.2f}（{_who}；VWAP 是日内多空分界 + 趋势日判断关键，必看）")
+        else:
+            print(f"VWAP 获取失败：ret={_ret}（富途 OpenD 未登录或无该标的）")
+    finally:
+        _q.close()
 except Exception as _e:
     print(f"VWAP 获取异常：{_e}")
 

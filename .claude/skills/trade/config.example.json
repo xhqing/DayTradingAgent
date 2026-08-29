@@ -33,12 +33,15 @@
   "_comment_harness": "单条Bash命令硬超时秒。环境约束,一般不改。",
   "proxy": {
     "enabled": true,
-    "_comment_enabled": "老虎 SDK 代理总开关(2026-08-14 立)。老虎 SDK 用 urllib3.PoolManager 发请求、不读 HTTP(S)_PROXY 环境变量,须代码层把 web_utils.http_pool 换成 ProxyManager 才能走代理。背景:2026-06-12 监管新规后老虎按指令发出网络环境判定,境内 IP 下实盘开仓被 code=1200 拒;经境外出口实测下单正常受理(2026-08-14 验证)。代理出口=本机 xpilot(Xray)HTTP 入站口。",
+    "_comment_enabled": "老虎 SDK 代理总开关(2026-08-14 立;2026-08-23 注释中性化)。老虎 SDK 用 urllib3.PoolManager 发请求、不读 HTTP(S)_PROXY 环境变量,须代码层把 web_utils.http_pool 换成 ProxyManager 才能走代理。背景:券商按指令发出网络环境判定下单是否受理,不合规地域出口下实盘开仓被监管类错误码拒,合规出口实测正常受理(2026-08-14 验证)。代理出口=本机 xpilot(Xray)HTTP 入站口。用途详见本机配置说明。",
     "http_proxy": "http://127.0.0.1:1087",
     "_comment_http_proxy": "代理地址,默认本机代理的 HTTP 入站口(如 xpilot/Xray/Clash 的 http 端口)。改端口须与代理软件配置一致。",
     "apply_scope": "live_only",
     "_comment_apply_scope": "代理应用范围: live_only=仅实盘账户走代理(模拟盘无监管限制、直连更快); all=全部走代理; off=全部直连。默认 live_only。",
     "accounts_live_required": false,
-    "_comment_accounts_required": "live_only 模式下,账户不在 accounts.json 的 tiger.account_live(即非实盘)时是否仍强制走代理。true=非实盘也强制走代理(保守); false=非实盘直连。默认 false——监管拦截(code=1200)只作用于实盘开仓,模拟盘无此限制。"
+    "_comment_accounts_required": "live_only 模式下,账户不在 accounts.json 的 tiger.account_live(即非实盘)时是否仍强制走代理。true=非实盘也强制走代理(保守); false=非实盘直连。默认 false——监管拦截只作用于实盘开仓,模拟盘无此限制。",
+    "tiger_whitelist": [],
+    "_comment_tiger_whitelist": "老虎开发者页 IP 白名单的本地副本(2026-08-19 立,proxy_guard.py 的比对基准;列表或 \";\" 分隔字符串均可)。初始填老虎页当前配置的 IP 清单;之后在老虎页加白、弹窗点「已添加」即自动合并到此处,无需手改。",
+    "_comment_live_unlock_gate": "实盘解锁闸(2026-08-21 立,实盘误开防护):apply_scope 无论何值,当前账户为实盘且解锁文件(skills/trade/live-unlock.local,已 gitignore)无效时,apply_proxy 一律跳过挂代理保持本地直连——被老虎 IP 白名单在连接层物理拒(access forbidden),实盘默认态物理不可达。授权:AskUserQuestion 实盘授权(含打码号 67****91 + 授权范围,由 hooks/live_auth_witness.py 见证点击)→ python3 scripts/live_unlock.py verify-auth 写解锁(24h 有效、绑定会话);撤销:python3 scripts/live_unlock.py revoke。本闸无配置项(恒生效);解锁 token 盐在 accounts.json 的 tiger.live_unlock_salt。"
   }
 }

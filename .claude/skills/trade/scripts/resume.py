@@ -37,6 +37,15 @@ sys.path.insert(0, SCRIPT_DIR)
 from trade_utils_tiger import parse_mode
 MODE = parse_mode()  # 运行时 log 按 mode 分文件（signal/auto 两会话并行盯盘不互相污染）；ring-log 仅 signal 读
 
+# 账户选择（2026-08-20 立，实盘盯盘配套）：--account live 切实盘账户取净值——
+# 2026-08-20 事故：实盘盯盘时 resume 固定走默认模拟账户（约 789 万 HKD）算 B、
+# 实盘净值远小于模拟净值（量级见本机实查）、偏差 68 倍。修复 = 取净值与下单同账户（load_equity 透传）。
+ACCOUNT = None
+for _i, _a in enumerate(sys.argv[1:]):
+    if _a == '--account' and _i + 1 < len(sys.argv[1:]):
+        _cand = sys.argv[1:][_i + 1].lower()
+        ACCOUNT = _cand if _cand in ('live', 'paper') else None
+
 # 时间断层警告阈值（分钟）：正常段间循环 < 1 分钟，超过这个值基本可断定断网/暂停/故障致断层。
 GAP_WARN_MIN = 5
 
@@ -66,20 +75,17 @@ def us_status():
     except Exception:
         if wd >= 5:
             return "周末休市"
-        if 1290 <= hhmm < 1440 or hhmm < 240:
-            return "美股盘中(夏令时估·zoneinfo不可用)·可发信号"
-        if 1200 <= hhmm < 1290:
-            return "美股盘前(夏令时估·zoneinfo不可用)·只预热"
+        if 960 <= hhmm < 1440 or hhmm < 240:
+            return "美股可交易(夏令时估·zoneinfo不可用)·盘前+盘中(美东04:00-16:00)"
         return "美股盘外(夏令时估·zoneinfo不可用)·不发信号"
     us_wd = us_now.weekday()
     us_hhmm = us_now.hour * 60 + us_now.minute
     tag = "EDT夏令时" if bool(us_now.dst()) else "EST冬令时"
     if us_wd >= 5:
         return "周末休市"
-    if 570 <= us_hhmm < 960:
-        return f"美股盘中({tag})·可发信号"
-    if 240 <= us_hhmm < 570:
-        return f"美股盘前({tag})·只预热不发信号"
+    if 240 <= us_hhmm < 960:
+        phase = "盘前" if us_hhmm < 570 else "盘中"
+        return f"美股可交易({phase}·{tag})·可发信号"
     return f"美股盘外({tag})·不发信号"
 
 
@@ -98,20 +104,30 @@ def _log_date_tag(path):
     return "HK"
 
 
-def last_monitor_time():
-    """今日所有 monitor_log_*.csv 里最晚的一条采样时间。
+def last_monitor_time(market=None):
+    """今日 monitor_log_*.csv 里最晚的一条采样时间（2026-08-17 加 market 参数：
+    HK 只查港股 log、US 只查美股 log——多会话并行盯盘下，港股会话的断层检测不再被
+    美股会话的采样掩盖、反之亦然；None 保持旧的全市场口径，向后兼容）。
 
-    2026-08-16 修复：日期口径按市场对齐——美股 log 按美东交易日命名（北京 −12h 夏令时；
-    实锤：08-11 会话跨午夜后仍写 20260811 文件、末行 01:56）。原实现用北京日期 glob，
+    2026-08-16 修复：日期口径按市场对齐——美股 log 按美东交易日命名
+    （实锤：08-11 会话跨午夜后仍写 20260811 文件、末行 01:56）。原实现用北京日期 glob，
     北京 00:00-04:00（美股后半场）glob 不到任何美股 log → 输出「今日无采样记录」假安心，
-    恰在最需要断层检测的时段失明。现美股按（北京 −12h）取美东交易日日期 glob。"""
+    恰在最需要断层检测的时段失明。现美股按美东交易日日期 glob。
+    2026-08-17 修：美东日期改 zoneinfo 直接转美东时区取（与 preflight/monitor_guard 同法）——
+    原「北京 −12h」是夏令时硬编码，11 月切冬令时（EST=UTC-5 需 −13h）会取错日、glob 落空。"""
     hk_date = now.strftime("%Y%m%d")
-    us_date = (now - datetime.timedelta(hours=12)).strftime("%Y%m%d")
+    try:
+        from zoneinfo import ZoneInfo
+        us_date = now.astimezone(ZoneInfo("America/New_York")).strftime("%Y%m%d")
+    except Exception:
+        us_date = (now - datetime.timedelta(hours=12)).strftime("%Y%m%d")  # zoneinfo 不可用：夏令时估兜底
     logs = []
-    for lg in glob.glob(os.path.join(TMP_DIR, f"monitor_log_HK_*_{hk_date}_{MODE}.csv")):
-        logs.append(lg)
-    for lg in glob.glob(os.path.join(TMP_DIR, f"monitor_log_US_*_{us_date}_{MODE}.csv")):
-        logs.append(lg)
+    if market in (None, "HK"):
+        for lg in glob.glob(os.path.join(TMP_DIR, f"monitor_log_HK_*_{hk_date}_{MODE}.csv")):
+            logs.append(lg)
+    if market in (None, "US"):
+        for lg in glob.glob(os.path.join(TMP_DIR, f"monitor_log_US_*_{us_date}_{MODE}.csv")):
+            logs.append(lg)
     best = None
     for lg in logs:
         try:
@@ -160,7 +176,16 @@ def last_ring_time():
 
 
 print(f"\n🔍 时间断层检测：")
-mt = last_monitor_time()
+# 市场scope（2026-08-17 立，多会话并行盯盘）：传了标的参数时按主标的市场查本市场 log
+# （港股会话不被美股采样掩盖、反之亦然）；无参数时保持旧全市场口径（默认启动场景）。
+_scope_syms = [a for a in sys.argv[1:] if not a.startswith("--mode")]
+_market_scope = None
+if _scope_syms:
+    _first = _scope_syms[0].split(",")[0].strip().upper()
+    _market_scope = "US" if _first.startswith("US.") else ("HK" if _first.startswith("HK.") else None)
+if _market_scope:
+    print(f"   （按市场 scope={_market_scope}，只查本市场 log——多会话并行盯盘互不掩盖）")
+mt = last_monitor_time(market=_market_scope)
 rt_ = last_ring_time()
 if mt:
     print(f"   上次采样：{mt:%H:%M:%S}")
@@ -173,7 +198,8 @@ if candidates:
     if gap >= GAP_WARN_MIN:
         # B5（2026-08-04）：盘中断层额外强调「疑似主动停密采样」+ 立即重启 monitor_segment
         # （盯盘纪律：盘中不得擅自停/降频，2026-08-04 教训）；盘外断层才按断网/故障处理。
-        in_session = ("盘中" in hk_status()) or ("盘中" in us_status())
+        # 2026-08-18 起 us_status 盘前也返回「可交易」，美股判据同步含「盘前」段。
+        in_session = ("盘中" in hk_status()) or ("盘中" in us_status()) or ("盘前" in us_status())
         stop_hint = (
             " → 盘中疑似【主动停密采样】（非断网/故障）！立即重启 monitor_segment 40 秒循环恢复密盯"
             "（2026-08-04 教训：盯盘期间不得擅自停/降频，唯一停盯途径是用户喊停或撞上 12:00/16:00 边界）"
@@ -201,7 +227,7 @@ try:
     frac = risk.get("risk_fraction")
     fmax = risk.get("f_max", frac)
     lev = risk.get("max_leverage", 10)
-    eq_now, cur, eq_src = _le(mode)
+    eq_now, cur, eq_src = _le(mode, account=ACCOUNT)
     if frac is not None and eq_now is not None:
         print(
             f"\n💰 模式 {mode} | 当前 equity {eq_now:,.2f} {cur} × {frac*100:.1f}% = 单笔预算 B {frac*eq_now:,.2f}"
@@ -237,7 +263,21 @@ if not found_any:
 
 
 # ---------- 可选：snapshot 刷新指定标的现价（验证持仓 / 刷新参考价）----------
-_positional = [a for a in sys.argv[1:] if not a.startswith("--mode")]
+# 过滤 --mode / --account 及其取值，剩余的位置参数才是标的（2026-08-20 修：
+# 原只过滤 --mode 前缀，--mode auto 的 auto 被当成标的、--account live 的 live 同样——
+# 实盘盯盘传 --account live 时 snapshot 刷新必炸「format of code live is wrong」）。
+_positional = []
+_skip_next = False
+for _a in sys.argv[1:]:
+    if _skip_next:
+        _skip_next = False
+        continue
+    if _a in ("--mode", "--account"):   # 带取值的选项：跳过取值
+        _skip_next = True
+        continue
+    if _a.startswith("--mode=") or _a.startswith("--account="):
+        continue
+    _positional.append(_a)
 if _positional:
     syms = [s.strip() for s in _positional[0].split(",") if s.strip()]
     print(f"\n📊 刷新现价 {syms}：")

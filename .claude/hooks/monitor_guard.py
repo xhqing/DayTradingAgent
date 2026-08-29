@@ -15,6 +15,19 @@
   exec_seg）但分析心跳停更 > 180 秒 / 当天采样已跑 ≥180 秒仍零心跳 → exit 2 阻断，
   逼 AI 先补「一行式判断 + 写分析心跳」再重启（堵 2026-08-17 空转实录：52 次纯重启
   采样、0 分析文本——采样链防护全部放行、分析链死亡无人拦）。
+- PreToolUse（matcher Bash，跑法拦截 2026-08-18 立）：盘中用 nohup 后台跑密采样段 /
+  sleep 拼接在采样段命令上 → exit 2 阻断 + 提示「段启动必须 run_in_background +
+  task-notification 通知驱动」。为什么：2026-08-18 实录——切富途逐笔源时把启动方式
+  误改成 nohup+sleep 轮询自驱，段结束不唤醒、AI sleep 后才顺手读旧输出，数据滞后
+  40-60 秒、错过入场判定窗口；run_in_background 的段结束 task-notification 才是
+  skill 规定的唤醒机制（monitoring.md「后台采样不间断规矩」）。
+- PreToolUse（matcher Bash，标的池互斥 2026-08-19 立；2026-08-20 修管道绕过 + 扩三层）：
+  启动采样段时三层检查——targets 含其它会话已认领标的（跨池冲突）/ 本会话未认领就采样 /
+  目标含无人认领标的 → exit 2 阻断 + 提示先跑 pool_claim.py。2026-08-20 港股实录：真实
+  采样命令几乎都带 `2>&1 | grep -vE …` 输出管道，旧「提及未执行」排除词把管道里的 grep
+  误当命令本体、整条采样命令被剔出 exec_seg → 本拦截（连同 A4 连跑 / 跑法 / 空转门）对
+  管道形态命令全部失明，signal 会话与 auto 会话重复盯 00100/01810/09988 一小时 0 拦截。
+  修正 = 排除词只看管道首段（见 pretool 分支注释）。
 - Stop：盘中且回合结束 monitor_segment 未在跑 → stderr 提醒「盯盘期间必须保持
   monitor_segment 循环，立即重启」。
 
@@ -29,6 +42,7 @@ hook 接收 stdin JSON（tool_name/tool_input 等），exit 0 放行 / exit 2 �
 import sys
 import os
 import json
+import time
 import subprocess
 from datetime import datetime
 
@@ -127,9 +141,11 @@ def in_hk_session(now):
 
 
 def in_us_session(now):
-    """美股盘中（美东 09:30-16:00，zoneinfo 自动处理夏令时/冬令时与跨午夜，2026-08-16 修）。
+    """美股可交易时段（美东 04:00-16:00 = 盘前 + 盘中，zoneinfo 自动处理夏令时/冬令时与跨午夜）。
 
-    原实现「夏令时 HKT 21:30-次日 04:00 硬编码 + weekday()>=5 排周末」三处错：
+    2026-08-18 立规：美股可交易窗口扩为盘前 + 盘中（美东 04:00 起），guard 守卫窗口同步扩——
+    盘前盯盘（采样 / 分析 / 开仓前刷新）与盘中同权受守卫保护。16:00 收盘边界不变。
+    2026-08-16 修（原实现「夏令时 HKT 21:30-次日 04:00 硬编码 + weekday()>=5 排周末」三处错）：
     ① 北京周六 00:00-04:00（美东周五盘中）guard 完全失效 4 小时；
     ② 周一凌晨（美东周日休市）误激活；
     ③ 11 月切冬令时后整体错位 1 小时。
@@ -140,13 +156,13 @@ def in_us_session(now):
         if us.weekday() >= 5:
             return False
         t = us.time()
-        return _parse_hm("09:30") <= t < _parse_hm("16:00")
+        return _parse_hm("04:00") <= t < _parse_hm("16:00")
     except Exception:
-        # zoneinfo 不可用（极端环境）→ 回退夏令时硬编码
+        # zoneinfo 不可用（极端环境）→ 回退夏令时硬编码（美东 04:00-16:00 = 北京 16:00-次日 04:00）
         if now.weekday() >= 5:
             return False
         t = now.time()
-        return t >= _parse_hm("21:30") or t < _parse_hm("04:00")
+        return t >= _parse_hm("16:00") or t < _parse_hm("04:00")
 
 
 def in_trading_session(now=None):
@@ -198,6 +214,122 @@ def monitor_segment_running(now=None):
     return False, "无 monitor_log"
 
 
+def _pool_conflict(exec_seg_cmds, sid=""):
+    """标的池互斥检测（2026-08-19 立；2026-08-20 修管道绕过 + 扩三层语义）。
+
+    启动采样段的三层检查（命中任一层 → 阻断消息；全过 / 无认领表 / 无会话 id → None）：
+      层1 跨池冲突：targets 含**其它会话**已认领标的（原 2026-08-19 语义，不变）；
+      层2 未认领即采样：本会话**没跑过 pool_claim.py claim 就启动采样段**（2026-08-20 新增）
+          ——2026-08-20 港股实录：两个 signal 会话跳过认领直接采样，把 auto 会话已认领的
+          00100/01810/09988 重复盯了一小时，层1 因这些标的没进认领表而拦不住（未认领 ≠
+          未占用），层2 补的就是这个洞：**不认领就不给采样**，认领是采样的前置；
+      层3 孤儿标的：targets 含**任何人（含自己）都未认领**的标的（2026-08-20 新增）
+          ——已认领的会话临时往 targets 里塞新标的（僵局换标的没先 claim）也拦，
+          堵「先斩后奏」路径。层2 / 层3 只在认领表**非空**（存在活认领）时生效——
+          全场无人认领（单会话 / 认领制未启用 / 认领者全死）时不拦，
+          保持旧口径「无划分不误伤」。
+
+    从命令里提取 targets 标的，与 tmp/pool_claims.json（scripts/pool_claim.py 维护）比对。
+
+    targets 格式（monitor_segment / ws_segment / futu_ws_segment 同构）：
+    `SYM[:up[:dn]][,SYM[:up[:dn]]...]`，SYM 带 HK./US. 前缀。可能作为多个独立参数传入
+    （futu_ws_segment 的 <duration> <targets> 两参数式），从命令里逐 token 抓含市场前缀的。
+    """
+    if not sid:
+        return None   # 非会话内（手动跑 / 测试）：无池概念，不拦
+    claims_path = os.path.join(TMP_DIR, "pool_claims.json")
+    if not os.path.isfile(claims_path):
+        return None   # 无认领表文件：不拦（认领制未启用）
+    try:
+        import datetime as _dt
+        with open(claims_path) as f:
+            data = json.load(f)
+        if data.get("date") != _dt.datetime.now().strftime("%Y-%m-%d"):
+            return None   # 非当日认领（跨日残留）：不拦
+        claims_list = data.get("claims", [])
+    except Exception:
+        return None   # 认领表读坏：宁可放行（互斥闸另有兜底），不当普通采样拦死
+
+    taken = {}          # symbol -> 持有会话 sid
+    alive_claims = []
+    for c in claims_list:
+        holder = c.get("session", "")
+        # 死会话认领不占坑（同 pool_claim._prune_dead 口径，jsonl 停更 >30 分钟 = 已结束）：
+        # 不写回认领表（hook 只读——写回需拿 pool_claim 的 flock，hook 高频跑不宜持锁），
+        # 只在本轮判定里当作已释放。认领者下次跑 pool_claim 时会真正落盘清理。
+        if holder and holder != sid and not _claim_holder_alive(holder):
+            continue
+        alive_claims.append(c)
+        for s in c.get("symbols", []):
+            taken[str(s).strip().upper()] = holder
+
+    import re as _re2
+    syms_in_cmd = set()
+    for sc in exec_seg_cmds:
+        for tok in _re2.findall(r"(?:HK|US)\.[A-Za-z0-9]+", sc):
+            s = tok.upper()
+            if s.startswith("HK.") and s[3:].isdigit() and len(s[3:]) < 5:
+                s = "HK." + s[3:].zfill(5)   # 与 pool_claim._norm_sym 同口径补前导 0
+            syms_in_cmd.add(s)
+    if not syms_in_cmd:
+        return None   # 命令里没有带市场前缀的标的 token：不是采样段，不拦
+
+    # 层1 跨池冲突
+    cross = sorted((s, h) for s, h in taken.items() if s in syms_in_cmd and h and h != sid)
+    # 层2 本会话未认领（认领表里没有任何本会话条目 = 从没跑过 claim）。
+    # 仅当存在活认领（taken 非空）时生效——认领制停用后残留的空认领表不拦单会话。
+    no_claim = bool(taken) and sid not in {c.get("session", "") for c in alive_claims}
+    # 层3 孤儿标的：认领表非空 + 有标的无人认领
+    orphan = sorted(s for s in syms_in_cmd if s not in taken) if taken else []
+
+    if not cross and not no_claim and not orphan:
+        return None
+
+    tip = (
+        f"⚠️ 密采样守卫阻断（标的池互斥，2026-08-19 立；2026-08-20 修管道绕过 + 扩三层）："
+    )
+    if cross:
+        detail = "；".join(f"{s}（会话 [{h[:8]}…]）" for s, h in cross)
+        tip += (
+            f"\n  ① 跨池冲突：{detail} 已被其它会话认领——多会话并行盯盘各盯各池，"
+            f"不跨池抢标的（重复盯 = 重复信号 / 浪费会话容量）。"
+        )
+    if no_claim:
+        tip += (
+            f"\n  ② 本会话未认领：还没跑 pool_claim.py claim 就启动采样段——认领是采样的"
+            f"前置（2026-08-20 港股实录：signal 会话跳过认领直接采样，与 auto 会话重复盯"
+            f"一小时无人拦）。启动序列：方向研判定候选 → claim → 采样。"
+        )
+    if orphan:
+        tip += (
+            f"\n  ③ 未认领标的：{', '.join(orphan)} 没有被任何会话认领（含本会话）——"
+            f"换标的 / 加标的前先 claim（未占才可用），不先斩后奏。"
+        )
+    tip += (
+        f"\n处理：先跑 `python3 .claude/skills/trade/scripts/pool_claim.py claim <候选标的逗号分隔>`"
+        f" 认领本会话标的池（已被占的会返回 ❌ 冲突、从候选去掉），再启动采样段；"
+        f"该标的确需换主盯时先让持有会话跑 `pool_claim.py release <标的>` 释放、本会话再 claim；"
+        f"无划分需求时删除 tmp/pool_claims.json 关闭本检查。"
+    )
+    return tip
+
+
+def _claim_holder_alive(sid):
+    """认领持有会话是否活着（同 pool_claim._session_alive 口径，hook 侧只读版）。
+
+    jsonl 路径 ~/.claude/projects/<slug>/<sid>.jsonl（slug 生成同 pool_claim / monitor_watcher）。
+    停更 ≤30 分钟 = 活着；文件不存在 / 停更超阈 = 已结束（其认领视为已释放，不占坑）。
+    """
+    if not sid:
+        return False
+    slug = "-" + _PROJECT_ROOT.strip(os.sep).replace(os.sep, "-")
+    p = os.path.expanduser(os.path.join("~/.claude/projects", slug, sid + ".jsonl"))
+    try:
+        return (time.time() - os.path.getmtime(p)) <= 30 * 60
+    except OSError:
+        return False
+
+
 def main():
     hook_type = sys.argv[1] if len(sys.argv) > 1 else ""
     try:
@@ -214,6 +346,9 @@ def main():
     if hook_type == "pretool":
         tool_input = payload.get("tool_input") or {}
         command = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
+        # 会话标识优先取 payload（hook stdin JSON 的 session_id，实测与环境变量一致且更稳），
+        # 拿不到再退环境变量——避免个别环境变量未注入时互斥检查整个静默失效（2026-08-20）。
+        sid = payload.get("session_id") or os.environ.get("CLAUDE_CODE_SESSION_ID", "")
         # A4（2026-08-05 立；2026-08-16 扩检测面 + 修反向误伤）：单条 Bash 命令连跑多个
         # 密采样段（&& / ; / || 串联）= 等效降频——段间 AI 不醒来分析、段结束通知只在全部段
         # 跑完后触发一次。原实现只数 monitor_segment.py 子串次数：① 2026-08-07 起港股主力
@@ -228,9 +363,43 @@ def main():
                                                 "futu_ws_segment.py"))]
         # 子命令级再排除「提及但不执行」：子命令须像一次执行（python3 … 脚本名），
         # py_compile / cat / diff / grep 等工具引用脚本文件不算执行采样。
-        exec_seg = [sc for sc in seg_subcmds
-                    if _re.search(r"(^|\s|/)python3?\s", sc) and "py_compile" not in sc
-                    and not _re.search(r"\b(cat|head|tail|diff|grep|ls|rm|mv|cp|less|more)\b", sc)]
+        # ⚠️ 排除词只看**管道首段**（2026-08-20 修）：真实采样命令几乎都带输出管道
+        # `…segment.py 40 HK.… 2>&1 | grep -vE '…'`——旧实现整条子命令匹配排除词，
+        # 管道右侧的 grep 把**正在执行的采样段**误当「提及未执行」剔出 exec_seg，
+        # 导致 A4 连跑 / 跑法 / 空转 / 标的池互斥四项检查对管道形态命令全部失明
+        # （2026-08-20 港股实录：signal 与 auto 会话重复盯一小时、0 拦截）。
+        # 判定语义：命令的**执行体**在管道首段（python3 … segment.py …），
+        # 尾部的 grep / head 等只处理输出、不是执行体本身——排除词查首段即可；
+        # 首段干净（python3 执行）+ 任意输出管道 = 正在执行采样段，必须算数。
+        def _is_exec_seg(sc):
+            head = sc.split("|", 1)[0]   # 管道首段 = 执行体
+            if not _re.search(r"(^|\s|/)python3?\s", head) or "py_compile" in sc:
+                return False
+            return not _re.search(r"\b(cat|head|tail|diff|grep|ls|rm|mv|cp|less|more)\b", head)
+
+        exec_seg = [sc for sc in seg_subcmds if _is_exec_seg(sc)]
+        # 跑法拦截（2026-08-18 立）：采样段用 nohup 后台 / 尾接 sleep = 通知驱动机制被绕过。
+        # 合法跑法只有一种——run_in_background 参数（hook 侧表现为普通前台命令交给 harness
+        # 后台化，命令文本里不该出现 nohup/&/sleep 拼接）。误伤排查：`&` 单字符检测会误伤
+        # 无关注释，故只查三种模式：nohup + 段脚本、`段脚本 … &`（行尾 &）、`段脚本 … ; sleep`/`&& sleep`。
+        bad_patterns = []
+        for sc in exec_seg:
+            if "nohup" in sc:
+                bad_patterns.append(f"nohup 后台跑段：{sc.strip()[:80]}")
+            if _re.search(r"futu_ws_segment\.py.*\d\s*&\s*$|monitor_segment\.py.*\d\s*&\s*$|ws_segment\.py.*\d\s*&\s*$", sc.strip()):
+                bad_patterns.append(f"行尾 & 后台挂段：{sc.strip()[:80]}")
+            if _re.search(r"sleep\s+\d+", sc) and any(s in sc for s in ("futu_ws_segment", "monitor_segment", "ws_segment")):
+                bad_patterns.append(f"段命令内拼 sleep：{sc.strip()[:80]}")
+        if bad_patterns:
+            msg = (
+                f"⚠️ 密采样守卫阻断（跑法拦截，2026-08-18 立）：检测到绕过通知驱动的采样跑法——"
+                f"{'；'.join(bad_patterns)}。段启动必须用 run_in_background（工具参数）+ 段结束"
+                f"task-notification 唤醒 AI 即刻分析，禁止 nohup/&/sleep 轮询自驱"
+                f"（2026-08-18 实录：nohup+sleep 致数据滞后 40-60 秒、错过入场判定；"
+                f"run_in_background 滞后实测 ≤11 秒）。切数据源时只换脚本名，不换启动方式。"
+            )
+            print(msg, file=sys.stderr)
+            sys.exit(2)
         if len(exec_seg) >= 2:
             msg = (
                 f"⚠️ 密采样守卫阻断：单条 Bash 命令串联执行 {len(exec_seg)} 个密采样段"
@@ -282,6 +451,17 @@ def main():
             )
             print(msg, file=sys.stderr)
             sys.exit(2)  # PreToolUse exit 2 = 阻断 + stderr 反馈给 AI
+        # 标的池互斥拦截（2026-08-19 立；2026-08-20 扩三层）：启动密采样段时查
+        # 跨池冲突 / 本会话未认领 / 未认领标的（三层语义见 _pool_conflict docstring）。
+        # 认领表见 scripts/pool_claim.py（tmp/pool_claims.json）。多会话并行盯盘互斥划分的
+        # 硬执行点——散文约定（不跨池抢标的）靠 AI 记忆会衰减，hook 阻断才拦得住
+        # （同「文档规定必须尽可能配工具强制」）。无认领表文件 / 无本会话 sid 时跳过
+        # （单会话场景无池概念，不误伤）。
+        if exec_seg:
+            _pool_block = _pool_conflict(exec_seg, sid)
+            if _pool_block:
+                print(_pool_block, file=sys.stderr)
+                sys.exit(2)
         sys.exit(0)
 
     if hook_type == "stop":

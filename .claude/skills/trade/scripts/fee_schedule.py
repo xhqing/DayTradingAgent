@@ -46,12 +46,23 @@ HK_COMM_MIN = 15.0         # 最低 15 港元/笔（佣金）
 HK_PLATFORM_FIXED = 15.0
 
 # 港股政府 / 交易所代收费率（单边，买卖各收一次）
-STAMP = 0.001              # 印花税 0.1%（港股个股；ETF 免）
+# 2026-08-19 补两条真实规则（用当日实盘 01810 四笔成交单 SDK commission 逐笔对账校准）：
+#   ① 印花税向上取整到元（每笔向上取整到 1 HKD，实缴口径）；
+#   ② 交收费（CCASS）每笔最低 2 HKD。
+# 对账结果（新规则 vs 实测 commission）：BUY 27.50×5000=210.34 零差、BUY 27.76×5000=211.88
+# 零差、SELL(STP) 27.94×5000=213.25 零差；SELL(STP) 27.68×5000 实测 215.74、新规则 211.71
+# 仍差 +4.03——该 STP 平仓单另有费项（同笔 App 侧费用合计 426.08 与 SDK commission 之和
+# 一致，说明差在券商实际收费、非本表漏项；TODO 记录「疑组合单，待账单核」，核实前按
+# -0 差最优模型保留）。旧纯比例模型对四笔分别差 +0.50 / +4.63 / +0.20 / +0.30。
+STAMP = 0.001              # 印花税 0.1%（港股个股；ETF 免），每笔向上取整到元
 TRADE_FEE = 0.0000565      # 交易费（HKEX）
-CCASS = 0.000042           # 结算交收费（HKSCC）
+CCASS = 0.000042           # 结算交收费（HKSCC），每笔最低 2 HKD
+CCASS_MIN = 2.0            # 交收费最低收费（2026-08-19 实测对账补）
 LEVY = 0.000027            # 交易征费（SFC）
 FRC = 0.0000015            # 财汇局交易征费（FRC）
-HK_GOV_RATE = TRADE_FEE + CCASS + LEVY + FRC   # 除印花税外的代收合计（单边）
+HK_GOV_RATE = TRADE_FEE + LEVY + FRC   # 除印花税与交收费外的代收合计（单边纯比例；CCASS
+                                      # 带 max(最低2, 比例) 后在 fee_per_side 里单独算、
+                                      # 不在此合计内防重复计，2026-08-19 修）
 
 # ---------------- 美股（按股结构，2026-08-17 核改） ----------------
 US_COMM_PER_SHARE = 0.0039    # 佣金 0.0039 USD/股
@@ -126,10 +137,17 @@ def fee_per_side(market, sec_type, amount, shares=None, order_index_in_month=Non
         return comm + plat + gov
     # HK
     comm = max(HK_COMM_MIN, amount * HK_COMM_RATE)
-    stamp = amount * STAMP if sec_type == "stock" else 0.0   # ETF 免印花税
-    gov = amount * HK_GOV_RATE
+    # REIT 暂无对应档、落 stock 档收印花税——方向保守（多算一点费、不会低估成本）；
+    # 港股 REIT 印花税实际免征与否待核实，核实后再决定是否加 'reit' 档（2026-08-17 注）。
+    # 印花税向上取整到元 + 交收费最低 2 元（2026-08-19 实测对账补，见模块顶部注释）；
+    # 交收费带最低收费后单独算（max(CCASS_MIN, 比例)），HK_GOV_RATE 已剔除 CCASS 比例
+    # 部分（防重复计，2026-08-19 修）。
+    import math
+    stamp = math.ceil(amount * STAMP) if sec_type == "stock" else 0.0   # ETF 免印花税
+    gov_ex_ccass = amount * HK_GOV_RATE
+    ccass = max(CCASS_MIN, amount * CCASS)
     plat = _platform_fee_hk_fixed()
-    return comm + stamp + gov + plat
+    return comm + stamp + gov_ex_ccass + ccass + plat
 
 
 def fee_per_side_rate(market, sec_type, amount, shares=None, order_index_in_month=None,

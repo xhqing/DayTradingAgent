@@ -34,11 +34,18 @@ import trade_utils_tiger as U
 
 def _is_stop_order(o):
     """止损单判定（STP/STOP/TRAIL/LOSS 附加腿，2026-08-16 对齐美股版口径——原港股版
-    只认 STP/STOP，App 手动挂的 TRAIL 单查活动止损时看不见）。"""
+    只认 STP/STOP，App 手动挂的 TRAIL 单查活动止损时看不见）。
+    2026-08-23 增补：排除止盈单（PROFIT 附加腿落成单带 parent_id——止损单判定不能吞掉
+    止盈单，否则移损会把止盈单当止损误改、异常清理会把止盈单撤掉）。"""
     otype = getattr(o, "order_type", None)
     otype_val = otype.value if hasattr(otype, "value") else str(otype)
     upper = str(otype_val).upper()
     legs = getattr(o, "order_legs", None) or []
+    if any(str(getattr(leg, "leg_type", "")).upper() == "PROFIT" for leg in legs):
+        return False
+    attr = str(getattr(o, "attr_desc", "") or "")
+    if "止盈" in attr:
+        return False
     return ("STP" in upper or "STOP" in upper or "TRAIL" in upper
             or any(str(getattr(leg, "leg_type", "")).upper() == "LOSS" for leg in legs))
 
@@ -62,13 +69,22 @@ def main():
     new_stop_price = float(sys.argv[3])
     quantity = int(float(sys.argv[4]))
     # 账户选择（2026-08-12 立）：默认 None=paper；--account live 切实盘。⚠️ live=真钱须用户已确认。
+    # 2026-08-17 修：--account 缺值（参数是最后一个 token）原来落 None → 报错文案显示
+    # 「收到 'None'」难懂；改成与 open_position 相同的明确用法提示。
     account = None
     if "--account" in sys.argv:
         idx = sys.argv.index("--account")
-        account = sys.argv[idx + 1].lower() if idx + 1 < len(sys.argv) else None
+        if idx + 1 >= len(sys.argv):
+            print("用法错误：--account 需要一个值：live / paper", file=sys.stderr)
+            sys.exit(1)
+        account = sys.argv[idx + 1].lower()
         if account not in ("live", "paper"):
             print(json.dumps({"ok": False, "error": f"--account 必须是 live/paper，收到 '{account}'"}))
             sys.exit(1)
+    # 实盘解锁前置闸（2026-08-21 立，实盘误开防护检查点①）：--account live 且解锁文件
+    # 无效 → blocked_by:"live_locked" 结构化拒单（详见 scripts/live_unlock.py）。
+    import live_unlock
+    live_unlock.live_gate_for_order_scripts(account, "move_stop_tiger")
 
     if not symbol.startswith("HK."):
         print(json.dumps({"ok": False, "error": f"本脚本只处理港股（HK.xxx），收到 {symbol}"}))
@@ -146,7 +162,10 @@ def main():
             continue
         stp_orders.append(o)
 
-    # 路径分支 0：无活动止损单 → 下新 STP（补保护）
+    # 路径分支 0：无活动止损单 → 下新 STP（补保护）。止损单铁律（2026-08-23 用户立）
+    # 「持仓在 → 止损单必须存在」的恢复路径：插针触发止损但平仓失败、价格反弹后不想平仓
+    # → 传失效前止损价（当日 actions 开仓「止损」/ 移损「新止损」行解析，采样段持仓状态
+    # 告警会直接给出）跑本脚本，本分支下新 STP 即恢复保护。
     if len(stp_orders) == 0:
         result_base["path"] = "no_active_stop → submit new STP"
         try:

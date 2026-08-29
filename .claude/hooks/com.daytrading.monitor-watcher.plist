@@ -1,27 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- 密采样守护 watcher launchd 配置（2026-08-04 立；2026-08-10 撤销；2026-08-11 修复逻辑后恢复；
-     2026-08-12 重构为「采样在跑 + 会话 Running 标签（state 文件）双判据」）。
-     作用：每 10 秒触发 monitor_watcher.py，港股盘中检查密采样是否中断、中断发 macOS 通知。
-     独立于 Claude Code session（AI 停密采样 / session 不在场，watcher 仍通知用户）。
-
-     判定逻辑（2026-08-12 用户立：盯盘窗口在 Running 且采样脚本在正常采样 → 不报，两者都
-     不活跃才报；会话是否在 Running 读补丁 012 写盘的 state 文件）：按会话独立守护，只检查
-     tmp/monitor_sessions.txt 注册列表里的盯盘会话。优先级：① jsonl 停更 > 30 分钟 = 死会话，
-     自动剔除、不报；② 任一密采样脚本（monitor_segment.py / ws_segment.py / futu_ws_segment.py）
-     进程存活 → 盯盘正常 Running、本轮一律不报；③ 采样没在跑 → 读 ~/.claude/session_running/<sid>.txt
-     （补丁 012 写盘）：running/thinking = 会话在 Running 不报，waiting_input/idle = 没在 Running 报中断，
-     state 文件无（012 未生效）→ fallback jsonl 停更 > 90 秒判定。
-     仅港股盘中守护（美股时段用户休息不打扰，2026-08-11 用户立）。
-
-     补丁 012 依赖：PatchClaudeAgent 的 patch 012 须应用到本机 extension.js、且盯盘会话重载
-     扩展后才写 state 文件；未生效时 watcher 自动 fallback 到 jsonl 判定（过渡期不误报）。
-
-     部署（手动）：
-       1. 复制本文件到 ~/Library/LaunchAgents/com.daytrading.monitor-watcher.plist
-       2. 确认下方 <string> 为本机真实路径（which python3；本项目根）
-       3. launchctl load ~/Library/LaunchAgents/com.daytrading.monitor-watcher.plist
-       卸载：launchctl unload ~/Library/LaunchAgents/com.daytrading.monitor-watcher.plist
+<!-- 密采样守护 watcher launchd 配置（2026-08-04 立；2026-08-10 撤销；2026-08-11 恢复；
+     2026-08-12 判定逻辑重构；2026-08-20 删「中断警报 + 掩蔽提示」、收缩为两个低频警告，
+     并改为盯盘开始（preflight）默认 load；2026-08-21 删空转警报、仅剩白名单漂移检测）。
+     作用：每 10 秒触发 monitor_watcher.py，港股盘中做一个低频检查：
+       老虎 IP 白名单漂移检测：proxy_guard.py 盘中兜底（漂出自动切回白名单内节点 + 弹窗）。
+     不再检查会话中断 / 掩蔽（2026-08-20 删）、空转警报（2026-08-21 删）、不再读会话注册表。
      盘外 watcher 自动跳过（in_trading_session 判断），周末 / 夜间 / 午休 / 美股时段不查、不发通知。
+
+     部署（自动）：preflight.py 的 _ensure_watcher() 会在盯盘启动时自动部署 + load 本 plist
+     （~/Library/LaunchAgents/ 缺文件时从项目 .claude/hooks/ 复制过去）。手动：
+       launchctl load ~/Library/LaunchAgents/com.daytrading.monitor-watcher.plist
+     卸载（仅用户明确要求时）：launchctl unload ~/Library/LaunchAgents/com.daytrading.monitor-watcher.plist
+     ⚠️ 卸载后下次 preflight 会自动重新 load——要彻底关闭须改 preflight 或删 plist。
 -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">

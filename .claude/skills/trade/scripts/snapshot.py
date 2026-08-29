@@ -14,7 +14,7 @@ if ret != 0:
 
 cols = ['code','name','last_price','open_price','high_price','low_price','prev_close_price',
         'lot_size','turnover','turnover_rate','amplitude','bid_price','ask_price',
-        'bid_ask_ratio','volume_ratio','update_time']
+        'bid_ask_ratio','volume_ratio','avg_price','update_time']
 have = [c for c in cols if c in df.columns]
 pd.set_option('display.width', 220)
 pd.set_option('display.max_columns', 20)

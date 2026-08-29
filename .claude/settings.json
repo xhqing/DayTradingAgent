@@ -50,6 +50,14 @@
           { "type": "command", "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/monitor_guard.py stop" }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          { "type": "command", "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/live_auth_witness.py" }
+        ]
+      }
     ]
   }
 }
