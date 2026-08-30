@@ -57,7 +57,7 @@
 ## 交易动作脚本（`.claude/skills/trade/scripts/`）
 
 - **港股老虎默认账户独立一套**（2026-08-01 立）：`trade_utils_tiger.py`（老虎 SDK 自包含：配置加载、港股 symbol `HK.02800`→老虎 `02800`（只认 5 位裸数字，2026-08-02 实测）、lot_size / tick 从 get_contract 取、开仓 LMT 限价单（默认且唯一，2026-08-23 用户立「下单必须用限价单」；`--order-type mkt` 拒单）+附加腿 OrderLeg('LOSS')+OrderLeg('PROFIT')（2026-08-23 双腿 BRACKETS）、平仓「止损/止盈交替逼近」循环（无止损单则补设一个、触发价=现价；不下普通订单）、独立止损 STP、净值取 get_assets().summary.net_liquidation）+ `open_position_tiger.py` / `close_position_tiger.py` / `move_stop_tiger.py` / `move_target_tiger.py`（移盈，2026-08-23 新增）。**港股默认账户，未特别说明即用这套**。✅ 实测状态（2026-08-03）：三动作全链路已 paper 开盘实测通过（HK.00700 腾讯做多 100 股）——开仓 LMT 主单 FILLED @486.2 + 附加腿激活为独立 STP 单 HELD 监控；移损独立 STP（trigger 484.0）先新增后撤旧（2026-08-03 实测时）；**2026-08-05 改用 modify aux_price**（实测开仓附加止损单 OrderLeg('LOSS') 落成的独立 STP 可直接 `modify_order(aux_price=新价)` 改触发价 492→493、移损变单步无撤单 race——主路径 modify、0 个活动 STP 下新、≥2 个撤多余再 modify、modify 异常 fallback「先下新+撤旧」，详见 `move_stop_tiger.py` 与 CHANGELOG）；开仓附加腿可独立撤销；平仓 MKT Filled @486.0（avg_fill_price 真实成交价）+ 撤全部止损单；账户回到原 2 笔历史持仓（02800 多 1000 / 07709 空 200，保留不动）。实测发现并修复 2 个 bug（order_type 传字符串 / 成交回查 status 取 .value，详见 CHANGELOG 2026-08-03 与脚本 docstring）。**2026-08-07 开仓默认改市价单 MKT**（用户立）：高波动标的（MINIMAX 当日 5 次 LMT 开仓全 Invalid——限价单 + 8 秒超时撤单与快速跳动盘口不匹配）改用 MKT 主单 + 附加止损腿一次提交；paper 实测通过（MINIMAX 20 股：MKT 主单 Filled @349.4 + 附加腿 LOSS @344 落成独立 STP Submitted；平仓 modify 触发价未触发 fallback 撤止损 + MO Filled @348.6、账户干净）。**午后实测再发现 1 个 bug 并修复（2026-08-03）：平仓顺序必须先撤止损单、再下平仓单**——挂着的止损单（开仓附加腿落成的 STP）占用持仓的可平额度（salable=0 = 持仓 − 挂单量），Buy 平空单被拒 EXPIRED「The order quantity you entered exceeds your current holdings」（实测 Buy 38,500/10,000/100 股全被拒）；先 `cancel_all_stop_orders_tiger` 撤全部止损单、再下 MKT 平仓单即立即成交（Filled @36.20）。`close_position_tiger.py` 已按「先撤止损 → 再平仓」修复（原「先平仓后撤止损」顺序错误）。该笔 07709 空单（38,500 股 @36.32 → 36.20）因基础设施问题作废，未计入 actions/。（上一条「做空平仓前置 = 必须无挂着的止损单」是 2026-08-03 旧实现下的限制，2026-08-05 起 modify 方案已消除——主路径只改触发价、止损单本身成交、不产生超额平仓单；仅 fallback「撤止损 + MO」仍先撤后平。）paper 接入：properties 的 account 填 17 位模拟账户号即自动走模拟域名。**2026-08-05 close_position_tiger 改用「modify 止损单触发价=现价」平仓**（用户方案、彻底消除平仓 race condition）：把持仓止损单触发价 modify 到现价、止损单立即触发 Sell/Buy MO（严格=持仓量、平后持仓 0、无第二个 MO 不会反向开仓），有活动止损单走 modify 主路径、无活动止损单直接 MO、modify 失败/未触发 fallback「撤止损+MO」；端到端实测通过（附加止损 @491.8 → modify 触发价→494.8 → 止损单触发 Sell MO Filled @494.6、持仓归 0、无反向开仓）。今天事故（撤止损+MO 反向开空 -36500）的 race 从机制上消除。move_stop_tiger 改 modify 见上方「移损」段。
-- **美股老虎默认账户独立一套**（2026-08-05 立，与港股 tiger 解耦）：`trade_utils_tiger_us.py`（复用 trade_utils_tiger 不分市场基础设施 + 美股特定：symbol 裸代码 MU、lot 1、tick 0.01、USD 净值、3bps 费）+ `open_position_tiger_us.py` / `close_position_tiger_us.py` / `move_stop_tiger_us.py` / `move_target_tiger_us.py`（移盈，2026-08-23 新增）。**美股默认账户，未特别说明即用这套**。`close_position_tiger_us` 走「止损/止盈交替逼近」循环（2026-08-23，同港股）、`move_stop_tiger_us` 走「modify aux_price」单步路径（同港股 2026-08-05 改造）、`move_target_tiger_us` 移盈同港股版；`cancel_all_stop_orders_us` 含 TRAIL（吸收中芯残留事故教训）。✅ 实测状态（2026-08-05 美股盘中）：三动作全链路已 paper 端到端实测通过（SPY 2 股小仓位——开仓 LMT Filled @773.68 + 附加止损腿 LOSS 激活；移损 modify aux_price 770.61→771.71 验证成功；平仓 modify 触发价=现价、止损单触发 MO Filled @773.44、持仓归零无残留止损单）。⚠️ **行情数据源（2026-08-05 实测修复）**：老虎 TBNZ 账户**美股无行情权限**（`get_stock_briefs` 实测报 code=4 msg=4000 permission denied US market），美股脚本 `get_quote_us` 已改走**富途 OpenD 单源**（美股行情只有富途可用，与 `account-tools.md`「数据源分工总则」一致）；美股下单脚本（open/close/move_stop_us）行情输入一律富途、下单仍走老虎。
+- **美股老虎默认账户独立一套**（2026-08-05 立，与港股 tiger 解耦）：`trade_utils_tiger_us.py`（复用 trade_utils_tiger 不分市场基础设施 + 美股特定：symbol 裸代码 MU、lot 1、tick 0.01、USD 净值、费率走 `fee_schedule.py` 老虎真实费率按股结构（佣金 0.0039/股 + 平台费 0.004/股 + 代收近似 0.00396/股，2026-08-17 起；旧「3bps/边」笼统口径已废，见 `risk-management.md`「费率与成本」））+ `open_position_tiger_us.py` / `close_position_tiger_us.py` / `move_stop_tiger_us.py` / `move_target_tiger_us.py`（移盈，2026-08-23 新增）。**美股默认账户，未特别说明即用这套**。`close_position_tiger_us` 走「止损/止盈交替逼近」循环（2026-08-23，同港股）、`move_stop_tiger_us` 走「modify aux_price」单步路径（同港股 2026-08-05 改造）、`move_target_tiger_us` 移盈同港股版；`cancel_all_stop_orders_us` 含 TRAIL（吸收中芯残留事故教训）。✅ 实测状态（2026-08-05 美股盘中）：三动作全链路已 paper 端到端实测通过（SPY 2 股小仓位——开仓 LMT Filled @773.68 + 附加止损腿 LOSS 激活；移损 modify aux_price 770.61→771.71 验证成功；平仓 modify 触发价=现价、止损单触发 MO Filled @773.44、持仓归零无残留止损单）。⚠️ **行情数据源（2026-08-05 实测修复）**：老虎 TBNZ 账户**美股无行情权限**（`get_stock_briefs` 实测报 code=4 msg=4000 permission denied US market），美股脚本 `get_quote_us` 已改走**富途 OpenD 单源**（美股行情只有富途可用，与 `account-tools.md`「数据源分工总则」一致）；美股下单脚本（open/close/move_stop_us）行情输入一律富途、下单仍走老虎。
 - `log_action.sh` — 把完整交易动作写入 `actions/` 目录
 
 ## 操作原则（auto 专属）
@@ -74,7 +74,7 @@
 
 AI 拍板后调脚本下单，脚本返回 order_id 和成交价，最后 `log_action.sh` 写入 `actions/` 目录。
 
-**动作 emoji**：开仓 🟢 / 平仓 🔴 / 移损 🟡。
+**动作 emoji**：开仓 🟢 / 平仓 🔴 / 移损 🟡 / 移盈 🔵（2026-08-23 起四类，见上「4 类动作」节）。
 
 **表格格式规范**：表格内不放装饰性 emoji，字段名用纯文字；圆形彩色 emoji（🟢🔴🟡）可在表格内用于动作类型标记；只有开仓表格的参考价和止损价加粗显示。每条动作**表格前**加「框线 + 3 个圆形同色 emoji + 标题 + 3 个同色 emoji + 框线」醒目装饰，再接表格。
 
@@ -117,7 +117,7 @@ AI 拍板后调脚本下单，脚本返回 order_id 和成交价，最后 `log_a
 | 盈亏 | ±$M（实际成交价算）|
 | **实际落地赔率** | **±R 倍**（净盈亏 ÷ 修正 max_loss = 止损距×仓位 + 开仓费 + 止损价平仓费；**平仓必填**，见下）|
 | 过程指标 | mfe_R / mae_R（平仓脚本自动输出，见下；有则抄入，无则省略）|
-| 理由 | 动能减弱 / 做空时回踩前低不破（下跌动能衰竭）/ 做多时回踩前高遇阻（上涨遇阻）/ 做空时资金流转正（买盘涌入）/ 做多时资金流转负（卖盘涌出）/ 到硬平仓时点（止损条件单被动触发只标记，不在此列）|
+| 理由 | 动能减弱 / 做空时回踩前低不破（下跌动能衰竭）/ 做多持仓冲前高遇阻回落（上涨遇阻 + 形态确认，见 `trading-strategy.md`「三角形持续形态」——单次遇阻 + 形态未破不平，须叠加阻力多次不过 + 量缩等确认）/ 做空时资金流转正（买盘涌入）/ 做多时资金流转负（卖盘涌出）/ 到硬平仓时点（止损条件单被动触发只标记，不在此列）|
 
 > **平仓必填实际落地赔率（2026-08-03 用户立；2026-08-04 改净口径；2026-08-12 改真实费率；2026-08-17 平台费改固定模式 + 美股按股；2026-08-28 分母改净 max_loss）**：平仓动作表格必须含「实际落地赔率 = **净**盈亏 ÷ 修正 max_loss」（修正 max_loss = 实际仓位 × |开仓成交价 − 止损价| + 开仓边费 + **止损价**平仓边费，开仓时点算死、移动止损不改这个基准；净盈亏 = 毛盈亏 − [开仓边费 + 平仓边费]，开仓 / 平仓各按各自成交额/股数算单边费——auto 平仓额用脚本返回的真实成交价 / 止损触发价；费率 = 老虎真实费率见 `risk-management.md`「费率与成本」，含佣金最低 / 印花税 / 固定平台费）。**分母含费的意义**：止损价精确成交时净亏损恰好等于修正 max_loss → R 恰好 −1.000，最大亏损不深于 −1R（仅剩滑点）。**盈亏金额看不出「承担了多少风险换来的」**——同样赚 $5000，max_loss $5000 是 1R、max_loss $10000 只算 0.5R；实际落地赔率才反映真实性价比，与开仓记录的初始预期 / 修正预期赔率对照，能直接看出「预估→修正→落地」的打折程度（如 2026-08-03 MU 空：初始 2.86R → 修正 2.06R → 实际 −0.92R，预估乐观但被板块 V 反打破止损——历史 R 为旧毛分母口径、与新政不可直接比大小）。被动平仓（止损触发）也照填。**开仓条目在平仓后回填实际落地赔率**，让该笔三阶段赔率（初始预期 / 修正预期 / 实际落地，均净口径含费分母）齐全于一处。
 
@@ -125,7 +125,7 @@ AI 拍板后调脚本下单，脚本返回 order_id 和成交价，最后 `log_a
 
 > **平仓过程指标 mfe_R / mae_R（2026-08-05 立，复盘数据约束方案 b 落地；2026-08-28 分母净口径）**：平仓脚本（close_position_tiger / _us）在成交后**自动输出** `mfe_R` / `mae_R`（+ `entry_price` / `raw_high` / `raw_low` / `process_metric_basis`）——持仓期间极值取当日盯盘 log 采样近似（日内当天开当天平）、止损距 = 开仓价 − 活动止损触发价；无盯盘 log 或缺止损价则不输出该字段。**转录动作表格时照抄这两个字段**（有则必抄），复盘时直接补进 trades.csv 的 `raw_high` / `raw_low` 列、review.py 即能算 MAE / MFE / 回吐 / 锁利效率 η，不必回拉历史 K。口径与 review.py 一致（2026-08-28 起净口径）：MFE_R = 有利方向最大幅度 × 仓位 ÷ 净 max_loss（正）、MAE_R = −不利方向最大幅度 × 仓位 ÷ 净 max_loss（负，越接近 0 防守越好）；净 max_loss = 止损距 × 仓位 + 开仓费 + 止损价平仓费（脚本带 quantity 时净口径、缺失时退毛口径并标 basis）。
 
-**移动止损 🟡**（浮盈中上移锁利）：
+**移动止损 🟡**（止损永远放最新趋势反转位、随结构单向移动——见 `trading-strategy.md`「移动止损唯一用法」；浮盈中移损顺带锁利是结果、不是目的）：
 
 ```
 ════════════════════════════════════
@@ -163,7 +163,7 @@ AI 拍板后调脚本下单，脚本返回 order_id 和成交价，最后 `log_a
    `python3 scripts/shadow_trade.py open HKT <symbol> <direction> <entry_ref> <stop> <target> <qty> --blocked-by <blocked_by>`
    （价格与量用**本会话这次拍板的计划值**——正是被拦下的那笔机会；`decision_price` 取脚本输出的 `current_price` 作假设成交价近似）；
 2. 影子仓期间照常盯盘，按真实仓同款逻辑判断移损 / 平仓时机——但**只走 `shadow_trade.py move / close`**（纸面记录，不下单、不响铃、不调 close_position 脚本）；
-3. 平仓时 `shadow_trade.py close <market> <symbol> <决策时刻价> <理由>`，脚本自动结算净盈亏 / R（fee_schedule 同源费率、max_loss 毛口径分母，与真实仓同口径）并追加【影子】平仓条目到当日信号文件。
+3. 平仓时 `shadow_trade.py close <market> <symbol> <决策时刻价> <理由>`，脚本自动结算净盈亏 / R（fee_schedule 同源费率、**净口径分母** = 止损距×量 + 开仓费 + 止损价平仓费，2026-08-28 起与真实仓同口径）并追加【影子】平仓条目到当日信号文件。
 
 **四条硬边界（2026-08-27 用户定案的决策点，脚本已内置强制）**：
 
@@ -187,7 +187,7 @@ AI 拍板后调脚本下单，脚本返回 order_id 和成交价，最后 `log_a
    - **触发价 = 目标止损价**（允许小范围偏差）；用户也会在 App 手动新增止损单，故最新止损价不能凭记忆，`monitor_segment.py` 每轮采样查账户当日订单获取最新止损价。
    - **持仓状态工具强制 + 空仓不查（2026-08-18 立，用户两起实盘事故后）**：① **自己开仓后，持仓状态与最新止损价由采样段输出自动带出，不靠 AI 记得去查**——`futu_ws_segment.py`（主力源）每段结束打印「📌 持仓状态」行（账户实持量 + 活动止损单最新触发价 + 状态比对：账户已无持仓但 AI 未记录平仓 → 🚨 告警、数量不一致 → ⚠️ 提示），实现见 `scripts/account_status.py`（读当日 actions 判定持仓、有持仓才查账户）；② **空仓时不必查持仓状态**——别人开的仓不用管（2026-08-18 用户纠正：AI 曾空仓也频繁查账户、且把并行会话的持仓当自己的盯），actions 无未平仓记录时 `account_status` 直接返回 None、零 API 调用；③ AI 收到 🚨 告警后立即核对账户（get_positions + get_orders）并按实际情况记录平仓 / 核对最新止损价，不许继续按记忆盯盘。**背景**：2026-08-18 实盘 00700——用户在 App 移损 440→442.6、止损 14:04:19 即触发成交，AI 未知悉移损、也未察觉持仓已平、空盯 29 分钟，两起违规同根因：只信开仓脚本输出与行情采样、从不向账户核对（SKILL.md 虽明文规定「每轮查账户订单」，但散文规定靠 AI 记忆执行会衰减，故改为工具强制）。
 2. **AI 直接下单**：港美股默认都用老虎开放平台模拟账户，AI 拍板后调用对应脚本直接下单（港股 `*_tiger.py` / 美股 `*_tiger_us.py`，**普通订单一律限价单**（2026-08-23 用户立，市价单已脚本级禁用）+ 止损条件单）。如用户不使用默认账户会特别说明。
-3. **开仓 / 平仓触发**：① 开仓必带止损条件单（脚本自动设置，止损单市价触发）；② 平仓在动能减弱 / 做空时回踩前低不破（下跌动能衰竭）/ 做多时回踩前高遇阻（上涨遇阻）/ 做空时资金流转正（买盘涌入）/ 做多时资金流转负（卖盘涌出）/ 到硬平仓时点时由 AI 调脚本执行；③ AI 最高频盯盘，触发条件一到立即执行，出手要快。
+3. **开仓 / 平仓触发**：① 开仓必带止损条件单（脚本自动设置，止损单市价触发）；② 平仓在动能减弱 / 做空时回踩前低不破（下跌动能衰竭）/ 做多持仓冲前高遇阻回落（上涨遇阻 + 形态确认——单次遇阻 + 形态未破不平，见 `trading-strategy.md`「三角形持续形态」）/ 做空时资金流转正（买盘涌入）/ 做多时资金流转负（卖盘涌出）/ 到硬平仓时点时由 AI 调脚本执行；③ AI 最高频盯盘，触发条件一到立即执行，出手要快。
 
 ## 执行反馈
 
