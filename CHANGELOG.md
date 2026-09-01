@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+### 变更（`.claude/rules/` 两条规则迁入 CLAUDE.md 内联、删除 rules 目录，2026-09-01 12:38）
+
+- **为什么改**：用户指令迁移。rules 文件的加载依赖 CLAUDE.md `@` 引用（CC 解析、ZCode 等其它 agent 不解析 `@` 引用），内联进 CLAUDE.md 后两类 agent 都能直接看到规则全文，加载机制更稳；也减少一层目录与引用维护（全局「rules 文件必须在 CLAUDE.md 中 @ 引用」的核对负担随之消失）。
+- **改了什么**：① `.claude/CLAUDE.md`「工作规则」节由两条 `@` 引用改为内联全文——`verify-facts-before-stating.md`（陈述前先验证）与 `output-and-writing-style.md`（输出与写作风格）两条规则内容一字未动、仅标题各降一级（`#`→`##` / `##`→`###`）以嵌入文档层级，节标题去掉「显式引用」字样并注明迁移来源；② 同文件「文档规定必须尽可能配工具强制」条文的文档位置列举去掉 `rules/*.md`（目录已删，避免指向不存在路径）；③ `trade` skill `references/monitoring.md` 对 `.claude/rules/output-and-writing-style.md` 的引用改为指向 `.claude/CLAUDE.md` 工作规则「输出与写作风格」节；④ 删除 `.claude/rules/` 目录（含上述两个文件）。项目根 `AGENTS.md` 软链接指向 `.claude/CLAUDE.md`，自动同步、无需单独改。
+- **验证**：全项目 grep `.claude/rules` 仅剩 CLAUDE.md 迁移来源说明一处（有意保留的溯源记录）；经 `AGENTS.md` 读出的是新内联内容，软链接同步正常。
+- **回归风险评估**：规则内容零改动、仅位置与标题层级变化，无行为回归；`@` 引用机制删除后 CC 侧由内联全文替代（内容等价），ZCode 侧反而从不解析 `@`（规则原本就不在场）变为直接可见——一致性提升。
+
+### 新增（项目根 AGENTS.md 软链接指向 .claude/CLAUDE.md，2026-09-01 12:27）
+
+- **为什么改**：ZCode 等以 AGENTS.md 为项目指令入口的 agent 找不到 `.claude/CLAUDE.md`（CC 的私有路径），本项目规则对这类 agent 不在场。建立软链接后两类 agent 共用同一份权威内容，单一源头、不产生第二份副本。
+- **改了什么**：新建项目根软链接 `AGENTS.md` → `.claude/CLAUDE.md`。目标用相对路径，git 只跟踪链接本身（不复制内容），clone 到任何机器均可解析。
+- **验证**：`readlink AGENTS.md` 输出 `.claude/CLAUDE.md`；读 `AGENTS.md` 能完整解析出 CLAUDE.md 全文。
+
 ### 修复（pool_claim 裸数字代码不归一 HK. 前缀致两会话重复认领，2026-09-01 09:35 实录，2026-09-01 12:00 修复）
 
 - **为什么改**：2026-09-01 早盘多会话并行盯盘实录——会话 2 用裸数字格式认领 `01211`、本会话（会话 3）用 `HK.01211` 认领，`_norm_sym` 只做大写与补前导零、**不补 `HK.` 前缀**，两个字符串作为不同键分别登记成功——同一标的被两会话同时持有，认领互斥失效（互斥语义依赖「键唯一」，键不归一则互斥形同虚设）。
