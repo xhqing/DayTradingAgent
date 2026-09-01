@@ -516,6 +516,26 @@ def main():
                 f"测试不破 + 维持 ≥10 分钟 + 确认事件已发生（右侧入场总则）；突破入场不受此限。"
             )
 
+    # 开仓前「自问平仓」检查（2026-08-25 用户立 T121，2026-08-30 落地为决策时刻在场打印）：
+    # 核心逻辑 = 开仓与平仓用同一套价位判断——若当前价位已让自己想平仓（或想「平了等回落再
+    # 接回」），说明该价位对自己已偏极值，此时开仓 = 主动接在局部高点 / 局部低点。
+    #   做多自问：如果手里已有多头持仓，这个价位会不会让我想「先卖出、等回落再接回」？
+    #           会 → 不开仓，等价格降到预期接回位再开（避免买在局部高点）。
+    #   做空自问：如果手里已有空头持仓，这个价位会不会让我想「先买回平仓、等更高再重新
+    #           卖空」？会 → 不开仓，等价格涨到预期更高位再卖空（避免卖在局部低点）。
+    # 工具强制层级说明（「文档规定必须尽可能配工具强制」评估结论）：该检查是纯认知判断类
+    # （局部高 / 低点判断依赖盘面结构，无法机械化判据），不做脚本硬拦——按第②层「决策时刻
+    # 工具在场打印」落地：开仓脚本在下单前的输出里固定打印自问提示，AI 读脚本输出时必然
+    # 看到，必须在结果里显式回答（answer 字段），不回答就当未完成自查。
+    result_base["self_check_close_question"] = (
+        f"开仓前自问平仓检查（T121，必答）：如果当前已持有 {symbol} 的"
+        f"{'多头' if direction == 'long' else '空头'}持仓，现价 {current_price} 会不会让你想"
+        f"{'先卖出、等回落再接回（= 现价已是局部高点，不应买在顶部）' if direction == 'long' else '先买回平仓、等更高再重新卖空（= 现价已是局部低点，不应卖在底部）'}"
+        f"？答「会」→ 不开仓、等回落的预期接回位再开；答「不会」→ 在依据栏写明理由（结构位 / "
+        f"VWAP / 动能依据）后照常下单。本字段不拒单（认知判断无法机械判据），但 AI 转录开仓"
+        f"记录时必须带上本问的回答。"
+    )
+
     # 自动算仓位（quantity=0）——2026-08-28 已前移至取行情之后、价格范围/赔率校验之前
     # （见上方「先算仓位再校验」块），此处不再重复执行。
     result_base["quantity"] = quantity
@@ -700,7 +720,11 @@ def main():
                     break  # cross-trading 与量无关，降档无意义
                 failures.append({"qty": qty, "status": "submit_exception", "reason": msg})
                 continue
-            filled, fill_price, status, reason = U.check_order_filled_tiger(config, order_id, timeout=8)
+            # 超时 8→30 秒（2026-08-31 用户立）：02513 实录 12 次挂单全在 8 秒窗口未成交——
+            # 逐秒回放显示价格回到挂价最快也要 61 秒、8/10/20 秒窗口零改善；放宽到 30 秒
+            # 覆盖「1 分钟内回到挂价」的一半场景，且不至于让挂单脱离监控太久（60-90 秒
+            # 期间盘口结构可能全变、成交时形态已不成立）。
+            filled, fill_price, status, reason = U.check_order_filled_tiger(config, order_id, timeout=30)
             if filled:
                 break
             if status == "PartiallyFilled":
@@ -760,7 +784,17 @@ def main():
                               note=f"auto部分成交{part_filled_qty}股@{fill_price}")
             print(json.dumps(result_base, ensure_ascii=False))
             sys.exit(0)
-        result_base.update({"ok": False, "error": f"开仓全部失败（尝试 {len(failures)} 档）", "failures": failures})
+        # 首个有意义被拒 reason 提到首层 error（2026-08-30 修 T122）：原首层只有
+        # 「开仓全部失败（尝试 N 档）」、具体 reason 藏在 failures 数组里，排查要多挖
+        # 一层（2026-08-25 排查 07747 拒单时实际踩过）。取法：按失败顺序找第一个带
+        # 非空 reason 的档（最早的失败原因通常就是结构性原因，后续档可能只是量更小的
+        # 同因被拒）；全部 reason 为空时保留原首层文案。
+        _first_reason = next((f.get("reason") for f in failures
+                              if f.get("reason") and str(f.get("reason")).strip()), None)
+        _err_head = f"开仓全部失败（尝试 {len(failures)} 档）"
+        if _first_reason:
+            _err_head += f"：{_first_reason}"
+        result_base.update({"ok": False, "error": _err_head, "failures": failures})
         print(json.dumps(result_base, ensure_ascii=False))
         sys.exit(1)
 

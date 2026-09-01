@@ -429,20 +429,40 @@ def has_active_open_order_us(config, symbol, side=None):
 
 
 def get_today_orders_us(config):
-    """查老虎当日订单列表（get_orders），美股侧（2026-08-17 立，多会话互斥闸门用）。
+    """查老虎当日订单列表（get_orders + 当日过滤），美股侧（2026-08-17 立，多会话互斥闸门用）。
 
     与港股版 get_today_orders_tiger 同口径：返回订单对象列表或 []。开仓闸门
     （trade_mutex.py）以当日订单流判「开仓成交且无对应平仓」的在场敞口——与成交
     确认同数据源，规避持仓接口传播延迟窗口。
+
+    ⚠️ 当日过滤（2026-08-30 修 T126，同港股版）：get_orders() 不带日期参数时 SDK 默认
+    返回近若干日订单流——港股版 2026-08-29 实录旧单混入致「单持仓违规」告警误报
+    （monitor_segment 第四层兜底），美股版结构同源同病、一并修。过滤口径与
+    trade_mutex._order_local_date 一致：order_time（毫秒时间戳）转本地日期 == 今日；
+    无时间戳订单保守保留（宁多不漏）。
     """
     tc = new_trade_client(config)
     try:
-        return tc.get_orders() or []
+        orders = tc.get_orders() or []
     except Exception as e:
         print(f"⚠️ 老虎当日订单查询失败: {e}", file=sys.stderr)
         # 与港股版（返回 [] 供采样降级）不同：开仓闸门口径须区分「查无订单」与「查询
         # 失败」——失败时返回 [] 会让闸门把该拒的放行，故向上抛、由调用方保守拒开。
         raise
+    import time as _time
+    today = _time.strftime("%Y-%m-%d")
+    out = []
+    for o in orders:
+        tm = getattr(o, "order_time", None)
+        if tm is None:
+            out.append(o)   # 无时间戳保守保留（宁多不漏）
+            continue
+        try:
+            if _time.strftime("%Y-%m-%d", _time.localtime(int(tm) / 1000)) == today:
+                out.append(o)
+        except (TypeError, ValueError, OSError):
+            out.append(o)   # 时间戳解析失败保守保留
+    return out
 
 
 def get_open_position_us(config, symbol=None):

@@ -1081,19 +1081,48 @@ def cancel_all_stop_orders_tiger(config, symbol, exclude_order_id=None):
 
 
 def get_today_orders_tiger(config):
-    """查老虎当日订单列表（get_orders），供 monitor_segment 每轮采样提取最新止损价。
+    """查老虎当日订单列表（get_orders + 当日过滤），供 monitor_segment 每轮采样提取
+    最新止损价、开仓互斥闸门算当日敞口。
 
     用户可能在券商 App 里手动新增止损单，最新止损价不能凭记忆，须每轮采样现查。
     返回订单对象列表（含 order_type=STP 的止损单，触发价在 aux_price）或 []。
     老虎订单对象字段（id / status / contract.symbol / order_type / aux_price /
     order_legs）见 cancel_all_stop_orders_tiger。
+
+    ⚠️ 当日过滤（2026-08-30 修 T126，get_orders 不带日期参数的历史遗留）：原实现直接
+    `tc.get_orders()`——老虎 SDK 不带 start/end 时默认返回近若干日订单流，旧成交单混进
+    「当日」口径。两处消费端都出过事故：
+    ① monitor_segment 第四层兜底检测 2026-08-29 实录：08-04/08-05 的旧 BUY 单无窗口内
+      对应 SELL、净口恒 +1，🚨「单持仓违规」告警每次采样必触发（账户实际无持仓）——
+      持续误报既可能诱导 AI 对不存在的持仓发平仓指令、又淹没真实告警；
+    ② 开仓闸门侧 2026-08-20 曾因此加过 trade_mutex._today_orders 的本地日期二次过滤
+      （按 order_time 毫秒时间戳转本地日期）——但 monitor_segment / stop_gate 等其它
+      调用方没过滤。现把过滤下沉到本函数（单一修复点、全部调用方受益），口径与
+      trade_mutex._order_local_date 一致：按 order_time（毫秒）转本地日期 == 今日。
+      时区说明：本地（北京）时区下港股当日订单与美股当日订单（跨夜到北京次日凌晨）
+      均按各自实际下单日归组，与 trade_mutex 2026-08-20 修法同口径。
+    无 order_time 的订单（罕见）按保守原则保留（宁多不漏——多出的旧单最多让闸门
+    保守拒开，漏单会让敞口检测漏报）。
     """
     tc = new_trade_client(config)
     try:
-        return tc.get_orders() or []
+        orders = tc.get_orders() or []
     except Exception as e:
         print(f"⚠️ 老虎当日订单查询失败: {e}", file=sys.stderr)
         return []
+    today = time.strftime("%Y-%m-%d")
+    out = []
+    for o in orders:
+        tm = getattr(o, "order_time", None)
+        if tm is None:
+            out.append(o)   # 无时间戳保守保留（宁多不漏）
+            continue
+        try:
+            if time.strftime("%Y-%m-%d", time.localtime(int(tm) / 1000)) == today:
+                out.append(o)
+        except (TypeError, ValueError, OSError):
+            out.append(o)   # 时间戳解析失败保守保留
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1334,6 +1363,32 @@ def get_buying_power_tiger(config, symbol, ref_price, tc=None, to_hkd=None):
 
     返回 (max_shares, bp, margin_rate) 或 (None, None, None)（查询失败）。
     """
+    return _buying_power_impl(config, symbol, ref_price, tc=tc, to_hkd=to_hkd,
+                              direction="long")
+
+
+def get_short_buying_power_tiger(config, symbol, ref_price, tc=None, to_hkd=None):
+    """按单标的**做空**保证金率算可空股数上限（2026-08-30 立，T123）。
+
+    背景（2026-08-25 07747 做空拒单排查）：get_buying_power_tiger 只按
+    long_initial_margin 算——做空预算用多头保证金率本就不严谨（做空保证金率
+    通常更高、可空量更小），且当日拒单真因未查清（资金口径污染已排除、正确
+    购买力下 4100 股本应能过却仍报 insufficient）。本函数给做空开仓提供对齐
+    口径：margin_rate 取 get_contract().short_initial_margin（SDK Contract 字段
+    实存），查不到时按 1.0 全额（最保守——比多头口径更保守，方向安全）。
+    其余口径（buying_power USD 折 HKD、to_hkd 兜底 7.80）与多头版一致。
+    返回 (max_shares, bp, margin_rate) 或 (None, None, None)。
+    """
+    return _buying_power_impl(config, symbol, ref_price, tc=tc, to_hkd=to_hkd,
+                              direction="short")
+
+
+def _buying_power_impl(config, symbol, ref_price, tc=None, to_hkd=None, direction="long"):
+    """购买力上限的公共实现（long / short 只差保证金率字段）。
+
+    direction='long' → get_contract().long_initial_margin；'short' → short_initial_margin。
+    查不到保证金率按 1.0 全额（最保守：上限被低估、只会少开不会多开）。
+    """
     try:
         if tc is None:
             tc = new_trade_client(config)
@@ -1345,7 +1400,9 @@ def get_buying_power_tiger(config, symbol, ref_price, tc=None, to_hkd=None):
         if not bp or float(bp) <= 0:
             return None, None, None
         c = tc.get_contract(to_tiger_symbol(symbol))
-        margin_rate = getattr(c, "long_initial_margin", None)
+        margin_field = ("long_initial_margin" if direction == "long"
+                        else "short_initial_margin")
+        margin_rate = getattr(c, margin_field, None)
         if not margin_rate or float(margin_rate) <= 0:
             margin_rate = 1.0   # 查不到保证金率按 1.0 全额（最保守）
         if to_hkd is None:
@@ -1356,7 +1413,7 @@ def get_buying_power_tiger(config, symbol, ref_price, tc=None, to_hkd=None):
             return None, None, None
         return int(notional_cap / float(ref_price)), bp_hkd, float(margin_rate)
     except Exception as e:
-        print(f"⚠️ 购买力查询失败 {symbol}: {e}", file=sys.stderr)
+        print(f"⚠️ 购买力查询失败（{direction}）{symbol}: {e}", file=sys.stderr)
         return None, None, None
 
 
