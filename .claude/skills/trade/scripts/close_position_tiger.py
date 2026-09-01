@@ -335,6 +335,12 @@ def main():
                              fill_price, close_order_id=fill_order_id, entry_price=entry_price)
         _attach_process_metrics(result_base, config, symbol, direction, entry_price, stop_dist,
                                 quantity=quantity)
+        # 连败计数更新（2026-08-31 T131，一级降频线数据源）：R = net_pnl_app ÷ 净 max_loss，
+        # 写 tmp/losing_streak.json——open_position 前置闸据此拦「连败 ≥3 / ≥2 且亏满型」
+        # 的当日新开仓。盈亏信息进 losing_streak 字段供转录。
+        result_base["losing_streak"] = U.update_losing_streak(
+            "HK", symbol, direction, entry_price, stop_dist, quantity, fill_price,
+            net_pnl=result_base.get("net_pnl_app"))
         print(json.dumps(result_base, ensure_ascii=False))
         sys.exit(0)
     else:

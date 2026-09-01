@@ -53,3 +53,16 @@ fi
 echo "📝 停盯总结范围提醒（T127）：接下来的停盯总结只总结【本会话】自身的标的池 / 交易 /"
 echo "   影子仓 / 采样分析执行情况——禁止混入其它会话的交易与账户全口径数字（多会话并行日"
 echo "   尤其注意：别把别的会话的开平仓、equity 汇总进本会话总结）。"
+
+# 当日 actions 开平闭环检查（2026-08-31 T132）：停盯总结前按当日 actions 全量检查
+# 「开→平」闭环——未闭环的明示（这是 01888 漏记能被拖 4 天的第二道缺口）。已平仓未
+# 补记时输出补记指引并退出码 1；注销本身已过时间闸、此处不阻断，靠醒目警示让 AI 在
+# 写停盯总结前先补记。if 条件内的失败不触发 set -e。
+if [ -f "$SCRIPT_DIR/actions_check.py" ]; then
+    echo ""
+    echo "🔁 actions 开平闭环检查（T132，停盯总结前置）："
+    if ! python3 "$SCRIPT_DIR/actions_check.py" "$@"; then
+        echo "   ⚠️ 闭环异常——停盯总结须先按上方指引补记平仓（log_action.sh +"
+        echo "      update_losing_streak.py），再写总结。"
+    fi
+fi

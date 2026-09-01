@@ -1702,6 +1702,132 @@ def check_open_time_gate(market, now=None):
     return True, f"距{market}停盯 {mins:.1f} 分钟（>5 分钟，开仓资格在——按压缩止盈实算净赔率 ≥1.8 照常评估）"
 
 
+# ---------------------------------------------------------------------------
+# 一级降频线（连败计数 + 开仓前置闸，2026-08-31 T131 落地，港美共用）
+# ---------------------------------------------------------------------------
+# 规则（review-and-evaluation.md「是否暂停交易」一级·降频线，2026-08-17 标定）：
+# 连败 3 笔（当日或跨日连续）→ 当日停止开新仓、次日再战；或连败 2 笔且都是亏满型
+# （净 |R|≥0.95，滑点 + 平仓费超亏同样算）。此前无工具强制——2026-08-28 当日序列
+# −0.05→−1.00→−1.00 构成三连败后 11:22 仍开第 4 笔（2026-08-31 复盘实证的首次盘中
+# 漏执行），落地为脚本硬拦。
+# 口径说明：连败判定**跨日累计**（规则原文「当日或跨日连续」），触发处置**按日执行**
+# ——最近一笔亏损平仓不在今日则不拦（「次日再战」），今日再亏则重新触发当日拦。
+# 数据文件 tmp/losing_streak.json（本机运行时数据、已 gitignore）。
+LOSING_STREAK_FILE = "losing_streak.json"
+FULL_LOSS_R = -0.95   # 亏满型阈值：净 R ≤ -0.95（规则原文 |R|≥0.95，含滑点/费超亏）
+
+
+def _losing_streak_path():
+    from pathlib import Path
+    # scripts/ 的上四级 = 项目根（scripts → trade → skills → .claude → 项目根）
+    return Path(__file__).resolve().parent.parent.parent.parent.parent / "tmp" / LOSING_STREAK_FILE
+
+
+def update_losing_streak(market, symbol, direction, entry_price, stop_dist,
+                         quantity, fill_price, net_pnl=None):
+    """平仓成交后更新连败计数文件（2026-08-31 T131）。返回更新结果 dict 供调用方转录。
+
+    R 结算口径（与复盘净口径同构）：R = 净盈亏 ÷ 净 max_loss（止损距×量 + 开仓边费 +
+    止损价平仓边费）。净盈亏优先取 net_pnl（close_position 的 net_pnl_app 字段，App 实测
+    口径）；缺省时按 fee_schedule 估（毛差 × 量 − 开仓边费 − 平仓边费）。
+    盈利（R>0）清零连败；亏损（R≤0，含微亏）连败 +1 并把 R 追加进 recent_r（保留最近 5 笔）。
+    entry_price / stop_dist / quantity 任一缺失 → 无法算 R：文件不动、返回 skipped 原因
+    （连败计数宁可漏记不可误记——漏记由补记流程 / 复盘对账兜底，误记会错拦开仓）。
+    任何内部异常不抛出（不阻断平仓结果输出，与 attach_net_pnl_app 同哲学）。
+    """
+    from datetime import datetime
+    import json
+    try:
+        r = None
+        basis = None
+        if not entry_price or not stop_dist or stop_dist <= 0 or not quantity or not fill_price:
+            return {"skipped": "缺 entry_price / stop_dist / quantity / fill_price，无法算 R，连败文件未更新"}
+        stop_price = (entry_price - stop_dist) if direction == "long" else (entry_price + stop_dist)
+        m_net = net_max_loss(market, _sec_type_of(symbol), quantity, entry_price, stop_price)
+        if net_pnl is not None:
+            r = net_pnl / m_net
+            basis = "net_pnl（App 实测净利 ÷ 净 max_loss）"
+        else:
+            import fee_schedule as _FS
+            sec_type = _sec_type_of(symbol)
+            fee_open = _FS.fee_per_side(market, sec_type, entry_price * quantity, shares=quantity)
+            fee_close = _FS.fee_per_side(market, sec_type, fill_price * quantity, shares=quantity)
+            sign = 1 if direction == "long" else -1
+            pnl_est = sign * (fill_price - entry_price) * quantity - fee_open - fee_close
+            r = pnl_est / m_net
+            basis = "estimate（fee_schedule 估净利 ÷ 净 max_loss——net_pnl 缺失时兜底）"
+        r = round(r, 3)
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        state = {}
+        try:
+            state = json.load(open(_losing_streak_path()))
+        except Exception:
+            state = {}
+        streak = int(state.get("streak", 0) or 0)
+        recent_r = list(state.get("recent_r", []) or [])
+        if r > 0:
+            streak, recent_r = 0, []
+        else:
+            streak += 1
+            recent_r.append(r)
+            recent_r = recent_r[-5:]
+        new_state = {
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "date": today,
+            "market": market, "symbol": symbol,
+            "streak": streak, "recent_r": recent_r,
+        }
+        triggered = _losing_streak_triggered(new_state)
+        new_state["gate_triggered_today"] = triggered
+        _losing_streak_path().parent.mkdir(parents=True, exist_ok=True)
+        json.dump(new_state, open(_losing_streak_path(), "w"), ensure_ascii=False, indent=1)
+        return {"r_multiple": r, "r_basis": basis, "streak": streak,
+                "recent_r": recent_r, "gate_triggered_today": triggered}
+    except Exception as e:
+        return {"skipped": f"连败文件更新异常（不阻断平仓）: {e}"}
+
+
+def _losing_streak_triggered(state):
+    """按文件状态判一级降频线是否触发（连败 ≥3，或 ≥2 且最近两笔都亏满型）。"""
+    streak = int(state.get("streak", 0) or 0)
+    recent_r = list(state.get("recent_r", []) or [])
+    if streak >= 3:
+        return True
+    if streak >= 2 and len(recent_r) >= 2 and all(x <= FULL_LOSS_R for x in recent_r[-2:]):
+        return True
+    return False
+
+
+def check_losing_streak_gate(now=None):
+    """开仓前置闸（2026-08-31 T131）：读连败文件判一级降频线是否当日触发。
+
+    返回 (allowed: bool, detail: str_or_None)。拦 = 连败达标（≥3 或 ≥2 且最近两笔亏满型）
+    **且**最近一笔亏损平仓发生在今日（date == 今日；「次日再战」= 次日自动放行）。
+    文件不存在 / 损坏 / 连败未达标 / 最近亏损非今日 → 放行（detail=None 静默）。
+    港美共用一把闸（规则不分市场——账户口径的连败序列）。
+    """
+    from datetime import datetime
+    import json
+    try:
+        state = json.load(open(_losing_streak_path()))
+    except Exception:
+        return True, None
+    if not _losing_streak_triggered(state):
+        return True, None
+    today = (now or datetime.now()).strftime("%Y-%m-%d")
+    if state.get("date") != today:
+        return True, None   # 最近一笔亏损在昨日或更早：次日再战，放行（今日再亏会重新触发）
+    streak = int(state.get("streak", 0) or 0)
+    recent_r = list(state.get("recent_r", []) or [])
+    reason = (f"连败 {streak} 笔" if streak >= 3
+              else f"连败 {streak} 笔且最近两笔都亏满型（净 R {recent_r[-2:]}，均 ≤ {FULL_LOSS_R}）")
+    detail = (f"一级降频线触发（{reason}，最近序列 {recent_r}）——按 review-and-evaluation.md"
+              f"「一级·降频线」当日停止开新仓、次日再战。此为 2026-08-28 三连败后仍开第 4 笔"
+              f"漏执行的机械堵漏；确需强开须用户决策（--force 覆盖）。")
+    return False, detail
+
+
 def parse_mode(argv=None):
     """解析执行模式 --mode（auto / signal），默认 signal（与 trade skill 一致）。
 

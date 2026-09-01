@@ -4,6 +4,21 @@
 
 ## [Unreleased]
 
+### 批量落地（TODO 盘外可完成项 8 条全清：警告累计硬拦 / 连败降频闸 / 动作时间戳 / 持仓闭环检查 / 白名单全量清单与可最小化面板 / 认领归一补漏 / 交易模式标签，2026-09-01 19:42）
+
+- **为什么改**：用户指令「把待办事项全部处理完」。2026-09-01 盘后批量处理 TODO.md 中全部可在盘外代码落地的 8 条待办（T130 / T131 / T129 / T132 / T133 / T135 / T128 / T134，红色紧急度清零）；剩余 10 条全部依赖交易日盘中实测或数据积累（T126 / T123 / T121 / T122 / T119 / T120 / T124 / T125 / T116 / T4），盘外无可做部分。多项待办背景是 2026-08-28 实盘漏执行与 2026-08-31 复盘实证的「规矩写在文档里但盘中无工具在场必失守」类问题——本次全部按「文档规定必须尽可能配工具强制」原则落地为脚本硬拦 / 机械检查。
+- **改了什么**（T 编号对应 `TODO-archive.md`「2026-09-01 批量处理」节，各条完成说明含完整验证记录）：
+  - **T130 警告累计 ≥2 条硬拦（红）**：港美两 `open_position` 脚本净赔率校验后自动汇总非拦截警告字段（`warning_` 前缀 / `_warning` 后缀），同单 ≥2 条拒单（`blocked_by:"warnings_cumulative_2"`）；顺带补齐美股版 `warning_target_unreachable`（此前缺失、该防线在美股永不触发）。
+  - **T131 一级降频线连败闸（红）**：`trade_utils_tiger.py` 新增 `update_losing_streak()`（平仓结算 R 写 `tmp/losing_streak.json`，跨日累计口径对齐 review-and-evaluation.md 规则原文）+ `check_losing_streak_gate()`；两 close 脚本平仓后自动更新、两 open 脚本前置闸（连败 ≥3 或 ≥2 且亏满型且最近亏损在今日 → `blocked_by:"losing_streak"` 拒单，`--force` 用户决策覆盖）；新建 `update_losing_streak.py` CLI 供 BRACKETS 自动触发平仓的补记场景。五场景冒烟全过。
+  - **T129 动作时间戳插入修（黄）**：`log_action.sh` awk 从「NR==2 固定行号」改「首个 🟢🔴🟡🔵 开头标题行后插入」（08-31 事故形态实测修复），无 emoji 标题兜底追加末尾 + 警示。
+  - **T132 持仓闭环检查（黄）**：新建 `actions_check.py`（当日 actions 开平配平 + 账户实持核对 + 已平仓未补记的补记指引）；挂进 `resume.py` 收尾（中断恢复固定动作）与 `monitor_unregister.sh`（停盯总结前置）；顺带修平仓记录无量行的配平（回退提取「开仓价（N 股」+ 全平核销）。
+  - **T135 认领归一冒烟（黄）**：确认当日认领表已全归一键、release 已过 `_norm_sym`；冒烟暴露并修复 3/4 位裸数字（`700`）不归一漏洞——裸数字（≤5 位）一律补 `HK.` 再补零。
+  - **T133 白名单全量清单（黄）**：`proxy_guard.py` 节点全景改 `xpilot node list` 实查（失败回退 nodes.json）；提醒 IP 串改**全量可用清单**（支持老虎页「先清空 → 一次性全量粘贴」）；「已添加」同步从合并改**全量替换**（`replace_whitelist`，与老虎页操作对应）；accounts.md 运维口径同步。
+  - **T128 可最小化提醒面板（绿）**：新建 `alert_panel.swift`（AppKit 面板：可最小化到 Dock、双 / 单按钮两模式、超时自动关、结果文件通信；编译产物 `tmp/alert_panel` gitignore、缺失自动 swiftc 现场编译、无 CLT 回退 osascript）；`proxy_guard` 确认窗与 `monitor_watcher` 告知窗双载体切换（watcher 面板化后不再阻塞主循环）。
+  - **T134 交易模式标签（绿）**：trades CSV 新增 `mode` 列（signal / auto_paper / auto_live / shadow，老 CSV 按 shadow 列兼容推断）；58 笔港股全量回溯打标（22/20/14/2，分组 +0.497R / +0.271R / −0.390R 与 08-31 复盘分阶段结论一致）；`review.py --mode` + 【按模式分组】表（分阶段统计从日期近似切分改为 mode 分列）、`bayes_evolution.py --mode`（子集图独立命名不覆盖全样本图）；review-and-evaluation.md 新增复盘必含项、example CSV 更新。
+- **验证**：全部 13 个改动脚本 py_compile / bash -n 通过；T131 五场景冒烟、T129 三场景、T132 三日文件实测（含当日闭环通过 + 08-27 补录文件解析）、T135 三子命令冒烟 + 等价类断言、T133 `--dry-run` 实查 6 节点、T128 面板 pending→result 链路（2 秒超时自动关）、T134 全量跑 + `--mode` 单跑 + example CSV 全过。
+- **回归风险评估**：① 开仓脚本新增两道前置闸（警告累计 / 连败）只增拦不放松，既有放行路径不受影响；`--force` 通道保留用户决策权；② `log_action.sh` 插入位置变化只影响「首两行非标题」的非常规输入，标准格式输出不变；③ `actions_check` 是纯新增检查、不改写任何 actions 文件（补记仍由 AI 按指引执行）；④ `proxy_guard` 的「已添加」从合并改替换——若用户仍按旧习惯只加新 IP（不先清空）就点「已添加」，本地副本会与老虎页不一致（面板文案已明确新操作步骤，guard 漂移判定失真的场景可自愈：按提示重配一遍即可）；⑤ mode 列为可选列、老 CSV 与 `--shadow-only` 行为完全向后兼容（统一映射 `--mode shadow`）；⑥ `monitor_watcher` 面板缺失时回退旧 osascript 载体，无 Xcode CLT 的环境不降级。
+
 ### 变更（`.claude/rules/` 两条规则迁入 CLAUDE.md 内联、删除 rules 目录，2026-09-01 12:38）
 
 - **为什么改**：用户指令迁移。rules 文件的加载依赖 CLAUDE.md `@` 引用（CC 解析、ZCode 等其它 agent 不解析 `@` 引用），内联进 CLAUDE.md 后两类 agent 都能直接看到规则全文，加载机制更稳；也减少一层目录与引用维护（全局「rules 文件必须在 CLAUDE.md 中 @ 引用」的核对负担随之消失）。

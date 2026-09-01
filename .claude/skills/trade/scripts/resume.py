@@ -299,6 +299,24 @@ if _positional:
         print(f"   ⚠️ snapshot 失败（{e}）——富途 OpenD 未登录/未启动？盘中发信号前务必先手动 snapshot")
 
 
+# ---------- actions 开平闭环检查（2026-08-31 T132）----------
+# 盯盘中断（断层警告 / 会话切换 / 长任务返回）恢复后，除重建上下文外追加回查当日
+# actions 是否有未闭环开仓（open 无对应 close）——BRACKETS 止损/止盈腿自动触发的
+# 平仓不经 close_position 脚本、无 AI 在场转录，中断期间发生的自动平仓会漏记
+# （2026-08-27 01888 PROFIT 腿 15:34 自动触发、漏记 4 天的教训）。已平仓未补记时
+# 子脚本输出补记指引并退出码 1；此处不中断 resume，AI 照指引补记后再继续。
+try:
+    import subprocess
+    _ac = subprocess.run(
+        [sys.executable, os.path.join(SCRIPT_DIR, "actions_check.py")] + sys.argv[1:],
+        capture_output=True, text=True, timeout=90)
+    print("\n🔁 actions 开平闭环检查（T132，中断恢复固定动作）：")
+    print(_ac.stdout.rstrip())
+    if _ac.returncode != 0:
+        print("   ⚠️ 闭环异常——按上方处置指引补记（log_action.sh + update_losing_streak.py）后再继续盯盘。")
+except Exception as e:
+    print(f"\n🔁 actions 闭环检查未跑成（{e}）——手动跑 python3 actions_check.py")
+
 print(
     f"\n✅ 恢复协议完成。AI 据以上判断：是否在盘中可继续盯盘 / 是否需读今日 signals 重建持仓 / "
     f"有无悬空项要处理；发信号前再过「发信号硬前置」（距上次 date/snapshot >2min 必须刷新）。"

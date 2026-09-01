@@ -52,8 +52,10 @@ def _resolve_date(argv=None):
     2026-08-05 立：日期抽成变量、支持命令行参数，避免每次手改。
     2026-08-07 立：支持 --suffix 分市场出图——读 reviews/{DATE}-trades{suffix}.csv、
     输出 reviews/{DATE}{suffix}-*.png（如 --date 2026-08-07 --suffix -hk）。
+    2026-08-31 立（T134）：支持 --mode signal/auto_paper/auto_live/shadow——只画某一
+    交易模式的演化子集（与 review.py --mode 同口径）；不传时保持真实全样本（剔除影子）。
     """
-    date, suffix = None, ""
+    date, suffix, mode = None, "", None
     if argv:
         i = 0
         while i < len(argv):
@@ -70,7 +72,15 @@ def _resolve_date(argv=None):
                 continue
             if a.startswith("--suffix="):
                 suffix = a.split("=", 1)[1]
+            if a == "--mode" and i + 1 < len(argv):
+                mode = argv[i + 1]
+                i += 2
+                continue
+            if a.startswith("--mode="):
+                mode = a.split("=", 1)[1]
             i += 1
+    if mode is not None and mode not in ('signal', 'auto_paper', 'auto_live', 'shadow'):
+        raise SystemExit(f"--mode 非法 '{mode}'（signal/auto_paper/auto_live/shadow）")
     if not date:
         cand = []
         for p in glob.glob(os.path.join("reviews", "*-trades.csv")):
@@ -81,10 +91,10 @@ def _resolve_date(argv=None):
             raise SystemExit("未找到 reviews/*-trades.csv，请用 --date YYYY-MM-DD 指定")
         cand.sort(key=lambda x: x[0])
         date = cand[-1][0]
-    return date, suffix
+    return date, suffix, mode
 
 
-DATE, SUFFIX = _resolve_date(sys.argv[1:])
+DATE, SUFFIX, MODE = _resolve_date(sys.argv[1:])
 CSV_PATH = f"reviews/{DATE}-trades{SUFFIX}.csv"
 
 # 读累积 trades CSV（单一数据源，与 review.py 同源；每次复盘更新此 CSV）
@@ -104,7 +114,14 @@ with open(CSV_PATH) as fh:
         # 影子样本剔除（2026-08-27 立，与 review.py 同口径）：shadow=1 的行（auto 互斥闸
         # 被拦机会的纸面记录）不进演化图——演化图画的是真实资金曲线的信念累积，影子是
         # 近似样本（决策时刻价、无滑点），混入会污染。老 CSV 无 shadow 列时行为不变。
-        if (r.get('shadow') or '').strip() not in ('', '0', 'false', 'False'):
+        # --mode 过滤（2026-08-31 T134）：指定时只留该模式行（mode 列；老 CSV 无 mode 列
+        # 时按 shadow 列兼容推断——shadow=1 → shadow、其余 unknown 不进任何 --mode 子集）。
+        _is_shadow = (r.get('shadow') or '').strip() not in ('', '0', 'false', 'False')
+        _mode = (r.get('mode') or '').strip().lower() or ('shadow' if _is_shadow else 'unknown')
+        if MODE is not None:
+            if _mode != MODE:
+                continue
+        elif _is_shadow:
             continue
         sec_type = (r.get('type') or r.get('sec_type') or '').strip().lower()
         if not sec_type:
@@ -116,6 +133,10 @@ with open(CSV_PATH) as fh:
             'shares': float(r['shares']), 'M': float(r['max_loss']),
             'sec_type': sec_type,
         })
+if MODE is not None and not rows_raw:
+    raise SystemExit(f"❌ --mode {MODE} 无匹配行——CSV 缺 mode 列或该模式无样本（先按 T134 打标）")
+if MODE is not None:
+    print(f"【模式子集】--mode {MODE}：{len(rows_raw)} 笔（演化图仅画该模式）")
 rows_raw.sort(key=lambda x: (x['date'], x['symbol']))
 # 平台费 2026-08-17 改固定模式：费项与订单数无关，不再按「(自然月, 市场)」累计订单序号分档。
 trades = []
@@ -248,7 +269,8 @@ ax.legend(loc='lower right', fontsize=9)
 ax.grid(alpha=0.3)
 mark_end_single(ax, xs, ppos, val_fmt='{:.1f}')
 plt.tight_layout()
-out = f'reviews/{DATE}{SUFFIX}-bayes-evolution.png'
+_MODE_TAG = f'-mode-{MODE}' if MODE else ''   # T134：--mode 子集图带标识段，不覆盖全样本同名图
+out = f'reviews/{DATE}{SUFFIX}{_MODE_TAG}-bayes-evolution.png'
 plt.savefig(out, dpi=120)
 print(f'\n✅ 图已存 {out}')
 
@@ -268,7 +290,7 @@ ax2.legend(loc='lower right', fontsize=9)
 ax2.grid(alpha=0.3)
 mark_end_single(ax2, ev_xs, ev_mean, unit='R', val_fmt='{:+.2f}')
 plt.tight_layout()
-out2 = f'reviews/{DATE}{SUFFIX}-ev-evolution.png'
+out2 = f'reviews/{DATE}{SUFFIX}{_MODE_TAG}-ev-evolution.png'
 plt.savefig(out2, dpi=120)
 print(f'✅ 图已存 {out2}')
 
@@ -290,7 +312,7 @@ ax3.legend(loc='lower right', fontsize=9)
 ax3.grid(alpha=0.3)
 mark_end_single(ax3, wr_xs, wr_bayes, val_fmt='{:.1f}')
 plt.tight_layout()
-out3 = f'reviews/{DATE}{SUFFIX}-winrate-evolution.png'
+out3 = f'reviews/{DATE}{SUFFIX}{_MODE_TAG}-winrate-evolution.png'
 plt.savefig(out3, dpi=120)
 print(f'✅ 图已存 {out3}')
 
@@ -332,7 +354,7 @@ ax4.legend(loc='lower right', fontsize=9, ncol=2)
 ax4.grid(alpha=0.3)
 mark_end_multi(ax4, pg_xs, ends4)
 plt.tight_layout(rect=[0, 0, 0.80, 1])
-out4 = f'reviews/{DATE}{SUFFIX}-pg-evolution.png'
+out4 = f'reviews/{DATE}{SUFFIX}{_MODE_TAG}-pg-evolution.png'
 plt.savefig(out4, dpi=120)
 print(f'\n✅ 图已存 {out4}')
 
@@ -356,7 +378,7 @@ ax5.legend(loc='lower right', fontsize=9, ncol=2)
 ax5.grid(alpha=0.3)
 mark_end_multi(ax5, pg_xs, ends5)
 plt.tight_layout(rect=[0, 0, 0.80, 1])
-out5 = f'reviews/{DATE}{SUFFIX}-psum40-evolution.png'
+out5 = f'reviews/{DATE}{SUFFIX}{_MODE_TAG}-psum40-evolution.png'
 plt.savefig(out5, dpi=120)
 print(f'✅ 图已存 {out5}')
 
@@ -385,7 +407,7 @@ ax6.legend(loc='lower right', fontsize=9, ncol=2)
 ax6.grid(alpha=0.3)
 mark_end_multi(ax6, pg_xs, ends6)
 plt.tight_layout(rect=[0, 0, 0.80, 1])
-out6 = f'reviews/{DATE}{SUFFIX}-pg{int(TARGET*100):02d}-evolution.png'
+out6 = f'reviews/{DATE}{SUFFIX}{_MODE_TAG}-pg{int(TARGET*100):02d}-evolution.png'
 plt.savefig(out6, dpi=120)
 print(f'✅ 图已存 {out6}')
 
@@ -408,7 +430,7 @@ ax7.legend(loc='lower right', fontsize=9, ncol=2)
 ax7.grid(alpha=0.3)
 mark_end_multi(ax7, pg_xs, ends7)
 plt.tight_layout(rect=[0, 0, 0.80, 1])
-out7 = f'reviews/{DATE}{SUFFIX}-psum40-{int(TARGET*100):02d}pct-evolution.png'
+out7 = f'reviews/{DATE}{SUFFIX}{_MODE_TAG}-psum40-{int(TARGET*100):02d}pct-evolution.png'
 plt.savefig(out7, dpi=120)
 print(f'✅ 图已存 {out7}')
 

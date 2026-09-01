@@ -207,6 +207,23 @@ def main():
     if not symbol.startswith("US."):
         print(json.dumps({"ok": False, "error": f"本脚本只处理美股（US.xxx），收到 {symbol}"}))
         sys.exit(1)
+    # --force（2026-08-31 T131）：一级降频线（连败闸）的用户覆盖通道——仅限用户明确
+    # 决策使用，AI 不得自主加 --force 绕闸（位置参数固定前 6 个，flag 放尾部不干扰索引）。
+    force = "--force" in sys.argv
+    # 一级降频线开仓前置闸（2026-08-31 T131，同港股版、港美共用一把闸）：连败 ≥3 笔
+    # （跨日累计）或 ≥2 笔且最近两笔亏满型（净 R ≤ -0.95）、且最近一笔亏损平仓发生在
+    # 今日 → 当日停止开新仓；次日自动放行；--force = 用户决策覆盖。
+    _ls_forced = False
+    _ls_ok, _ls_detail = T.check_losing_streak_gate()
+    if not _ls_ok:
+        if force:
+            print("⚠️ 一级降频线已触发，--force 用户决策覆盖——放行开仓")
+            _ls_forced = True
+        else:
+            print(json.dumps({"ok": False, "blocked_by": "losing_streak",
+                              "action": "open_position_tiger_us", "market": "US", "symbol": symbol,
+                              "error": _ls_detail}, ensure_ascii=False))
+            sys.exit(1)
     # 开仓时间闸（2026-08-18 立）：距美东 16:00 收盘 >5 分钟放行、≤5 分钟或盘外拒单。
     # 「距停盯 >5 分钟就仍可开仓」规则的工具级执行点（同港股脚本，函数在
     # trade_utils_tiger.py，本脚本 import 为 T）。
@@ -286,6 +303,8 @@ def main():
         "current_price": current_price, "range_low": round(range_low, 4), "range_high": round(range_high, 4),
         "odds_at_ref": round(odds_at_ref, 2), "odds_at_current": round(odds_at_current, 2),
     }
+    if _ls_forced:
+        result_base["losing_streak_forced"] = True   # T131：降频线触发但 --force 用户覆盖
     if lot_size is not None:
         result_base.update({"auto_sized": True, "equity": equity, "equity_currency": currency,
                             "lot_size": lot_size, "budget_B": round(budget_B, 2),
@@ -293,6 +312,37 @@ def main():
                             "max_loss_basis": ("net（止损距+开仓费+止损价平仓费，2026-08-28 口径）"
                                                if _net_ml else
                                                "gross（净口径参数缺失回退毛值——异常，检查调用参数）")})
+
+    # 止盈可达性警告（2026-08-31 T130 补齐，对齐港股版方案 A 口径——降级警告不拒单）：
+    # 美股版此前缺本警告，导致「警告累计 ≥2 条」防线在美股只有 stability 一条来源、
+    # 永不触发；补齐后两市场同构。文案不引用港股样本统计（+0.30R vs +0.83R 为港股
+    # 50 笔回放数据，美股无对应标定），保留趋势日允许越日高 / 震荡日应调低的裁量逻辑。
+    day_high = quote.get("high")
+    day_low = quote.get("low")
+    reachable = True
+    unreachable_reason = ""
+    if direction == "long" and day_high and target > day_high:
+        reachable = False
+        unreachable_reason = (
+            f"⚠️ 止盈远于当日高点：做多止盈 {target} 越过当日高点 {day_high}"
+            f"（+{(target/day_high - 1)*100:.1f}%）——常规时段当日到达概率低。趋势日（创新高"
+            f"+放量+VWAP 上方）允许越日高定止盈、让利润奔跑；震荡日应调低到 ≤ 日高或放弃。"
+            f"AI 按形态裁量，本警告不拦单。"
+        )
+    elif direction == "short" and day_low and target < day_low:
+        reachable = False
+        unreachable_reason = (
+            f"⚠️ 止盈远于当日低点：做空止盈 {target} 跌破当日低点 {day_low}"
+            f"（{(1 - target/day_low)*100:.1f}%）——常规时段当日到达概率低。空头趋势日（创新低"
+            f"+放量+VWAP 下方）允许越日低定止盈；震荡日应调高到 ≥ 日低或放弃。AI 按形态裁量，"
+            f"本警告不拦单。"
+        )
+    result_base["target_reachable"] = reachable
+    result_base["day_high"] = day_high
+    result_base["day_low"] = day_low
+    if not reachable:
+        result_base["warning_target_unreachable"] = unreachable_reason
+
     if not in_range:
         result_base.update({"ok": False, "error": (
             f"当前价 {current_price} 不在范围 [{range_low:.4f}, {range_high:.4f}] 内。"
@@ -329,6 +379,27 @@ def main():
                 f"不满足企稳定义「维持 ≥10 分钟」——若本单为回踩企稳入场，请先核验：真支撑 + ≥2 次"
                 f"测试不破 + 维持 ≥10 分钟 + 确认事件已发生（右侧入场总则）；突破入场不受此限。"
             )
+
+    # 非拦截警告累计 ≥2 条硬拦（2026-08-31 T130 落地，同港股版）：「同位置警告累计两条 =
+    # 降一档置信度」（2026-08-28 立）的脚本硬判——净赔率校验后汇总本单全部非拦截警告字段
+    # （warning_ 前缀 / _warning 后缀自动收集），同单 ≥2 条一律拒单（🟢→🟡 与不开仓同义，
+    # 脚本直接拦死）；1 条保留在场打印不拦。美股版 target_unreachable 警告已于本日补齐，
+    # 两市场防线同构。
+    _warn_keys = sorted(k for k in result_base
+                        if (k.startswith("warning_") or k.endswith("_warning")) and k != "warning")
+    if len(_warn_keys) >= 2:
+        result_base.update({
+            "ok": False,
+            "blocked_by": "warnings_cumulative_2",
+            "warnings_counted": _warn_keys,
+            "error": (
+                f"本单非拦截警告累计 {len(_warn_keys)} 条（{'、'.join(_warn_keys)}）≥ 2 条——按"
+                f"「同位置警告累计两条 = 降一档置信度」（2026-08-28 立，trading-strategy.md）"
+                f"强制降 🟡，置信度非 🟢 不开仓，脚本硬拦。处理：等局面明朗（企稳维持 ≥10 分钟 /"
+                f" 止盈调回日高内）或调整入场点后重新评估；各警告明细见下方字段。"),
+        })
+        print(json.dumps(result_base, ensure_ascii=False))
+        sys.exit(1)
 
     # 开仓前「自问平仓」检查（2026-08-25 用户立 T121，2026-08-30 落地为决策时刻在场打印，
     # 同港股版）：开仓与平仓用同一套价位判断——若当前价位已让自己想平仓（或想「平了等

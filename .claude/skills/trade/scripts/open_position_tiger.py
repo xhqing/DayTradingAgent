@@ -264,6 +264,11 @@ def main():
         if account not in ("live", "paper"):
             print(json.dumps({"ok": False, "error": f"--account 必须是 live/paper，收到 '{account}'"}))
             sys.exit(1)
+    # --force（2026-08-31 T131）：一级降频线（连败闸）的用户覆盖通道——仅限用户明确
+    # 决策使用，AI 不得自主加 --force 绕闸。
+    force = "--force" in args
+    if force:
+        args.remove("--force")
     # 实盘解锁前置闸（2026-08-21 立，实盘误开防护检查点①）：--account live 且解锁文件
     # 无效 → blocked_by:"live_locked" 结构化拒单（详见 scripts/live_unlock.py）。
     import live_unlock
@@ -294,6 +299,21 @@ def main():
     if not symbol.startswith("HK."):
         print(json.dumps({"ok": False, "error": f"本脚本只处理港股（HK.xxx），收到 {symbol}"}))
         sys.exit(1)
+    # 一级降频线开仓前置闸（2026-08-31 T131）：连败 ≥3 笔（跨日累计）或 ≥2 笔且最近
+    # 两笔亏满型（净 R ≤ -0.95）、且最近一笔亏损平仓发生在今日 → 当日停止开新仓
+    # （review-and-evaluation.md「一级·降频线」；2026-08-28 三连败后仍开第 4 笔的首次
+    # 盘中漏执行、机械堵漏）。次日自动放行（次日再战）；--force = 用户决策覆盖。
+    _ls_forced = False
+    _ls_ok, _ls_detail = U.check_losing_streak_gate()
+    if not _ls_ok:
+        if force:
+            print("⚠️ 一级降频线已触发，--force 用户决策覆盖——放行开仓")
+            _ls_forced = True
+        else:
+            print(json.dumps({"ok": False, "blocked_by": "losing_streak",
+                              "action": "open_position_tiger", "market": "HK", "symbol": symbol,
+                              "error": _ls_detail}, ensure_ascii=False))
+            sys.exit(1)
     # 开仓时间闸（2026-08-18 立）：距停盯 >5 分钟放行、≤5 分钟或盘外拒单。
     # 「距停盯 >5 分钟就仍可开仓」规则的工具级执行点——AI 侧不许自设「临近收盘/午休
     # 不开仓」截止线（2026-08-17、2026-08-18 两次同类违规后用户立工具强制）。
@@ -386,6 +406,8 @@ def main():
         "current_price": current_price, "range_low": round(range_low, 4), "range_high": round(range_high, 4),
         "odds_at_ref": round(odds_at_ref, 2), "odds_at_current": round(odds_at_current, 2),
     }
+    if _ls_forced:
+        result_base["losing_streak_forced"] = True   # T131：降频线触发但 --force 用户覆盖
     # 自动算仓位的落档信息（在费上下文/校验之后写进 result，拒单报错里也带上真实股数与赔率）
     if lot_size is not None:
         result_base.update({"auto_sized": True, "equity": equity, "equity_currency": currency,
@@ -515,6 +537,30 @@ def main():
                 f"不满足企稳定义「维持 ≥10 分钟」——若本单为回踩企稳入场，请先核验：真支撑 + ≥2 次"
                 f"测试不破 + 维持 ≥10 分钟 + 确认事件已发生（右侧入场总则）；突破入场不受此限。"
             )
+
+    # 非拦截警告累计 ≥2 条硬拦（2026-08-31 T130 落地）：「同位置警告累计两条 = 降一档
+    # 置信度」2026-08-28 立规当晚才写进 trading-strategy.md、盘中无工具在场——当天阿里#1
+    # 开仓时 stability 警告（3.6 分钟）+ 止盈越日高警告（+1.0%）两条在案、AI 仍按 🟢 开仓
+    # → 9 分钟回踩击穿企稳区止损 -1.00R（2026-08-31 复盘实证的首次漏执行）。现把 AI 临场
+    # 判断换成脚本硬判：净赔率校验后汇总本单全部非拦截警告字段（warning_ 前缀 / _warning
+    # 后缀自动收集，后续新增警告字段无需改此处），同单 ≥2 条一律拒单——「降一档置信度
+    # （🟢→🟡）」与「不开仓」同义，脚本直接拦死不留裁量；1 条警告保留在场打印不拦
+    # （AI 结合形态自行裁量）。硬拦截类（税闸 / 赔率门槛 / 时间闸）本就拒单，不参与计数。
+    _warn_keys = sorted(k for k in result_base
+                        if (k.startswith("warning_") or k.endswith("_warning")) and k != "warning")
+    if len(_warn_keys) >= 2:
+        result_base.update({
+            "ok": False,
+            "blocked_by": "warnings_cumulative_2",
+            "warnings_counted": _warn_keys,
+            "error": (
+                f"本单非拦截警告累计 {len(_warn_keys)} 条（{'、'.join(_warn_keys)}）≥ 2 条——按"
+                f"「同位置警告累计两条 = 降一档置信度」（2026-08-28 立，trading-strategy.md）"
+                f"强制降 🟡，置信度非 🟢 不开仓，脚本硬拦。处理：等局面明朗（企稳维持 ≥10 分钟 /"
+                f" 止盈调回日高内）或调整入场点后重新评估；各警告明细见下方字段。"),
+        })
+        print(json.dumps(result_base, ensure_ascii=False))
+        sys.exit(1)
 
     # 开仓前「自问平仓」检查（2026-08-25 用户立 T121，2026-08-30 落地为决策时刻在场打印）：
     # 核心逻辑 = 开仓与平仓用同一套价位判断——若当前价位已让自己想平仓（或想「平了等回落再

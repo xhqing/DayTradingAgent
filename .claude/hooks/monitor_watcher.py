@@ -41,6 +41,15 @@ _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__f
 # 内容为原因摘要）。
 NOTIFY_COOLDOWN_SECONDS = 300   # 同一类事件 5 分钟内不重复报
 
+# 提醒面板（2026-09-01 T128）：alert_panel = trade skill scripts/alert_panel.swift 的
+# 编译产物（可最小化到 Dock 的 AppKit 面板，替代 osascript display dialog 模态窗的
+# 「置顶不可最小化」）。watcher 由 launchd 每 10 秒触发、**不做现场编译**（编译约 10s
+# 会拖慢/叠进程）——面板由 proxy_guard（preflight 启动时跑）负责编译；缺失时回退
+# osascript（旧载体保底，语义一致只是不可最小化）。
+_PANEL_BIN = os.path.join(_PROJECT_ROOT, "tmp", "alert_panel")
+_PANEL_PENDING = os.path.join(_PROJECT_ROOT, "tmp", "watcher_panel_pending.json")
+_PANEL_RESULT = os.path.join(_PROJECT_ROOT, "tmp", "watcher_panel_result.json")
+
 
 def in_trading_session():
     """**仅港股盘中**（09:30-12:00 / 13:00-16:00，周一至周五）。
@@ -79,7 +88,13 @@ def notify(msg, key=None):
     2026-08-21 立铃声去横幅（用户立「密采样守卫提醒不弹横幅」）：原铃声经
     `display notification "" sound name "Basso"` 发出——该调用在响铃的同时会弹一条
     空内容横幅，与「横幅 → 弹窗」初衷相悖（主提醒已由弹窗承载，横幅纯属多余）。
-    改用 afplay 直接播放系统音（不产生任何横幅 / 通知），弹窗与持久日志照旧。"""
+    改用 afplay 直接播放系统音（不产生任何横幅 / 通知），弹窗与持久日志照旧。
+
+    2026-09-01 换可最小化面板（T128）：display dialog 是模态窗、无最小化按钮、一直
+    悬浮置顶遮挡操作（2026-08-31 用户实测反馈）。改用 alert_panel（AppKit 面板：
+    可最小化到 Dock、点 Dock 图标唤回；单按钮「知道了」、30 秒超时自动关 = 旧
+    giving up after 30 语义）。面板 detached 弹出（不阻塞 watcher——旧 osascript 同步
+    阻塞至多 35 秒）；面板缺失回退 osascript。"""
     if key is not None:
         import re as _re
         safe_key = _re.sub(r"[^A-Za-z0-9_-]", "_", key)
@@ -104,6 +119,28 @@ def notify(msg, key=None):
             f.write(f"{ts}\t{key or '-'}\t{msg}\n")
     except OSError:
         pass
+    # 铃声（先响再弹窗；2026-08-21 起改 afplay 直接播放——不弹横幅，见 docstring）
+    try:
+        subprocess.Popen(["afplay", "/System/Library/Sounds/Basso.aiff"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+    # 提醒窗：优先可最小化面板（T128），缺失回退 osascript display dialog
+    try:
+        if os.path.isfile(_PANEL_BIN) and os.access(_PANEL_BIN, os.X_OK):
+            import json as _json
+            os.makedirs(os.path.dirname(_PANEL_PENDING), exist_ok=True)
+            with open(_PANEL_PENDING, "w") as f:
+                _json.dump({"title": "DayTradingAgent 密采样守护", "message": msg,
+                            "button_ok": "知道了", "button_cancel": "none",
+                            "timeout_secs": 30}, f, ensure_ascii=False)
+            # detached：watcher 立即返回（launchd 10 秒节奏不被弹窗拖住），面板独立等点击/超时
+            subprocess.Popen([_PANEL_BIN, _PANEL_PENDING, _PANEL_RESULT],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+            return
+    except Exception:
+        pass   # 面板路径任何异常 → 回退 osascript
     try:
         # 弹窗文案转义（消息含双引号会破 AppleScript 字符串字面量）
         esc = msg.replace("\\", "\\\\").replace('"', '\\"')
@@ -113,11 +150,6 @@ def notify(msg, key=None):
              f'buttons {{"知道了"}} default button "知道了" giving up after 30 '
              f'with icon caution'],
             timeout=35,
-        )
-        # 铃声（弹窗弹出时响；2026-08-21 起改 afplay 直接播放——不弹横幅，见 docstring）
-        subprocess.run(
-            ["afplay", "/System/Library/Sounds/Basso.aiff"],
-            timeout=5,
         )
     except Exception:
         pass

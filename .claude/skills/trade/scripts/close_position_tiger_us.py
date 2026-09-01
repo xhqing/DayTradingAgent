@@ -304,6 +304,12 @@ def main():
                              fill_price, close_order_id=fill_order_id, entry_price=entry_price)
         _attach_process_metrics(result_base, config, symbol, direction, entry_price, stop_dist,
                                 quantity=quantity)
+        # 连败计数更新（2026-08-31 T131，同港股版）：写 tmp/losing_streak.json 供
+        # open_position 前置闸（港美共用一把闸）。
+        import trade_utils_tiger as T
+        result_base["losing_streak"] = T.update_losing_streak(
+            "US", symbol, direction, entry_price, stop_dist, quantity, fill_price,
+            net_pnl=result_base.get("net_pnl_app"))
         print(json.dumps(result_base, ensure_ascii=False))
         sys.exit(0)
     else:

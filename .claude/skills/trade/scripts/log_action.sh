@@ -86,5 +86,22 @@ fi
 
 # 与前一条动作之间空一行分隔（文件已非空时先补一个空行）
 [ -s "$ACTION_FILE" ] && echo "" >> "$ACTION_FILE"
-# 标题框线内带时间戳（与 log_signal.sh 同样逻辑）
-printf '%s\n' "$CONTENT" | awk -v ts="$ACTION_TS" 'NR==2{print; print "> ⏰ 动作时间：" ts; next} 1' >> "$ACTION_FILE"
+# 标题行后带时间戳（与 log_signal.sh 同样逻辑）。
+# 2026-08-31 修（T129）：原 awk NR==2 固定行号插入对空行脆弱——动作内容首两行为
+# 「框线 + 空行」时（2026-08-31 实录），时间行插在标题行【前】而非【后】，
+# account_status._parse_actions 按标题行分节后平仓节内无时间行 → ts='' 排到最前 →
+# close 先于 open → 持仓推导残留 open 仓位 → 采样段「账户已无持仓但 actions 无平仓
+# 记录」误告警持续多段。改为「首个以 🟢🔴🟡🔵 开头的行（动作标题行，标准格式 =
+# 框线/标题/⏰时间/框线）后插入」；整个内容都没有 emoji 标题行时兜底追加末尾 + 警示
+# （宁可位置错在末尾、不再错在标题前——标题前会破坏 _parse_actions 分节）。
+printf '%s\n' "$CONTENT" | awk -v ts="$ACTION_TS" '
+  !done && (index($0,"🟢")==1 || index($0,"🔴")==1 || index($0,"🟡")==1 || index($0,"🔵")==1) {
+    print; print "> ⏰ 动作时间：" ts; done=1; next
+  }
+  {print}
+  END {
+    if (!done) {
+      print "> ⏰ 动作时间：" ts
+      print "log_action.sh ⚠️：未找到以 🟢🔴🟡🔵 开头的动作标题行，时间戳已追加在末尾——请检查动作内容格式（标准 = 框线/标题/⏰时间/框线）" > "/dev/stderr"
+    }
+  }' >> "$ACTION_FILE"

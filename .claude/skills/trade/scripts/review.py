@@ -4,7 +4,7 @@
 
 CSV 字段（首行表头，逗号分隔；# 开头行当注释跳过）:
   date, symbol, direction, entry_price, exit_price, shares, max_loss
-  [, entry_time, exit_time, raw_high, raw_low, shadow]
+  [, entry_time, exit_time, raw_high, raw_low, type, mode, shadow]
   - symbol: 富途格式带市场前缀（HK.03690 / US.SOXL），--fetch-futu 时直接传富途
   - direction: long / short（也接受 做多/做空/多/空）
   - max_loss: 该笔毛最大损失金额（本币，仓位×每股止损距；净 max_loss = 毛值+开仓费+止损价
@@ -16,10 +16,17 @@ CSV 字段（首行表头，逗号分隔；# 开头行当注释跳过）:
   - shadow: 影子样本标记，可选（1=影子）；2026-08-27 立——auto 模式被互斥闸拦下的机会的
     纸面记录（见 auto-mode.md「影子交易」节）。主统计默认剔除 shadow=1 行（真实样本口径
     不变），--shadow-only 反向只统计影子子集
+  - mode: 交易模式标签（2026-08-31 T134 立，四值）：signal（信号模式，AI 发信号用户手动
+    执行）/ auto_paper（auto 模式模拟账户）/ auto_live（auto 模式实盘账户）/ shadow（影子
+    纸面样本）。复盘报告的「分阶段统计」按本列分列（取代按日期近似切分——旧口径每期
+    复盘都要重新推断边界、换人重跑会得出不同分段）。老 CSV 无 mode 列时兼容推断：
+    shadow=1 → shadow，其余标 unknown（unknown 不进任何 --mode 子集、主统计照常计入，
+    打印提醒补 mode 列）
 
 用法:
   python3 review.py <trades.csv>                  # 用 CSV 自带 raw_high/raw_low
   python3 review.py <trades.csv> --fetch-futu     # 缺 high/low 时连富途按时间戳自动拉
+  python3 review.py <trades.csv> --mode auto_live # 只统计某一模式的子集（T134）
 
 输出（R-multiple 体系，与 SKILL「复盘分析」一致；2026-08-03 起改 net 口径）:
   1. 样本明细
@@ -128,10 +135,21 @@ def load_trades(path):
     if not rows: sys.exit("❌ CSV 无数据行")
     trades = []
     shadow_any = False
+    mode_missing = 0
+    _VALID_MODES = ('signal', 'auto_paper', 'auto_live', 'shadow')
     for i, r in enumerate(rows, 1):
         try:
             _is_shadow = (r.get('shadow') or '').strip() not in ('', '0', 'false', 'False')
             shadow_any = shadow_any or _is_shadow
+            # mode 列（2026-08-31 T134）：signal / auto_paper / auto_live / shadow 四值；
+            # 老无该列时兼容推断——shadow=1 → shadow，其余 unknown（不进 --mode 子集、
+            # 主统计照常计入 + 提醒补标）
+            _mode = (r.get('mode') or '').strip().lower()
+            if not _mode:
+                _mode = 'shadow' if _is_shadow else 'unknown'
+                mode_missing += 1
+            if _mode not in _VALID_MODES and _mode != 'unknown':
+                sys.exit(f"❌ 第{i}行 mode 非法 '{_mode}'（合法值：{'/'.join(_VALID_MODES)}）")
             t = dict(date=r['date'].strip(), symbol=r['symbol'].strip(),
                      sign=_direction(r['direction']),
                      entry=float(r['entry_price']), exit=float(r['exit_price']),
@@ -140,7 +158,7 @@ def load_trades(path):
                      entry_time=(r.get('entry_time') or '').strip() or None,
                      exit_time=(r.get('exit_time') or '').strip() or None,
                      sec_type=(r.get('type') or r.get('sec_type') or '').strip().lower() or None,
-                     shadow=_is_shadow)
+                     shadow=_is_shadow, mode=_mode)
         except Exception as e:
             sys.exit(f"❌ 第{i}行解析失败: {e}\n  {r}")
         # 跨日交易校验（2026-08-12 用户立：本项目纯日内、不存在跨日；entry_time/exit_time
@@ -193,6 +211,7 @@ def load_trades(path):
         sys.stderr.write("⚠️ 部分/全部行缺 type 列，已按 stock（收印花税）计费；"
                          "ETF 漏标会多算印花税，建议补 type 列（stock/etf）精算。\n")
     t['shadow_any'] = shadow_any   # 无 shadow 列时 False（老 CSV 兼容，行为不变）
+    t['mode_missing'] = mode_missing
     return trades
 
 
@@ -336,8 +355,17 @@ def main():
                     help="缺 raw_high/raw_low 时连富途按 entry_time/exit_time 拉分钟 K 取 high/low")
     ap.add_argument('--shadow-only', action='store_true',
                     help="只统计 shadow 列=1 的影子样本（auto 互斥闸被拦机会的纸面记录，"
-                         "2026-08-27 立）——单独跑影子子集，与真实样本分开统计")
+                         "2026-08-27 立）——单独跑影子子集，与真实样本分开统计"
+                         "（等价 --mode shadow，保留向后兼容）")
+    ap.add_argument('--mode', choices=('signal', 'auto_paper', 'auto_live', 'shadow'),
+                    help="只统计某一交易模式的子集（T134，2026-08-31 立）——signal=信号模式 / "
+                         "auto_paper=auto 模拟 / auto_live=auto 实盘 / shadow=影子纸面样本；"
+                         "分阶段统计从按日期近似切分改为按 mode 列分列")
     args = ap.parse_args()
+    if args.shadow_only and args.mode and args.mode != 'shadow':
+        sys.exit("❌ --shadow-only 与 --mode 冲突（--shadow-only 等价 --mode shadow）")
+    if args.shadow_only:
+        args.mode = 'shadow'   # 统一到 mode 口径
 
     if not _HAVE_SCIPY:
         print("⚠️ 未装 scipy：t 分布用正态近似(小样本偏乐观)、χ²用 Wilson-Hilferty 近似。建议 pip install scipy。\n")
@@ -345,19 +373,32 @@ def main():
     trades = load_trades(args.csv)
 
     # 影子样本口径（2026-08-27 立，auto-mode.md「影子交易」决策点 4）：
-    # CSV 有 shadow=1 行时默认剔除（主统计 = 真实样本口径不变）；--shadow-only 反向只留影子。
-    # 两模式互斥；--shadow-only 但 CSV 无影子行时报错退出（防误跑空样本得出 N=0 假统计）。
+    # CSV 有 shadow=1 行时默认剔除（主统计 = 真实样本口径不变）；--mode shadow 反向只留影子。
+    # 模式过滤（2026-08-31 T134）：--mode X 只留 mode=X 的行；CSV 无 mode 列（全部 unknown）
+    # 时报错退出（先打标再分组）；部分行 unknown 时跳过该几行并提醒。
     _n_shadow = sum(1 for t in trades if t['shadow'])
-    if args.shadow_only:
+    if args.mode == 'shadow':
         if _n_shadow == 0:
-            sys.exit("❌ --shadow-only 但 CSV 无 shadow=1 行——先按 auto-mode.md「影子交易」落影子样本")
+            sys.exit("❌ --mode shadow 但 CSV 无 shadow=1 行——先按 auto-mode.md「影子交易」落影子样本")
         trades = [t for t in trades if t['shadow']]
         print(f"【影子子集】shadow=1 共 {_n_shadow} 笔（决策时刻价近似、无真实滑点、被拦机会样本，"
               f"与真实样本不同质——只单独看、不并入主统计）\n")
+    elif args.mode:
+        _sub = [t for t in trades if t['mode'] == args.mode]
+        if not _sub:
+            _have_mode_col = any(t['mode'] != 'unknown' for t in trades)
+            sys.exit(f"❌ --mode {args.mode} 无匹配行——"
+                     + ("先给 CSV 补 mode 列（signal/auto_paper/auto_live/shadow，转录时按当日执行模式打标）"
+                        if not _have_mode_col else "检查 mode 列取值"))
+        if len(_sub) < len(trades):
+            _unk = sum(1 for t in trades if t['mode'] == 'unknown')
+            print(f"【模式子集】--mode {args.mode}：{_sub}/{len(trades)} 笔"
+                  + (f"（{_unk} 笔 unknown 未计入——补 mode 列后重跑）" if _unk else "") + "\n")
+        trades = _sub
     elif _n_shadow:
         _n_real = len(trades) - _n_shadow
         print(f"【影子剔除】CSV 含 shadow=1 影子样本 {_n_shadow} 笔，主统计已剔除（剩真实样本 {_n_real} 笔）——"
-              f"影子单独跑：python3 review.py <csv> --shadow-only\n")
+              f"影子单独跑：python3 review.py <csv> --mode shadow\n")
         trades = [t for t in trades if not t['shadow']]
 
     if args.fetch_futu:
@@ -396,11 +437,11 @@ def main():
     # 1. 样本明细
     print("\n【样本明细】（P / R 均为扣双边手续费后的净额；fee = 开+平两边手续费；"
           "净M = 毛 M + 开仓费 + 止损价平仓费（2026-08-28 分母净口径））")
-    print(f"{'#':<3}{'日期':<11}{'标的':<16}{'向':<4}{'entry→exit':<18}{'P净':>9}{'fee':>8}{'净M':>10}{'R净':>9}")
+    print(f"{'#':<3}{'日期':<11}{'标的':<16}{'向':<4}{'模式':<11}{'entry→exit':<18}{'P净':>9}{'fee':>8}{'净M':>10}{'R净':>9}")
     for i, t in enumerate(trades, 1):
         d = '多' if t['sign'] > 0 else '空'
         ee = f"{t['entry']}→{t['exit']}"
-        print(f"{i:<3}{t['date']:<11}{t['symbol']:<16}{d:<4}{ee:<18}{t['P']:>+9.1f}{t['fee']:>8.1f}{t['M_net']:>10.0f}{t['R']:>+9.3f}")
+        print(f"{i:<3}{t['date']:<11}{t['symbol']:<16}{d:<4}{t['mode']:<11}{ee:<18}{t['P']:>+9.1f}{t['fee']:>8.1f}{t['M_net']:>10.0f}{t['R']:>+9.3f}")
 
     # 2. 终局统计量
     print("\n【终局统计量】")
@@ -408,6 +449,29 @@ def main():
     print(f"  胜赔率 R_W={S['RW']:.3f}   败赔率 R_L={S['RL']:.3f}")
     print(f"  EV={S['EV']:+.4f} (EV%={S['EV'] * 100:+.2f})   平均每单 P̄={S['Pbar']:+.1f}")
     print(f"  R 样本标准差 s={S['s']:.3f}")
+
+    # 2b. 按模式分组（2026-08-31 T134：分阶段统计从按日期近似切分改为按 mode 列分列——
+    # 复盘报告的「分阶段统计」「按模式分组」表直接引用本节输出；--mode 单子集模式也打印
+    # 全模式对照（信息不丢）。CSV 无 mode 列（全 unknown）时跳过 + 提醒补标。
+    _by_mode = {}
+    for t in trades:
+        _by_mode.setdefault(t['mode'], []).append(t)
+    if any(m != 'unknown' for m in _by_mode):
+        print("\n【按模式分组】（mode 列分列，复盘报告「分阶段统计」以此为准——日期近似切分口径废止）")
+        print(f"  {'模式':<12}{'N':>4}{'胜率':>9}{'EV(R)':>10}{'平均R':>9}")
+        for m in ('signal', 'auto_paper', 'auto_live', 'shadow', 'unknown'):
+            if m not in _by_mode:
+                continue
+            sub = _by_mode[m]
+            R_m = [t['R'] for t in sub]
+            p_m = sum(1 for r in R_m if r > 0) / len(R_m)
+            ev_m = mean(R_m)
+            print(f"  {m:<12}{len(R_m):>4}{p_m:>9.3f}{ev_m:>+10.4f}{ev_m:>+9.3f}")
+        if 'unknown' in _by_mode:
+            print(f"  ⚠️ unknown {len(_by_mode['unknown'])} 笔（缺 mode 列/未打标）——转录 CSV 时按当日执行模式补标")
+    elif trades and trades[0].get('mode_missing'):
+        print("\n【按模式分组】⚠️ CSV 缺 mode 列（无法分组）——转录 CSV 时加 mode 列"
+              "（signal/auto_paper/auto_live/shadow，T134）")
 
     # 3. 过程指标
     if trades[0]['MAE_R'] is not None:
