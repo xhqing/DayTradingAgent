@@ -14,8 +14,8 @@
       "Bash(python3 .claude/skills/trade/scripts/bayes_evolution.py *)",
       "Bash(python3 .claude/skills/trade/classify_hk_security.py *)",
       "Bash(bash .claude/skills/trade/scripts/alert.sh *)",
-      "Bash(bash .claude/skills/keep-awake/scripts/off.sh *)",
-      "Bash(bash .claude/skills/keep-awake/scripts/on.sh *)"
+      "Bash(bash .claude/skills/trade/scripts/keepawake_off.sh *)",
+      "Bash(bash .claude/skills/trade/scripts/keepawake_on.sh *)"
     ],
     "deny": [
       "CronCreate",
@@ -56,6 +56,12 @@
         "matcher": "AskUserQuestion",
         "hooks": [
           { "type": "command", "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/live_auth_witness.py" }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          { "type": "command", "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/changelog_guard.py" }
         ]
       }
     ]

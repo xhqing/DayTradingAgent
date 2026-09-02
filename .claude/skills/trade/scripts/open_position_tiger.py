@@ -51,50 +51,6 @@ import trade_utils_tiger as U
 from trade_mutex import TradeMutex   # 多会话并行盯盘互斥（方案 A，2026-08-17）
 
 
-def _stability_minutes(symbol, price, window_pct=0.003):
-    """读当日采样 log 统计「现价 ±window_pct 区间最近连续维持分钟数」（2026-08-21 立）。
-
-    企稳定义（trading-strategy.md「右侧入场总则」）四要素之一「维持 ≥10 分钟」的机械化核验：
-    从 log 末尾向前数「价格在 [price*(1-w), price*(1+w)] 内」的连续行数（futu_ws_segment 每秒一行
-    ≈秒数）。log 不存在/为空返回 None（无法核验时静默，AI 自行判断）；窗口默认 ±0.3%。
-    2026-08-21 实盘教训：07709 VWAP 回踩信号 40.56 在 log 里仅持续 1 秒即被当「企稳」确认——
-    本函数把「一瞬贴线」变成可机械核验的数字（维持 0.x 分钟 → 警告）。
-    """
-    import glob
-    from pathlib import Path
-    # scripts/ 的上四级 = 项目根（scripts → trade → skills → .claude → 项目根）
-    log_dir = Path(__file__).resolve().parent.parent.parent.parent.parent / "tmp"
-    stem = symbol.replace(".", "_")
-    today8 = datetime.now().strftime("%Y%m%d")
-    today_dash = datetime.now().strftime("%Y-%m-%d")
-    files = sorted(
-        glob.glob(str(log_dir / f"monitor_log_{stem}_{today8}_*.csv"))
-        + glob.glob(str(log_dir / f"monitor_log_{stem}_{today_dash}_*.csv"))
-    )
-    if not files:
-        return None
-    lo, hi = price * (1 - window_pct), price * (1 + window_pct)
-    try:
-        rows = []
-        with open(files[-1]) as f:
-            for line in f:
-                parts = line.strip().split(",")
-                if len(parts) >= 3 and parts[0] != "time":
-                    try:
-                        rows.append(float(parts[2]))
-                    except ValueError:
-                        pass
-        seconds = 0
-        for p in reversed(rows):
-            if lo <= p <= hi:
-                seconds += 1
-            else:
-                break
-        return seconds / 60.0
-    except Exception:
-        return None
-
-
 def _downscale_sequence(quantity, lot_size):
     """开仓降档序列：目标量优先，之后逐次减半（向下取整手）直到最低整手。
 
@@ -269,6 +225,26 @@ def main():
     force = "--force" in args
     if force:
         args.remove("--force")
+    # --limit-price（2026-09-02 用户立「挂价当然是你定」）：显式指定主单限价委托价——
+    # 用于「限价挂单等回踩」场景（挂价挂在回踩位、价格回落触到即成交，AI 不追秒级盘口）。
+    # 语义联动（与 2026-09-02 用户立「赔率校验按提交的挂价算」配套）：
+    #   ① 主单限价 = --limit-price 指定价（取整 tick），不再取盘口对价；
+    #   ② 净赔率校验按挂价口径（挂单成交价即挂价，无滑点歧义）——等回踩挂单时现价
+    #      必然高于挂价、按现价算恒不达标的三挂三拒死结（2026-09-02 00100 实录）就此打通。
+    # 不传 --limit-price = 原行为不变（做多挂 ask / 做空挂 ask、赔率按现价校验）。
+    limit_price_arg = None
+    if "--limit-price" in args:
+        idx = args.index("--limit-price")
+        if idx + 1 >= len(args):
+            print("用法错误：--limit-price 需要一个价格参数", file=sys.stderr)
+            sys.exit(1)
+        try:
+            limit_price_arg = float(args[idx + 1])
+        except ValueError:
+            print(json.dumps({"ok": False,
+                              "error": f"--limit-price 需要数字价格，收到 '{args[idx + 1]}'"}))
+            sys.exit(1)
+        del args[idx:idx + 2]
     # 实盘解锁前置闸（2026-08-21 立，实盘误开防护检查点①）：--account live 且解锁文件
     # 无效 → blocked_by:"live_locked" 结构化拒单（详见 scripts/live_unlock.py）。
     import live_unlock
@@ -277,14 +253,16 @@ def main():
     if len(args) < 6:
         print(
             "用法: python3 open_position_tiger.py <symbol> <direction> <entry_ref> "
-            "<stop_loss> <target> <quantity> [--order-type lmt]\n"
+            "<stop_loss> <target> <quantity> [--order-type lmt] [--limit-price P] [--account live]\n"
             "  symbol    港股代码（HK.02800）\n"
             "  direction long / short\n"
             "  entry_ref 参考价\n"
             "  stop_loss 止损价（附加止损触发价）\n"
             "  target    目标止盈价\n"
             "  quantity  开仓股数（0=自动算仓位）\n"
-            "  --order-type 主单类型：lmt（默认，限价单；mkt 已禁用——拒单）",
+            "  --order-type 主单类型：lmt（默认，限价单；mkt 已禁用——拒单）\n"
+            "  --limit-price P 指定主单限价委托价（2026-09-02：挂单等回踩用——挂价即委托价，\n"
+            "                赔率校验也按挂价口径算；不传则挂盘口对价、赔率按现价校验）",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -469,29 +447,17 @@ def main():
     day_low = quote.get("low")
     reachable = True
     unreachable_reason = ""
-    if direction == "long" and day_high and target > day_high:
-        reachable = False
-        unreachable_reason = (
-            f"⚠️ 止盈远于当日高点：做多止盈 {target} 越过当日高点 {day_high}"
-            f"（+{(target/day_high - 1)*100:.1f}%）——常规时段当日到达概率低，历史该类笔平均落地 "
-            f"+0.30R（弱于止盈在日高内的 +0.83R）。趋势日（创新高+放量+VWAP 上方）允许越日高定 "
-            f"止盈、让利润奔跑；震荡日应调低到 ≤ 日高或放弃。AI 按形态裁量，本警告不拦单。"
-        )
-    elif direction == "short" and day_low and target < day_low:
-        reachable = False
-        unreachable_reason = (
-            f"⚠️ 止盈远于当日低点：做空止盈 {target} 跌破当日低点 {day_low}"
-            f"（{(1 - target/day_low)*100:.1f}%）——常规时段当日到达概率低。空头趋势日（创新低 "
-            f"+放量+VWAP 下方）允许越日低定止盈；震荡日应调高到 ≥ 日低或放弃。AI 按形态裁量，"
-            f"本警告不拦单。"
-        )
-    # 方案 A（2026-08-27）：target_reachable=false 只警告、不拒单（blocked_by 不设——
-    # 只有真拒单才带 blocked_by），字段保留供 AI 转录动作记录时注明。
+    # 止盈可达性警告已彻底撤销（2026-09-02 用户裁定）：原「止盈越日高/日低 → warning_
+    # target_unreachable」警告整段移除——不再打印警告、不进「累计两条降 🟡」计数。裁定
+    # 背景：越日高警告与赔率门槛结构性互斥（止盈调回日高内赔率普遍 < 1.2、拉远到达标
+    # 位必越日高 → warnings_cumulative_2 硬拦，2026-09-02 00100 挂 344/止损 339.5/目标
+    # 355 赔率 1.74 被拦实录）——趋势日创新高后任何有意义的止盈都在日高上方，该警告在
+    # 趋势日场景恒误伤。沿革：2026-08-21 立硬闸 → 2026-08-27 回放复盘降级为警告（方案 A）
+    # → 2026-09-02 彻底撤销。target_reachable 字段本身保留（纯信息、不带 warning_ 前缀
+    # 不进计数），供 AI 转录动作记录时参考。
     result_base["target_reachable"] = reachable
     result_base["day_high"] = day_high
     result_base["day_low"] = day_low
-    if not reachable:
-        result_base["warning_target_unreachable"] = unreachable_reason
     if not in_range:
         result_base.update({"ok": False, "error": (
             f"当前价 {current_price} 不在范围 [{range_low:.4f}, {range_high:.4f}] 内。"
@@ -512,31 +478,42 @@ def main():
     # 自动算仓位（quantity=0）已在上面临近算出股数，小仓位单的固定费摊薄效应如实进赔率
     # （实测 200 股例：近似口径 1.98 放行 vs 真净 0.97 应拦），拒单报错带股数与净 max_loss。
     _min_odds = _min_net_odds_from_config()
-    if odds_at_current < _min_odds:
+    # 指定挂价（--limit-price）时赔率校验改按挂价口径（2026-09-02 用户立「开仓赔率校验
+    # 按提交的挂价、也就是限价单的委托价计算」）：挂单成交价即挂价、无滑点歧义——等回踩
+    # 挂单场景下现价必然高于挂价、按现价算恒不达标（三挂三拒死结），按挂价算才是这笔单
+    # 真实的预期赔率。_odds_for_gate 取两者：指定挂价 → odds_at_limit；否则 odds_at_current
+    # （2026-08-21 07709 追高事故硬闸语义保持不变——未指定挂价的盘口对价单仍按现价校验）。
+    if limit_price_arg is not None:
+        try:
+            if fee_ctx:
+                odds_at_limit = U._net_odds(direction, limit_price_arg, target, stop_loss, fee_ctx=fee_ctx)
+            else:
+                odds_at_limit = U._net_odds(direction, limit_price_arg, target, stop_loss,
+                                            fee_per_side=_LEGACY_FEE.get(U._market_of(symbol), 0.0))
+        except ValueError:
+            odds_at_limit = float('-inf')
+        _odds_for_gate = odds_at_limit
+    else:
+        odds_at_limit = None
+        _odds_for_gate = odds_at_current
+    if _odds_for_gate < _min_odds:
         _ml_note = (f"，仓位 {result_base.get('quantity', quantity)} 股、净 max_loss "
                     f"{result_base.get('max_loss', 0):,.0f}" if result_base.get("auto_sized") else "")
-        result_base.update({"ok": False, "error": (
-            f"当前价 {current_price} 的净预期赔率 {odds_at_current:.2f} < {_min_odds} 开仓门槛——"
-            f"按当前实价 + 真实股数 × 真实费率 × 净分母口径不达标（参考价 {entry_ref} 口径 "
-            f"{odds_at_ref:.2f}；参考价与现价偏差 {(current_price/entry_ref - 1)*100:.1f}%）{_ml_note}。"
-            f"处理：刷新参考价为最新实价、等回踩到赔率达标位再评估，不得按旧参考价通过门槛；"
-            f"小仓位单（固定费占比高）赔率天然更薄，换更大止损距结构或放弃该形态。")})
+        if limit_price_arg is not None:
+            result_base.update({"ok": False, "error": (
+                f"挂价 {limit_price_arg} 的净预期赔率 {odds_at_limit:.2f} < {_min_odds} 开仓门槛——"
+                f"按限价委托价 + 真实股数 × 真实费率 × 净分母口径不达标（现价 {current_price}、"
+                f"参考价口径 {odds_at_ref:.2f}）{_ml_note}。"
+                f"处理：降低挂价（更深回踩位）、或换更大止损距结构、或放弃该形态。")})
+        else:
+            result_base.update({"ok": False, "error": (
+                f"当前价 {current_price} 的净预期赔率 {odds_at_current:.2f} < {_min_odds} 开仓门槛——"
+                f"按当前实价 + 真实股数 × 真实费率 × 净分母口径不达标（参考价 {entry_ref} 口径 "
+                f"{odds_at_ref:.2f}；参考价与现价偏差 {(current_price/entry_ref - 1)*100:.1f}%）{_ml_note}。"
+                f"处理：刷新参考价为最新实价、等回踩到赔率达标位再评估，不得按旧参考价通过门槛；"
+                f"小仓位单（固定费占比高）赔率天然更薄，换更大止损距结构或放弃该形态。")})
         print(json.dumps(result_base, ensure_ascii=False))
         sys.exit(1)
-
-    # 企稳维持时长在场打印（2026-08-21 立，配合上方赔率硬校验）：
-    # 读采样 log 统计现价附近最近连续维持分钟数——「一瞬贴线（0.x 分钟）当企稳」是今天事故的
-    # 判定根因；维持 ≥10 分钟是企稳定义四要素中最可机械核验的一条。本项不硬拦（突破入场等形态
-    # 不要求维持时长，硬拦会误伤），只作决策时刻在场打印提醒。
-    stability = _stability_minutes(symbol, current_price)
-    if stability is not None:
-        result_base["stability_minutes"] = round(stability, 1)
-        if stability < 10:
-            result_base["stability_warning"] = (
-                f"⚠️ 现价 {current_price} 在当前价位附近连续维持仅 {stability:.1f} 分钟（< 10 分钟），"
-                f"不满足企稳定义「维持 ≥10 分钟」——若本单为回踩企稳入场，请先核验：真支撑 + ≥2 次"
-                f"测试不破 + 维持 ≥10 分钟 + 确认事件已发生（右侧入场总则）；突破入场不受此限。"
-            )
 
     # 非拦截警告累计 ≥2 条硬拦（2026-08-31 T130 落地）：「同位置警告累计两条 = 降一档
     # 置信度」2026-08-28 立规当晚才写进 trading-strategy.md、盘中无工具在场——当天阿里#1
@@ -546,6 +523,8 @@ def main():
     # 后缀自动收集，后续新增警告字段无需改此处），同单 ≥2 条一律拒单——「降一档置信度
     # （🟢→🟡）」与「不开仓」同义，脚本直接拦死不留裁量；1 条警告保留在场打印不拦
     # （AI 结合形态自行裁量）。硬拦截类（税闸 / 赔率门槛 / 时间闸）本就拒单，不参与计数。
+    # 2026-09-02：stability_warning 已撤销（见 trading-strategy.md「护栏的统计依据与撤销」），
+    # 当前非拦截警告仅剩 warning_target_unreachable 一类，本计数在无第二条来源前不会触发。
     _warn_keys = sorted(k for k in result_base
                         if (k.startswith("warning_") or k.endswith("_warning")) and k != "warning")
     if len(_warn_keys) >= 2:
@@ -625,7 +604,14 @@ def main():
     # 卖空天然只能被动等买方吃上来；取不到盘口时兜底 current_price（last，≥ last 满足规则）。
     side_str = "Buy" if direction == "long" else "Sell"
     if order_type == "lmt":
-        if direction == "long":
+        if limit_price_arg is not None:
+            # --limit-price 指定挂价（2026-09-02 用户立「挂价当然是你定」）：主单限价直接用
+            # 指定价（取整 tick）——「限价挂单等回踩」场景挂价在回踩位、价格回落触到即成交。
+            # 做空方向约束（提价规则）不适用于指定挂价的等待逻辑之外仍保留校验：做空指定
+            # 挂价低于当时 ask 时生产网关会拒（提价规则），如实按券商回执报错、不在脚本内
+            # 预拦（模拟盘宽松、实测为准）。
+            lo_price = limit_price_arg
+        elif direction == "long":
             lo_price = quote["ask"] if quote.get("ask") else current_price
         else:
             lo_price = max(quote["bid"], quote["ask"]) if (quote.get("bid") and quote.get("ask")) \
@@ -633,6 +619,8 @@ def main():
         tick_sizes = U.get_tick_sizes_tiger(U.new_trade_client(config), symbol)
         lo_price = U.round_to_tick_tiger(lo_price, tick_sizes)
         result_base["lo_price"] = lo_price
+        if limit_price_arg is not None:
+            result_base["lo_price_source"] = "limit_price_arg"
     else:
         lo_price = None
 
@@ -701,7 +689,10 @@ def main():
     # `if not filled:` 不再 UnboundLocalError 崩溃（traceback 代替干净 JSON、AI 拿不到失败详情）
     part_filled_qty = None
 
-    with TradeMutex(market="HK", symbol=symbol, side=side_str, qty=quantity) as mutex:
+    # account 入 mutex（2026-09-02 T136）：写入 intent 供 account_status / monitor_segment
+    # 按标的精确选账户查持仓与订单（实盘会话查实盘账户，不再错查模拟账户报「已无持仓」）。
+    with TradeMutex(market="HK", symbol=symbol, side=side_str, qty=quantity,
+                    account=("live" if account == "live" else None)) as mutex:
         # 锁内三口径闸门（查单与成交确认同数据源 get_orders；拿不到订单时保守拒开——
         # 多会话并行下盲开比误拒危险）。
         try:
@@ -770,7 +761,12 @@ def main():
             # 逐秒回放显示价格回到挂价最快也要 61 秒、8/10/20 秒窗口零改善；放宽到 30 秒
             # 覆盖「1 分钟内回到挂价」的一半场景，且不至于让挂单脱离监控太久（60-90 秒
             # 期间盘口结构可能全变、成交时形态已不成立）。
-            filled, fill_price, status, reason = U.check_order_filled_tiger(config, order_id, timeout=30)
+            # --limit-price 指定挂价（等回踩挂单）放宽到 240 秒（2026-09-02 用户立「挂价
+            # 当然是你定」）：挂价本就挂在回踩位、现价距挂价可能 +2%，价格回落到挂价常需
+            # 数分钟——30 秒超时撤单等于白挂（挂上就被撤）。240 秒内未成交仍撤单退出由
+            # AI 重新评估形态是否还在；原盘口对价路径保持 30 秒不变。
+            _fill_wait = 240 if limit_price_arg is not None else 30
+            filled, fill_price, status, reason = U.check_order_filled_tiger(config, order_id, timeout=_fill_wait)
             if filled:
                 break
             if status == "PartiallyFilled":

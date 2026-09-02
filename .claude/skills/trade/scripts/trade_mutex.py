@@ -98,12 +98,17 @@ def pending_intents():
     return [(ln, d) for ln, d in _read_intents() if d.get("status") == "pending"]
 
 
-def append_intent(session_id, market, symbol, side, qty):
+def append_intent(session_id, market, symbol, side, qty, account=None):
     """提交下单请求前追加一条 pending intent（WAL）。返回行号。
 
     必须在发请求**之前**写——进程若崩在「已提交未确认」之间，该行停在 pending，
     后到会话闸门口径 ① 命中拒开。
-    """
+
+    account（2026-09-02 立，T136）：本笔下单的账户口径（'live' / None=默认模拟账户）。
+    写进 intent 记录后，account_status / monitor_segment 等查询方能按「这笔开仓用的是
+    哪个账户」精确选账户查持仓与订单——此前查询方只能靠当日 actions 的「| 账户 | 实盘」
+    行粗判，记录漏写账户行就错查模拟账户（2026-09-02 实盘首单 00100 后持仓状态行
+    连续误报「账户已无持仓」）。"""
     os.makedirs(TMP_DIR, exist_ok=True)
     rec = {
         "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -112,6 +117,7 @@ def append_intent(session_id, market, symbol, side, qty):
         "symbol": symbol,
         "side": side,
         "qty": qty,
+        "account": account,
         "status": "pending",
     }
     with open(INTENT_FILE, "a") as f:
@@ -282,12 +288,13 @@ class TradeMutex:
         m.settle('filled', order_id)   # 拿到券商确认后写终态
     """
 
-    def __init__(self, market, symbol, side, qty, session_id=None):
+    def __init__(self, market, symbol, side, qty, session_id=None, account=None):
         self.market = market
         self.symbol = symbol
         self.side = side
         self.qty = qty
         self.session_id = session_id or os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+        self.account = account   # 'live' / None（默认模拟账户）——写入 intent 供查询方按账户查（T136）
         self.line_no = None
         self._fd = None
 
@@ -343,7 +350,7 @@ class TradeMutex:
                     "detail": f"已有活动开仓方向挂单 {actives}——坑已被占（成交只是时间问题），拒开"}
         # 三口径全过：写本笔 pending intent（submit 前的 WAL），放行
         self.line_no = append_intent(self.session_id, self.market, self.symbol,
-                                     self.side, self.qty)
+                                     self.side, self.qty, account=self.account)
         return None
 
     def settle(self, status, order_id=None, extra=None):

@@ -280,7 +280,9 @@ echo "$(date '+%H:%M:%S'),<标的>,<一句话判断>" >> tmp/analysis_beat_20260
 - intent pending 残留（极少见：进程恰好崩在已提交未确认之间）：按 JSON 里的提示先查当日订单确认无在途单，再 `python3 scripts/trade_mutex.py --clear-intent <行号>` 清掉。
 - **第四层兜底**：`monitor_segment.py` 每轮采样检测白名单外双持仓（用户手机 App 手动下单等脚本拦不住的路径），检测到立即段输出 🚨 告警——AI 收到后立即查两笔持仓、**平掉较新的那笔**（平仓脚本 symbol 级隔离不误伤先开仓位）。
 
-**跨会话副作用（已工程化处理，AI 知道即可）**：caffeinate 引用计数（`keep-awake/scripts/off.sh` 最后停盯的会话才解除防睡眠——停盯收尾照常跑 off.sh，不必关心别人在不在场）；`resume.py` 传标的参数时按市场 scope 查断层（港股会话不被美股采样掩盖、反之亦然）。
+**跨会话副作用（已工程化处理，AI 知道即可）**：caffeinate 引用计数（`trade/scripts/keepawake_off.sh` 最后停盯的会话才解除防睡眠——停盯收尾照常跑 keepawake_off.sh，不必关心别人在不在场）；`resume.py` 传标的参数时按市场 scope 查断层（港股会话不被美股采样掩盖、反之亦然）。
+
+**防睡眠机制（原 keep-awake skill 已撤销、2026-09-01 并入 trade）**：盯盘期间系统睡眠（合盖 / 维护）会暂停所有进程——富途 OpenD 的 `get_market_snapshot` 无 timeout、卡到 TCP 超时约 15 分钟才返回、整段采样空窗，代理与网络 CLI 同断（2026-07-24 复盘根因）。`caffeinate -s` 创建的 `PreventSystemSleep` assertion 能防住合盖（Clamshell）与维护（Maintenance）两类系统级睡眠，但**只在 AC 电源有效**（`man caffeinate` 明文）——电池下合盖是硬件强制睡眠、软件防不住（防空闲 / 维护类睡眠仍有效，故统一启用、不弹电池提醒）。启用侧：preflight 内联无条件启用（不询问开盖合盖、不弹窗），盯盘主链路不经脚本；盯盘之外的长任务场景手动备用 `bash .claude/skills/trade/scripts/keepawake_on.sh`。解除侧：停盯收尾跑 `bash .claude/skills/trade/scripts/keepawake_off.sh`（引用计数见上，另内置停盯边界时间闸——盘中距收盘超 5 分钟拒解，仅「用户喊停（--force）」或「收盘前 5 分钟窗口」放行，2026-08-24 T118；空仓 / 无信号都不是停盯理由）。
 
 **美股差异**：美股时段 watcher 不做盯盘检查（watcher 仅港股盘中运行、美股时段不打扰用户，2026-08-12 立；2026-08-20 收缩后 watcher 的中断警报已删，会话崩溃检测全市场统一靠 task-notification 断流 + 用户发现）。逐笔实测升级流程各会话各测各的。
 

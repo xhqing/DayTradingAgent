@@ -34,10 +34,12 @@
 局限（诚实）：AI 仍能 kill 进程或换别的方式绕过——本 hook 只提高绕过成本 + 暴露，
 不是 100% 银弹（详见 monitoring.md「2026-08-04 教训」多层防护说明）。
 
-用法（settings.json hooks 注册）：
+用法（hooks 注册，2026-09-02 起双宿主：CC settings.json + ZCode .zcode/config.json 同挂）：
   PreToolUse matcher Bash → python3 .claude/hooks/monitor_guard.py pretool
+  PreToolUse matcher TaskStop → python3 .claude/hooks/monitor_guard.py taskstop
   Stop                    → python3 .claude/hooks/monitor_guard.py stop
-hook 接收 stdin JSON（tool_name/tool_input 等），exit 0 放行 / exit 2 阻断（PreToolUse）。
+hook 接收 stdin JSON（tool_name/tool_input 等，两宿主字段同名），exit 0 放行 / exit 2 阻断（PreToolUse）；
+提醒类输出走 _emit_reminder 双通道（CC stderr / ZCode stdout JSON，见其 docstring）。
 """
 import sys
 import os
@@ -317,17 +319,49 @@ def _pool_conflict(exec_seg_cmds, sid=""):
 def _claim_holder_alive(sid):
     """认领持有会话是否活着（同 pool_claim._session_alive 口径，hook 侧只读版）。
 
-    jsonl 路径 ~/.claude/projects/<slug>/<sid>.jsonl（slug 生成同 pool_claim / monitor_watcher）。
-    停更 ≤30 分钟 = 活着；文件不存在 / 停更超阈 = 已结束（其认领视为已释放，不占坑）。
+    会话 transcript 路径按宿主区分（2026-09-02 双宿主适配，hooks 同时挂 CC 与 ZCode）：
+    - CC 会话（sid 为裸 UUID）→ ~/.claude/projects/<slug>/<sid>.jsonl（slug 生成同 pool_claim）；
+    - ZCode 会话（sid 带 sess_ 前缀）→ ~/.zcode/cli/rollout/model-io-<sid>.jsonl（ZCode 的
+      会话持久化 jsonl，活跃会话持续追加，与 CC jsonl 同构）。
+    两套会话可并行认领互认活死；停更 ≤30 分钟 = 活着；文件不存在 / 停更超阈 = 已结束
+    （其认领视为已释放，不占坑）。
     """
     if not sid:
         return False
-    slug = "-" + _PROJECT_ROOT.strip(os.sep).replace(os.sep, "-")
-    p = os.path.expanduser(os.path.join("~/.claude/projects", slug, sid + ".jsonl"))
+    if sid.startswith("sess_"):
+        candidates = [os.path.expanduser(os.path.join(
+            "~/.zcode/cli/rollout", f"model-io-{sid}.jsonl"))]
+    else:
+        slug = "-" + _PROJECT_ROOT.strip(os.sep).replace(os.sep, "-")
+        candidates = [os.path.expanduser(os.path.join(
+            "~/.claude/projects", slug, sid + ".jsonl"))]
     try:
-        return (time.time() - os.path.getmtime(p)) <= 30 * 60
+        return any(os.path.isfile(p) and (time.time() - os.path.getmtime(p)) <= 30 * 60
+                   for p in candidates)
     except OSError:
         return False
+
+
+def _emit_reminder(msg, hook_event_name):
+    """提醒类输出（不阻断）的双宿主适配（2026-09-02 ZCode hook 迁移立）。
+
+    三通道并发，两宿主各取所需：
+    - stderr 文本：CC 与 ZCode 对 exit 0 的 stderr 处理不同（CC 可见、ZCode 忽略），
+      保留给 CC 的原提醒通道；
+    - stdout JSON hookSpecificOutput：**两宿主官方支持的注入通道**——CC 源码实证每个事件
+      的 hookSpecificOutput 都有 additionalContext 字段（Stop 事件描述明说「non-error
+      feedback delivered to the model; the conversation continues」），ZCode 的 schema
+      同构支持（discriminatedUnion 各 case 均含 additionalContext）。
+    注意 hookEventName 必须与真实事件一致（两宿主都强校验：CC/ZCode 不匹配即拒绝），
+    故由调用方按子命令传入（stop → Stop、taskstop → PreToolUse）。
+    """
+    print(msg, file=sys.stderr)
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": hook_event_name,
+            "additionalContext": msg,
+        }
+    }, ensure_ascii=False))
 
 
 def main():
@@ -471,7 +505,7 @@ def main():
                 f"盯盘期间必须保持 monitor_segment / ws_segment 40 秒密采样循环（不得擅自停/降频，2026-08-04 教训）。"
                 f"请立即重启密采样恢复密盯，或确认已到停盯边界（港股 12:00/16:00、用户喊停）。"
             )
-            print(msg, file=sys.stderr)  # Stop hook stderr 作为 feedback 提醒 AI
+            _emit_reminder(msg, "Stop")  # Stop 提醒（stderr 原通道 + hookSpecificOutput 双宿主注入）
         sys.exit(0)
 
     if hook_type == "taskstop":
@@ -483,7 +517,7 @@ def main():
                 f"若要停的是 monitor_segment 密采样 = 违规（2026-08-04 教训：盯盘期间不得擅自停密采样），"
                 f"除非已到停盯边界（港股 12:00/16:00、用户喊停）。停盯走 trade skill 停盯流程，勿直接 TaskStop 密采样。"
             )
-            print(msg, file=sys.stderr)
+            _emit_reminder(msg, "PreToolUse")  # PreToolUse/TaskStop 提醒（同上，事件名按真实事件传）
         sys.exit(0)
 
     sys.exit(0)

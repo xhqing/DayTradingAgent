@@ -1,5 +1,7 @@
 #!/bin/bash
-# 启用合盖盯盘（防系统睡眠）。
+# 手动启用防系统睡眠（备用路径；盯盘主链路由 preflight.py 内联启用，不经本脚本）。
+# 2026-09-01 自 .claude/skills/keep-awake/scripts/on.sh 迁入（keep-awake skill 已撤销、
+# 功能并入 trade，见 references/monitoring.md「防睡眠机制」节）。
 # AC：caffeinate -s 创建 PreventSystemSleep assertion，防合盖+维护睡眠。
 # 电池：合盖是硬件强制睡眠（软件防不住），但仍启动（防空闲维护睡眠），强烈建议接电源。
 set -euo pipefail
@@ -26,7 +28,7 @@ sleep 0.5
 
 if pgrep -f "caffeinate -s" >/dev/null 2>&1; then
   echo "☕ caffeinate -s 已启动（${SRC}·防合盖睡眠）"
-  echo "停用：bash .claude/skills/keep-awake/scripts/off.sh"
+  echo "停用：bash .claude/skills/trade/scripts/keepawake_off.sh"
 else
   echo "⚠️ caffeinate 启动失败" >&2
   exit 1

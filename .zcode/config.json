@@ -1,0 +1,72 @@
+{
+  "hooks": {
+    "enabled": true,
+    "events": {
+      "PreToolUse": [
+        {
+          "matcher": "Bash",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/monitor_guard.py pretool"
+            }
+          ]
+        },
+        {
+          "matcher": "Bash",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/secret_guard.py pretool"
+            }
+          ]
+        },
+        {
+          "matcher": "TaskStop",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/monitor_guard.py taskstop"
+            }
+          ]
+        }
+      ],
+      "PostToolUse": [
+        {
+          "matcher": "AskUserQuestion",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/live_auth_witness.py"
+            }
+          ]
+        },
+        {
+          "matcher": "Edit|Write",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/changelog_guard.py"
+            }
+          ]
+        }
+      ],
+      "Stop": [
+        {
+          "hooks": [
+            {
+              "type": "command",
+              "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/monitor_guard.py stop"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "permission": {
+    "disallowedTools": [
+      "Read(.claude/skills/trade/accounts.json)",
+      "Read(/Users/xhq/Documents/Projects/DayTradingAgent/.claude/skills/trade/accounts.json)"
+    ]
+  }
+}

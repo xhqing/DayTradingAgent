@@ -96,9 +96,9 @@ except Exception as _e:
 # 根因：盯盘期间系统睡眠会暂停所有进程——富途 OpenD 的 get_market_snapshot 无 timeout、卡到 TCP 超时
 # ~15 分钟才返回、整段采样空窗；claude-proxy、xpilot 同断。故盯盘预热（preflight）无条件启用
 # caffeinate -s（创建 PreventSystemSleep assertion、防合盖 Clamshell 与维护 Maintenance 两类系统级睡眠），
-# 不再询问开盖/合盖、不再弹窗建议「启用合盖盯盘」（keep-awake skill 已并入本流程、不再独立触发；
-# 开盖盯盘无所谓电池/电源、电池下合盖是硬件强制软件防不住但防空闲维护睡眠仍有效，故统一启用、不提醒）。
-# 停止盯盘时由 trade 停盯流程调 keep-awake/scripts/off.sh 解除。
+# 不再询问开盖/合盖、不再弹窗建议「启用合盖盯盘」（防睡眠已并入 trade，原 keep-awake skill
+# 2026-09-01 撤销；开盖盯盘无所谓电池/电源、电池下合盖是硬件强制软件防不住但防空闲维护睡眠仍有效，
+# 故统一启用、不提醒）。停止盯盘时由 trade 停盯流程调 scripts/keepawake_off.sh 解除。
 def _ensure_awake():
     import subprocess as _sp, time as _t
     if _sp.run(["pgrep", "-f", "caffeinate -s"], stdout=_sp.DEVNULL).returncode == 0:

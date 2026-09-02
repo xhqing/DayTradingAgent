@@ -4,6 +4,86 @@
 
 ## [Unreleased]
 
+### 新增（CC hooks 全量迁移 ZCode：双宿主工具强制同挂，2026-09-02）
+
+- **为什么改**：本项目工具强制体系（「文档规定必须尽可能配工具强制」）此前只挂在 Claude Code（`.claude/settings.json` hooks），ZCode 会话在同一项目里跑时全部 hook 防护不在场（密采样守卫 / 凭证读取守卫 / 实盘授权见证 / CHANGELOG 提醒 / 杀 VSC 与远程窗口守卫），双 agent 单源共用架构下防护只盖一半。用户要求把 CC 体系下全部 hook 功能迁到 ZCode、功能 100% 一致。
+- **改了什么**：
+  - **协议实证先行**：本会话 hooks 只在会话启动时加载（bootstrap 日志 `hookCount: 0`，中途改配置不热加载），无法在会话内触发实测——改从 ZCode runtime 源码（`zcode-cli/vendor/zcode.cjs`）逐段提取 hook 执行器实现，实证协议事实：stdin payload 字段与 CC 同名同构（`hook_event_name` / `session_id` / `tool_name` / `tool_input` / `tool_response`，另带 `agent_type` / `permission_mode` / 临时 `transcript_path`）；exit 2 阻断 = deny 且 stderr 优先作 reason（与 CC 一致）；**exit 0 时 stderr 被完全忽略、stdout trim 后必须以 `{` 开头才解析 JSON**（纯文本 stdout 静默丢弃）；JSON 输出 schema 严格但 `hookSpecificOutput{hookEventName,permissionDecision,permissionDecisionReason}` 与 CC 同构；顶层 `additionalContext` 键注入对话（生命周期事件走消息历史附件）；matcher 按管道分割精确匹配 + 别名表 `ApplyPatch→[Write,Edit]`、`Agent↔Task`；ZCode 会话持久 transcript 在 `~/.zcode/cli/rollout/model-io-<sid>.jsonl`（sid 带 `sess_` 前缀，活跃持续追加）。
+  - **新建 `.zcode/config.json`**（项目级）：`hooks.enabled: true` + 六条挂载与 CC settings.json 一一对应（PreToolUse/Bash→monitor_guard pretool、PreToolUse/Bash→secret_guard pretool、PreToolUse/TaskStop→monitor_guard taskstop、PostToolUse/AskUserQuestion→live_auth_witness、PostToolUse/Edit|Write→changelog_guard、Stop→monitor_guard stop），命令直接引用 `.claude/hooks/` 现有脚本（单源共用、不复制，同 `.zcode/skills` 软链思路）；另带 `permission.disallowedTools` 迁 CC 的 `Read(accounts.json)` deny（CC deny 的 CronCreate 在 ZCode 无此工具、无对应面）。
+  - **`~/.zcode/cli/config.json`**（用户级）：新增 hooks 段挂全局 `pre-tool-use-guard.sh`（timeout 10 秒同 CC），对全部 ZCode 项目生效——对应 CC 全局 `~/.claude/settings.json` 的同款挂载。
+  - **脚本双宿主适配**（改动均在 `.claude/hooks/` 原文件，CC/ZCode 同一份）：
+    - `monitor_guard.py`：① 新增 `_emit_reminder()`——提醒类输出改双通道（stderr 文本照旧给 CC + stdout JSON `additionalContext` 给 ZCode），stop / taskstop 两分支改用它；② `_claim_holder_alive()` 双路径判活——`sess_` 前缀 sid 查 ZCode rollout jsonl、裸 UUID 查 CC projects jsonl，两套会话并行认领互认活死（此前只认 CC 路径，ZCode 会话的认领一律被判死、标的池互斥层1 跨池冲突失效）。
+    - `changelog_guard.py`：stdout 纯文本改 JSON `{"additionalContext": ...}`（ZCode 下原纯文本被静默丢弃；CC 的 PostToolUse 同样支持该键注入，双宿主一致）。
+    - `live_auth_witness.py`：失败提示改 `_emit_note()` 双通道（stderr + stdout JSON）；docstring 补 ZCode tool_response 同构实证（questions 数组 + answers「问题文本→答案文本」字典，与脚本期望零差异）。实证凭证文件名下划线被 `_sid_tag` 过滤（`sess_x` → `sessx`）——`live_unlock.py` 用同款过滤，写读两口一致、解锁链不受影响，不改。
+    - `pre-tool-use-guard.sh`（全局，修两个**原有 bug**）：① 规则 1 第二层 `grep -iE` 漏 `-q`——匹配行直接打进 stdout，JSON 前多一行文本，ZCode 的「stdout 必须以 { 开头」判定会整体丢弃 deny 决策（CC 下同样污染输出），补 `-q`；② 规则 2 reason 文本含未转义 ASCII 双引号，拼出的 JSON 非法（两宿主都解析失败、deny 丢失），改无引号表述。
+- **验证**：按 ZCode 源码构造同构样例 payload 逐脚本喂测——monitor_guard pretool 正常命令 exit 0 / && 连跑两段 exit 2+stderr；secret_guard cat accounts.json exit 2+stderr；changelog_guard 改新文件输出 additionalContext JSON；stop / taskstop 双通道（stderr+stdout JSON）输出到位；live_auth_witness 实盘授权确认 payload 凭证写出（`sess_` 过滤形态与 live_unlock 一口）后测试凭证已删；guard.sh 三路径（杀 VSC deny JSON / vscode:// URI deny JSON / 授权标记放行）stdout 全部合法 JSON 或空；`_claim_holder_alive` 真实 rollout 文件 True / 虚构 sess_ False / 裸 UUID False。**CC 侧回归端到端实测（2026-09-02 晚，headless `claude -p` + 会话 transcript 取证）**：读 CC 2.1.226 源码实证其 hook stdout 为逐行提取 JSON（多行也能命中）+ 校验失败宽容降级；两轮 headless 会话 transcript 记录——① `cat accounts.json` 工具调用被 secret_guard 以 `PreToolUse:Bash hook error` 阻断、stderr 原文完整返回模型（阻断链完好）；② Stop 提醒以 hookSpecificOutput.additionalContext 形态注入、模型 thinking 确认收到（注入链完好）。**宿主端到端（ZCode 侧配置加载、事件投递、注入）须新 ZCode 会话验证**（启动时加载），已立 T137 跟踪。
+- **补充升级（同日，CC 回归验证中发现）**：提醒类输出从顶层 `additionalContext` 升级为 `hookSpecificOutput{hookEventName, additionalContext}` 标准形态——读 CC 源码发现顶层 additionalContext 非 CC 顶层合法键（同步校验降级 plainText、不注入），而 hookSpecificOutput.additionalContext 是 CC 与 ZCode 两宿主 schema 都原生支持的注入通道（CC 每个事件均含该字段，Stop 事件官方描述「feedback delivered to the model」；ZCode Jxn discriminatedUnion 各 case 同构）。对 CC 是纯增强（原 stderr 通道保留 + 新增确定注入），对 ZCode 行为不变；`_emit_reminder` 按子命令传真实事件名（两宿主均强校验 hookEventName 必须匹配）。
+- **回归风险评估**：① 脚本改动全部为「加输出通道 / 加判活路径 / 修输出 bug」，原 CC 行为路径（exit 2+stderr 阻断、CC stderr 提醒）一字未动；② changelog_guard 从纯文本改 JSON 在 CC 下同样注入（PostToolUse additionalContext 是 CC 支持键），提醒效果不降；③ guard.sh 两处修复对 CC 是让输出更干净（消除 stdout 污染与非法 JSON），deny 语义不变——无「修复引入回归」面；④ `.zcode/config.json` 进 git 跟踪（含本机绝对路径、无敏感值，与 `.claude/settings.json` 同口径）；⑤ 双宿主同挂后同一 hook 在 CC 会话与 ZCode 会话各自由宿主触发，互不重复调用。
+
+### 修复（持仓状态行 / 止损单查询按下单账户选账户——实盘会话误查模拟账户，2026-09-02 T136）
+
+- **为什么改**：2026-09-02 早盘实盘首单（00100，`--account live`）后，采样段「📌 持仓状态」行连续多段报「账户实持 0股（默认（模拟））| 活动止损单触发价 无活动止损单 —— 账户已无持仓但 actions 无平仓记录」，而实盘持仓与止损 / 止盈双腿实际都在场——`account_status.py` 一律查默认（模拟）账户，与本会话实盘口径错配（当日 actions 记录漏写「账户」行、旧格式 intent 无账户字段，账户判定的两个依据同时失效）；`monitor_segment.py` 的止损单查询同病（「无活动止损单」误报同根因）。实盘开仓后持仓状态监控形同虚设、AI 若轻信会漏盯实盘持仓。
+- **改了什么**：
+  - `trade_mutex.py`：`append_intent` / `TradeMutex` 增 account 字段（'live' / None=默认模拟账户），开仓时随 intent 落盘——每笔开仓的账户口径此后精确到笔（`settle_intent` 解析后回写、新字段自然保留）。
+  - `open_position_tiger.py` / `open_position_tiger_us.py`：`TradeMutex` 传 `account=`（live 才标实盘）。
+  - `account_status.py`：新增 `resolve_symbol_accounts` 统一解析（intent account 字段优先 → 当日 actions「| 账户 | 实盘」行兜底 → 默认模拟账户垫底；旧格式 intent 记录无 account 字段不进映射、不会挡住兜底）；`_query_account` 改单一账户入参；`position_status` 按标的分组查询（同账户只查一次、查询失败按账户去重、「actions 无记录持仓」按账户比对不跨账户误报、新增 account 显式参数）。
+  - `monitor_segment.py`：`query_stop_prices` 按账户分查当日订单（实盘标的查实盘止损单）；第四层单持仓检测改逐账户判（单持仓护栏是账户级口径，与互斥闸只查下单账户订单流的语义对齐）。
+  - `actions/2026-09-02-HKT-actions.md`：开仓记录补记「账户 | 实盘」行（原记录漏写，order_id 44488568990072832 可证）。
+- **验证**：5 脚本 py_compile 通过；账户解析链路本地冒烟通过（含冒烟抓出的一处坑：旧格式 intent 无 account 字段时若以 None 进映射会挡住 actions 兜底判定，已修——旧记录不进映射）；空仓时 `position_status` 返回 None（零 API，「空仓不查」规则不受影响）。
+- **回归风险评估**：① 账户解析三分支全部走既有 `load_config(account=)` 通道，实盘账户的代理路由 / is_paper 显式设定等既有逻辑不变；② intent 记录新增 account 字段为纯增量，`pending_intents` / 清理等消费方只读既有字段不受影响；③ 第四层单持仓检测改逐账户判——单账户内 ≥2 白名单外敞口才告警，消除了跨账户混判的方向性缺陷（此前该路径查不到实盘订单、对实盘违规是漏报）；④ 查询失败语义不变（positions=None 显式带错误文本，不吞成空仓假告警）。
+
+### 补充记录（CHANGELOG 记录纪律的「记录不用问」修订 —— 补项目内足迹，2026-09-02）
+
+- **为什么补记**：2026-09-02 审计「CHANGELOG 记录不用问」这条规矩的历史足迹时发现——「CHANGELOG 记录纪律」本体（2026-07-30 立）在项目 CHANGELOG 有独立条目（见本文档下方「全局 CLAUDE.md 新增『CHANGELOG 记录纪律』规则」条），但 **2026-08-21 用户立的补充修订「记录不用问」（凡有变更都直接记录、不需要先问用户）从未在项目 CHANGELOG 留痕**——同一纪律的补充条款缺项目内记录，与本体并列时形成「本体有记、修订无记」的不对称。本次补记，使项目内对该纪律的完整足迹与全局 CLAUDE.md 一致。
+- **改了什么**：仅补记本条（纯文档，无代码 / 机制变更）。
+- **验证**：本条与其上方「changelog_guard hook」条、下方「交易逻辑建议必须有数理统计基础」条同处 [Unreleased]，CHANGELOG 记录纪律在项目内的足迹补齐（本体 2026-07-30 + 记录不用问 2026-08-21 + 工具强制 2026-09-02）。
+- **回归风险评估**：纯补记、无任何行为影响；与全局 CLAUDE.md「CHANGELOG 记录纪律」原文一致，不改变该纪律的效力。
+
+### 新增（CHANGELOG 记录纪律配工具强制：changelog_guard hook，2026-09-02）
+
+- **为什么改**：2026-09-02 stability 撤销（4+ 文件改动）收尾时，AI 把「记 CHANGELOG」搁置、反问用户「要不要记」——全局 CLAUDE.md「CHANGELOG 记录纪律」（2026-07-30 立、2026-08-21 修订「记录不用问」）靠文本存在但靠 AI 记忆执行再次衰减（同 2026-08-18 用户对照实验：散文规定上下文压缩后衰减、工具强制不会）。用户两次纠正「CHANGELOG 任何改动都要记录，不要问」+「全局规则已经说明了，你为什么还忘记」。按项目方法论「文档规定必须尽可能配工具强制」，给这条纪律配 PostToolUse 提醒。
+- **改了什么**：
+  - 新建 `.claude/hooks/changelog_guard.py`（PostToolUse Edit|Write）：检测改动的文件属 git 跟踪的代码/文档（排除 tmp/ signals/ actions/ reviews/ archive/ cache/ 运行时数据、accounts.json / *.local 敏感配置、CHANGELOG.md / VERSION 本身），且 CHANGELOG.md mtime 早于被改文件（说明该文件比 CHANGELOG 新、可能未记）时，打印「按 CHANGELOG 记录纪律顺手记入（不用问用户）」提醒。走「决策时刻工具在场打印」层（第②层），只提醒不硬拦（该记 vs 不必记依赖语义判断、无法机械判定）。
+  - `.claude/settings.json` PostToolUse 新增 `Edit|Write → changelog_guard.py` 注册。
+- **验证**：hook py_compile 通过；settings.json JSON 合法；逻辑自测——改 `open_position_tiger.py` / `SKILL.md` → 提醒 True；改 `tmp/` / `signals/` / `CHANGELOG.md` / `accounts.json` / `*.local` → 不提醒 False。
+- **回归风险评估**：① 纯新增提醒、不阻断任何工具调用，现有 hook（monitor_guard / secret_guard / live_auth_witness）不受影响；② mtime 启发式是噪声信号——批内改多个文件可能漏提醒或重复提醒，但提醒无害、AI 自行过滤（同批已记过忽略）；③ 项目标配 CHANGELOG.md 缺失时提醒（真该建），不存在误导。
+
+### 新增（交易逻辑建议必须有数理统计基础，2026-09-02 用户立）
+
+- **为什么改**：用户裁定方法论硬约束——stability 护栏撤销暴露出的根本问题：交易逻辑护栏建立在单笔事故复盘上、从未做过全样本统计验证。用户明确：**凡给出本项目的交易逻辑方面的建议（开仓 / 平仓 / 止损 / 止盈 / 移损 / 移盈 / 仓位 / 护栏 / 策略规则的新增、修改、撤销、调参），必须有数理统计的数学基础支撑**，不能建立在单笔交易的复盘决策上。
+- **改了什么**：项目 `.claude/CLAUDE.md` 工作规则区新增「交易逻辑建议必须有数理统计基础」节——范围（交易逻辑建议全类别）、为什么（交易盈利靠全部交易总和、单笔复盘只触发规则不证明规则，stability 反面典型 + 08-27 止盈闸回放正面先例）、怎么用（提建议先问「有无统计依据」，无则标注待验证假设）、工具强制评估（认知判断类、无法脚本硬拦、按第③层决策时刻在场打印落地，trading-strategy.md「护栏的统计依据与撤销」节已固化）、边界（数据获取 / 行情分析 / 执行类操作不受限）。
+- **验证**：重读确认新增节已在 CLAUDE.md 规则区就位。
+- **回归风险评估**：纯新增规则、无代码变更，不影响任何执行机制；与 trading-strategy.md「护栏的统计依据与撤销」节互为呼应（CLAUDE.md 管普适约束、trading-strategy.md 管 stability 撤销来龙去脉）；对「文档规定必须尽可能配工具强制」无冲突——本条已明确自身工具强制落点（认知判断类走第③层）。
+
+### 移除（stability 企稳维持时长在场打印护栏，2026-09-02）
+
+- **为什么改**：用户裁定（方法论元规则）——开仓护栏应建立在**对全体历史交易数据的数理统计**（回放有闸/无闸对比 P(EV>0)、总盈亏）上，不能建立在单笔交易的复盘决策上；**只要某护栏不提高整体 P(EV>0)，就没有必要保留**。stability 闸的三层来源（2026-08-17 MINIMAX −1.05R → 2026-08-21 07709 −1.18R → 2026-08-28 09988 −1.70R）**每一层都是单笔事故复盘驱动**，从未做过全样本回放对比——与已被 2026-08-27 回放撤掉的「止盈可达性硬闸」同型（`reviews/2026-08-27-gate-review.md`：被拦 35 笔平均 +0.30R 仍正期望、闸整体负贡献）。2026-09-02 实盘长飞（06869）当日 +10.7%（158.5→175.5），stability 连拦三笔净赔率 1.47/1.37/1.73 的合格入场（含两笔 1.5R+ 的强势突破 + 回踩企稳）——拦掉正期望交易的活例。
+- **改了什么**：
+  - `open_position_tiger.py` / `open_position_tiger_us.py`：移除 `_stability_minutes` 函数定义与 `stability_minutes` / `stability_warning` 字段输出。
+  - **联动**：「同位置警告累计两条 = 降一档置信度」的脚本硬拦（`warnings_cumulative_2`）随之失去 stability 这条来源——当前非拦截警告仅剩 `warning_target_unreachable` 一类，该硬拦在无第二条来源前不再触发（脚本注释已标注；认知判断层面的「警告累计降档」纪律保留在 trading-strategy.md）。
+  - `trading-strategy.md`：①「企稳判定记忆依赖已工具强制」节删 stability 在场打印项、标注撤销；②「同位置警告累计两条」节去掉 stability 举例、注明撤销；③ 新增「护栏的统计依据与撤销（2026-09-02 用户立）」节——方法论元规则全文（全样本回放取舍标准、单笔事故复盘只触发规则不证明规则、08-27 先例、撤销清单、企稳四要素保留边界、与「文档规定必须配工具强制」的层次区分）。
+  - `SKILL.md` 开仓前自查清单「置信度 = 🟢 高？」项：非拦截警告举例去掉 stability、注明撤销后来源。
+- **验证**：两脚本 `py_compile` 通过；AST 代码级确认无 `_stability_minutes` / `stability_minutes` 引用（仅注释历史描述）；实跑一次（午休时间闸拒单路径）输出 JSON 确认无 stability 字段、不会误下单。
+- **回归风险评估**：① **企稳四要素（真支撑 / ≥2 次测试 / 维持 ≥10 分钟 / 确认事件）本身保留不动**——它是右侧入场形态判据（认知判断类），撤销的只是「维持时长机械化在场打印」那一层，右侧纪律未弱化；② 「警告累计 ≥2 条硬拦」实际不再触发——但该规则 2026-08-28 的原始形态本就是「认知判断 + 自查清单」层、脚本硬拦是 2026-08-31 T130 补的，回退到「只有止盈越日高一条警告来源、不触发硬拦」不构成对原始纪律的破坏；③ 若未来新增其它非拦截警告来源（如新的结构类警告），`warnings_cumulative_2` 会自动重新生效（字段自动收集机制保留）；④ 单笔事故复盘仍会触发规则（发现问题、提出护栏假设），只是不再作为规则长期成立的依据——本条不改变「文档规定必须尽可能配工具强制」对已成立纪律的约束力（两者层次不同，已在新节写明）。
+
+### 变更（撤销项目级 keep-awake skill，防睡眠脚本与规定并入 trade，2026-09-01 22:26）
+
+- **为什么改**：用户裁定。项目版 keep-awake 自 2026-07-27 起已无独立触发（SKILL.md 无 frontmatter、功能并入 trade 盯盘流程），单独留着与全局通用版（`~/.zcode/skills/keep-awake`、`~/.claude/skills/keep-awake` 同名同路径体系）形成同名遮蔽歧义——尤其 2026-09-01 建 `.zcode/skills → ../.claude/skills` 软链接后，ZCode 里项目级副本被全局版遮蔽、名义上是「项目 skill」实际读的是全局版。裁定：不留同名目录，相关规定和脚本并入 trade、撤销项目级 keep-awake。
+- **改了什么**：
+  - 脚本迁入 `trade/scripts/`（逻辑逐行保留、仅路径重推与迁入注释）：`keep-awake/scripts/on.sh` → `trade/scripts/keepawake_on.sh`（手动备用启用，盯盘主链路仍是 preflight 内联启用、不经脚本）；`keep-awake/scripts/off.sh` → `trade/scripts/keepawake_off.sh`（引用计数版 + 停盯时间闸原样保留；`REG_FILE` 由三层 `../../../` 改四层 `../../../../`（trade/scripts 比旧目录深一层），`STOP_GATE` 改同目录 `$SCRIPT_DIR/stop_gate.py`）。
+  - 规定并入：`monitoring.md`「多会话并行」节新增「防睡眠机制」段——原 keep-awake SKILL.md 的有效内容（2026-07-24 复盘根因、AC 电源前提、preflight 无条件启用、停盯 off 收尾纪律、引用计数、2026-08-24 T118 停盯时间闸、手动备用 on.sh）全部收拢入内。
+  - 引用更新：`trade/SKILL.md:143` 停盯第一动作命令改 `bash .claude/skills/trade/scripts/keepawake_off.sh`；`monitoring.md:283` 跨会话副作用句路径同步；`preflight.py` 防睡眠注释块路径与沿革更新；`settings.json` `permissions.allow` 两行（off.sh / on.sh）改新路径。
+  - 删除 `.claude/skills/keep-awake/` 整目录（含 `scripts/__pycache__/keepawake.cpython-311.pyc` 死缓存——对应模块 2026-08-09 前已删，仅剩缓存）。
+- **验证**：两新脚本 `bash -n` 通过；`preflight.py` py_compile 通过；`settings.json` JSON 校验合法；`keepawake_off.sh` 路径推算干跑正确（`../../../../tmp/` 存在、`stop_gate.py` 同目录命中）；`stop_gate check` 只读干跑得盘中拒解（exit 2，美股距收盘 335 分钟）——时间闸真实生效旁证；全项目 grep 无活路径引用残留（CHANGELOG / TODO-archive / PLAN-parallel-monitor-HK 历史记录与各文件迁入沿革注释有意保留）；`.zcode/skills/` 软链接下现在只剩 trade。
+- **回归风险评估**：① 引用计数与停盯时间闸逻辑逐行保留、仅路径重推，机制无弱化；② **在途会话过渡风险**——改动时点美股盘中、caffeinate 在跑，若有并行盯盘会话的上下文还载着旧版 SKILL.md（旧路径 off.sh），其停盯收尾会跑旧路径报「文件不存在」——届时该会话按新路径 `trade/scripts/keepawake_off.sh` 执行即可（目录已删、机制未变，一次性过渡成本）；③ `settings.json` 白名单已同步新路径，停盯跑新脚本不触发权限询问；④ 全局通用版 keep-awake（`~/.zcode` / `~/.claude` 两份逐字节一致）不受影响，任意场景手动启停能力保留在全局侧；⑤ ZCode 项目级 skills 经软链接只剩 trade，同名遮蔽歧义消除。
+
+### 新增（`.zcode/skills/` 软链接指向 `.claude/skills/`，2026-09-01 21:54）
+
+- **为什么改**：ZCode 的项目级 skills 目录在 `<repo>/.zcode/skills/`，与 CC 的 `.claude/skills/` 分属两套路径。此前 ZCode 在本项目只能读到根 `AGENTS.md` 指令（经 `AGENTS.md → .claude/CLAUDE.md` 软链接），trade、keep-awake 两个 skill 对 ZCode 不在场。建软链接后两类 agent 共用同一份 skill 权威源，单一源头、不产生第二份副本（与 2026-09-01 12:27 的 AGENTS.md 软链接同一模式）。
+- **改了什么**：新建 `.zcode/` 目录 + 软链接 `.zcode/skills` → `../.claude/skills`（相对路径，与 AGENTS.md 软链接同风格）。
+- **验证**：透过软链接可完整列出 `keep-awake`、`trade` 两个 skill 及其文件；`git status` 仅出现 `?? .zcode/`（git 不穿透软链接遍历，进仓库的只有链接本身）。
+- **回归风险评估**：纯新增、未改动 `.claude/skills/` 任何内容；敏感文件（`trade/config.json`、`accounts.json`、`live-unlock.*.local` 等）仍按真实路径被 `.gitignore` 忽略，软链接不引入泄露面。注意：ZCode 侧同名 skill 用户级（`~/.zcode/skills/`）优先于项目级——用户级已有 keep-awake，项目里的同名副本会被遮蔽（内容为全局通用能力，遮蔽即正常）。
+
 ### 批量落地（TODO 盘外可完成项 8 条全清：警告累计硬拦 / 连败降频闸 / 动作时间戳 / 持仓闭环检查 / 白名单全量清单与可最小化面板 / 认领归一补漏 / 交易模式标签，2026-09-01 19:42）
 
 - **为什么改**：用户指令「把待办事项全部处理完」。2026-09-01 盘后批量处理 TODO.md 中全部可在盘外代码落地的 8 条待办（T130 / T131 / T129 / T132 / T133 / T135 / T128 / T134，红色紧急度清零）；剩余 10 条全部依赖交易日盘中实测或数据积累（T126 / T123 / T121 / T122 / T119 / T120 / T124 / T125 / T116 / T4），盘外无可做部分。多项待办背景是 2026-08-28 实盘漏执行与 2026-08-31 复盘实证的「规矩写在文档里但盘中无工具在场必失守」类问题——本次全部按「文档规定必须尽可能配工具强制」原则落地为脚本硬拦 / 机械检查。

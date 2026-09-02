@@ -57,7 +57,7 @@ try:
 except ImportError:
     _MUTEX_AVAILABLE = False
 
-_today_orders_cache = None   # query_stop_prices 每轮写入，第四层检测复用（同一次查单）
+_today_orders_cache = {}   # query_stop_prices 每轮写入 {账户: 当日订单}，第四层检测复用（同一次查单；T136 起按账户分账）
 
 
 def check_position_discipline(orders):
@@ -120,41 +120,61 @@ def query_stop_prices(symbols):
     """
     if not _TIGER_AVAILABLE:
         return {}
+    global _today_orders_cache   # 第四层持仓检测复用同一次查单（不再多打一次 API）
     try:
-        config = load_config()
-        orders = get_today_orders_tiger(config)
-        global _today_orders_cache   # 第四层持仓检测复用同一次查单（不再多打一次 API）
-        _today_orders_cache = orders
+        # 账户口径（2026-09-02 T136）：按标的解析下单账户（intent account 字段优先、
+        # actions 实盘标记兜底，见 account_status.resolve_symbol_accounts），分账户各查
+        # 一次当日订单——实盘标的查实盘账户、模拟标的查模拟账户。此前一律查默认模拟
+        # 账户：实盘会话的止损单在场也被报「无活动止损单」（与 account_status 同根因，
+        # 一并修）。解析失败回退全部默认账户（与旧行为一致）。
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from account_status import resolve_symbol_accounts
+            acct_map = resolve_symbol_accounts(symbols)
+        except Exception:
+            acct_map = {s: None for s in symbols}
+        groups = {}
+        for s in symbols:
+            groups.setdefault(acct_map.get(s), []).append(s)
         result = {}
-        for order in orders:
-            # 老虎订单对象：contract.symbol（老虎格式，港股 5 位裸数字 / 美股裸代码）、
-            # order_type、aux_price（STP 止损触发价）、status
-            contract = getattr(order, "contract", None)
-            sym = getattr(contract, "symbol", None) if contract else None
-            if sym is None:
-                continue
-            for s in symbols:
-                # 匹配：订单返回 "02800" / "MU"，对比 symbols 列表中的 "HK.02800" / "US.MU"
-                if sym != s and sym != s.split(".")[-1]:
+        cache = {}
+        for acct, syms_grp in groups.items():
+            try:
+                config = load_config(account=acct) if acct == "live" else load_config()
+                orders = get_today_orders_tiger(config)
+            except Exception:
+                continue   # 该账户查单失败：止损价缺失按「-」显示，不阻塞其余账户
+            cache[acct or "paper"] = orders
+            for order in orders or []:
+                # 老虎订单对象：contract.symbol（老虎格式，港股 5 位裸数字 / 美股裸代码）、
+                # order_type、aux_price（STP 止损触发价）、status
+                contract = getattr(order, "contract", None)
+                sym = getattr(contract, "symbol", None) if contract else None
+                if sym is None:
                     continue
-                # 只认止损条件单（STP；开仓附加止损腿在订单列表里同为独立 STP 单）
-                ot = getattr(order, "order_type", None)
-                if ot is None or "STP" not in str(ot):
+                for s in syms_grp:
+                    # 匹配：订单返回 "02800" / "MU"，对比 symbols 列表中的 "HK.02800" / "US.MU"
+                    if sym != s and sym != s.split(".")[-1]:
+                        continue
+                    # 只认止损条件单（STP；开仓附加止损腿在订单列表里同为独立 STP 单）
+                    ot = getattr(order, "order_type", None)
+                    if ot is None or "STP" not in str(ot):
+                        break
+                    # 只认活动状态：排除已成交 / 已撤 / 已过期 / 无效 / 停用等已结束订单
+                    st_obj = getattr(order, "status", None)
+                    st = st_obj.value if hasattr(st_obj, "value") else str(st_obj)
+                    if any(k in st for k in ("Filled", "Cancelled", "Expired", "Inactive", "Invalid")):
+                        break
+                    aux = getattr(order, "aux_price", None)
+                    if not aux or float(aux) <= 0:
+                        break
+                    # 同标的多个活动止损单：取 order_id 最大的（提交最晚 = 最新）
+                    oid = int(getattr(order, "id", 0) or 0)
+                    cur = result.get(s)
+                    if cur is None or oid > cur[1]:
+                        result[s] = (float(aux), oid)
                     break
-                # 只认活动状态：排除已成交 / 已撤 / 已过期 / 无效 / 停用等已结束订单
-                st_obj = getattr(order, "status", None)
-                st = st_obj.value if hasattr(st_obj, "value") else str(st_obj)
-                if any(k in st for k in ("Filled", "Cancelled", "Expired", "Inactive", "Invalid")):
-                    break
-                aux = getattr(order, "aux_price", None)
-                if not aux or float(aux) <= 0:
-                    break
-                # 同标的多个活动止损单：取 order_id 最大的（提交最晚 = 最新）
-                oid = int(getattr(order, "id", 0) or 0)
-                cur = result.get(s)
-                if cur is None or oid > cur[1]:
-                    result[s] = (float(aux), oid)
-                break
+        _today_orders_cache = cache
         return {s: v[0] for s, v in result.items()}
     except Exception:
         return {}
@@ -311,9 +331,16 @@ def main():
 
             # 第四层兜底（2026-08-17 立，方案 A）：同一次查单顺带检测白名单外双持仓。
             # 检测到立即告警（每轮都输出直到违规消除——不是只报一次，AI / 用户反复可见）。
+            # 按账户分查（2026-09-02 T136）：_today_orders_cache 现为 {账户: 当日订单}，
+            # 逐账户检测——单持仓护栏是账户级口径（互斥闸也只查下单账户的订单流），
+            # 实盘一笔 + 模拟一笔不属违规（不同账户互不相干），避免跨账户误报。
             if _TIGER_AVAILABLE:
                 try:
-                    violators = check_position_discipline(_today_orders_cache)
+                    violators = []
+                    for _acct_orders in (_today_orders_cache or {}).values():
+                        _v = check_position_discipline(_acct_orders)
+                        if _v:
+                            violators.extend(_v)
                     if violators:
                         print(
                             f"🚨 单持仓违规：白名单外在场敞口 {violators}（当日开仓成交且无对应平仓 ≥2）——"

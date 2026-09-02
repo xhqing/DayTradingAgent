@@ -24,9 +24,10 @@ python open 等 + 凭证路径特征）。
 变量拼接、间接引用等绕过。本 hook 是抬高成本 + 暴露行为，不是 100% 银弹；真正的硬隔离
 须走平台层（独立 API key + IP 白名单 + 实盘 key 不落 AI 可达路径，见 TODO）。
 
-用法（settings.json hooks 注册）：
+用法（hooks 注册，2026-09-02 起双宿主：CC settings.json + ZCode .zcode/config.json 同挂）：
   PreToolUse matcher Bash → python3 .claude/hooks/secret_guard.py pretool
-hook 接收 stdin JSON（tool_name / tool_input），exit 0 放行 / exit 2 阻断 + stderr 提醒。
+hook 接收 stdin JSON（tool_name / tool_input，两宿主字段同名），exit 0 放行 / exit 2 阻断 + stderr 提醒
+（阻断语义两宿主一致：stderr 均作为拦截原因反馈 AI）。
 """
 import sys
 

@@ -192,6 +192,79 @@ def _session_of_symbol():
     return mapping
 
 
+def _intent_account_map():
+    """当日 filled intent 的「标的 → 下单账户」映射（2026-09-02 立，T136 实盘误报修复）。
+
+    数据源 = tmp/trade_intent.log 的当日 filled intent——开仓脚本经 TradeMutex 写 intent
+    时带上本笔下单的账户口径（account 字段：'live' / None=默认模拟账户）。
+    返回 {sym: 'live'|None}，sym 同时存富途格式（HK.00100）与裸代码（00100）两份键，
+    方便 actions 解析口径（裸代码）与 intent 口径（富途格式）两种键查询。
+    旧记录无 account 字段 → 不进映射（由当日 actions 实盘标记兜底判定）。"""
+    intent_log = os.path.join(_TMP_DIR, 'trade_intent.log')
+    mapping = {}
+    today = date.today().strftime('%Y-%m-%d')
+    if not os.path.isfile(intent_log):
+        return mapping
+    import json
+    try:
+        with open(intent_log) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                if not str(d.get('ts', '')).startswith(today):
+                    continue
+                if d.get('status') != 'filled':
+                    continue
+                if 'account' not in d:
+                    continue   # 旧格式记录无 account 字段 → 不进映射，交由 actions 实盘标记兜底（否则 None 值会挡住兜底判定）
+                sym = d.get('symbol', '')
+                if not sym:
+                    continue
+                acct = d.get('account')   # 'live' / None
+                mapping[sym] = acct
+                code = sym.split('.')[-1]
+                if code:
+                    mapping[code] = acct
+    except OSError:
+        pass
+    return mapping
+
+
+def _actions_live_mark():
+    """当日 actions 文件是否出现实盘标记行「| 账户 | 实盘」（旧记录兜底判定）。
+
+    注意这是**全日粗口径**：只答「当日是否有实盘动作」，答不了「哪一笔是实盘」
+    （同日既开实盘又开模拟时，模拟仓也会被标成实盘）。精确口径靠 intent 的
+    account 字段（_intent_account_map），本函数只做旧记录 / intent 缺字段的兜底。"""
+    try:
+        return any(_LIVE_MARK.search(Path(f).read_text(encoding='utf-8'))
+                   for f in _today_action_files())
+    except OSError:
+        return False
+
+
+def resolve_symbol_accounts(syms):
+    """给一组标的解析各自的下单账户（2026-09-02 立，T136 实盘误报修复的主入口）。
+
+    优先级：① intent 日志 account 字段（开仓脚本下单时写入，精确到笔）；
+    ② 当日 actions 实盘标记（旧记录兜底，全日粗口径）；③ 默认（模拟）账户。
+    返回 {sym: 'live'|None}（None=默认模拟账户）。"""
+    iam = _intent_account_map()
+    live_mark = _actions_live_mark()
+    out = {}
+    for s in syms:
+        if s in iam:
+            out[s] = iam[s]
+        else:
+            out[s] = 'live' if live_mark else None
+    return out
+
+
 def _holding_from_actions(only_session=None):
     """从当日 actions 推导 AI 认为的当前持仓。返回 {sym: {'qty','dir'}} 或空 dict。
 
@@ -318,33 +391,30 @@ def _pos_symbol(p):
     return getattr(contract, 'symbol', None) if contract else None
 
 
-def _query_account(holding, account=None):
-    """有持仓时查老虎账户：持仓实况 + 活动止损单触发价。返回 (持仓列表, 止损价 dict, 账户标签, 查询错误)。
+def _query_account(account):
+    """查指定账户的老虎持仓实况 + 活动止损单触发价。
+    返回 (持仓列表|None, 止损价 dict{裸代码:价}, 账户标签, 查询错误)。
+
+    account（2026-09-02 T136 改单一账户入参）：'live' → 实盘账户；None → 默认（模拟）
+    账户。账户选哪个由 position_status 按标的解析（resolve_symbol_accounts）后传入——
+    本函数只管查，不再自己猜账户（原实现在函数内按 actions 实盘标记判定，当日记录
+    漏写账户行就错查模拟账户，2026-09-02 实盘首单 00100 后持仓状态行连续误报
+    「账户已无持仓」+「无活动止损单」，两处同根因）。
 
     2026-08-19 修「实持 0 股」误报（当日实录：开仓 01810 后连续两段误报、AI 每次手动
     核实才发现账户明明有仓）：原实现 get_positions 抛异常（代理节点漂移出老虎 IP 白名单
     等）被 except 静默吞成 []——查询失败与「真的空仓」两种情形在段输出里**长得一样**，
     都打「🚨 账户已无持仓」假告警（狼来了效应：真实平仓告警被淹没）。修法：查询异常
     不再吞——positions 记为 None 并把错误文本带回段输出（「账户查询失败」与「账户已无
-    持仓」显式区分，前者不触发平仓处置动作、只提示修复）。
-
-    account（2026-08-19 立会话视角后新增）：显式指定账户（'live' / None=按当日 actions
-    实盘标记判定）。"""
+    持仓」显式区分，前者不触发平仓处置动作、只提示修复）。"""
     try:
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         from trade_utils_tiger import load_config, get_today_orders_tiger
         from tigeropen.trade.trade_client import TradeClient
     except Exception as e:
         return None, {}, '', f'模块导入失败: {e}'
-    # 账户选择：显式指定优先；否则当日 actions 里出现过「实盘」→ 实盘账户，否则默认（模拟）
-    account_tag = ''
-    query_err = ''
     try:
-        if account is None:
-            files = _today_action_files()
-            is_live = any(_LIVE_MARK.search(Path(f).read_text(encoding='utf-8')) for f in files)
-            account = 'live' if is_live else None
-        config = load_config(account=account) if account else load_config()
+        config = load_config(account=account) if account == 'live' else load_config()
         account_tag = '实盘' if account == 'live' else '默认（模拟）'
     except Exception as e:
         return None, {}, '', f'配置加载失败: {e}'
@@ -383,32 +453,50 @@ def _query_account(holding, account=None):
     return positions, {k: v[0] for k, v in stops.items()}, account_tag, query_err
 
 
-def position_status():
+def position_status(account=None):
     """持仓状态段输出（工具强制）。无持仓返回 None（不查账户，遵循「空仓不查」）；有持仓返回多行字符串。
 
     会话视角（2026-08-19 立，跨会话串台修复）：进程带 CLAUDE_CODE_SESSION_ID 时只核对
     **本会话**开的仓（intent 日志归属）——并行盯盘时 A 会话不再把 B 会话的仓当自己的核对、
-    告警不串台；无会话 id（手动跑脚本）退回旧行为（全核对）。"""
+    告警不串台；无会话 id（手动跑脚本）退回旧行为（全核对）。
+
+    账户口径（2026-09-02 立，T136 实盘误报修复）：按标的解析下单账户、分账户查持仓与
+    订单（intent account 字段精确到笔、actions 实盘标记兜底，见 resolve_symbol_accounts）——
+    实盘会话查实盘账户、模拟会话查模拟账户。此前一律查默认模拟账户：2026-09-02 实盘
+    首单 00100 后，持仓状态行连续误报「账户实持 0 股 —— 账户已无持仓」+「无活动止损单」
+    （实盘止损单双腿在场），两处同根因。account 显式指定（'live'）时全部标的按该账户查
+    （调用方明确知道账户口径时用，跳过推断）。"""
     sid = _session_id()
     holding = _holding_from_actions(only_session=sid or None)
     if not holding:
         return None
-    positions, stops, account_tag, query_err = _query_account(holding)
+    # 各标的账户解析 + 按账户分组查询（同账户只查一次，不重复打 API）
+    if account is not None:
+        sym_acct = {s: account for s in holding}
+    else:
+        sym_acct = resolve_symbol_accounts(list(holding))
+    groups = {}
+    for s, a in sym_acct.items():
+        groups.setdefault(a, []).append(s)
+    acct_data = {a: _query_account(a) for a in groups}
     lines = []
-    if positions is None:
-        # 查询失败 ≠ 空仓（2026-08-19 修：不再吞成 [] 触发「已无持仓」假告警）——
-        # 明示失败原因，AI 处置 = 修复查询（查代理/白名单），不做平仓处置
-        lines.append(f'🚨 持仓状态查询失败（账户 {account_tag}）: {query_err}')
-        lines.append('    → 这是查询链路故障、**不是**「账户已无持仓」——不要按空仓处置；'
-                     '先排查（常见根因：代理节点漂移出老虎 IP 白名单，见 proxy_guard 白名单守护），'
-                     '修复前本段以 actions 记录为持仓依据。')
-        for sym, info in holding.items():
-            stop = stops.get(sym.split('.')[-1])
+    failed_tags = set()   # 查询失败的账户只报一次（同账户多标的时不重复刷屏）
+    for sym, info in holding.items():
+        positions, stops, account_tag, query_err = acct_data[sym_acct[sym]]
+        code = sym.split('.')[-1]
+        if positions is None:
+            # 查询失败 ≠ 空仓（2026-08-19 修：不再吞成 [] 触发「已无持仓」假告警）——
+            # 明示失败原因，AI 处置 = 修复查询（查代理/白名单），不做平仓处置
+            if account_tag not in failed_tags:
+                failed_tags.add(account_tag)
+                lines.append(f'🚨 持仓状态查询失败（账户 {account_tag}）: {query_err}')
+                lines.append('    → 这是查询链路故障、**不是**「账户已无持仓」——不要按空仓处置；'
+                             '先排查（常见根因：代理节点漂移出老虎 IP 白名单，见 proxy_guard 白名单守护），'
+                             '修复前本段以 actions 记录为持仓依据。')
+            stop = stops.get(code)
             stop_str = f'{stop:.2f}' if stop is not None else '无活动止损单'
             lines.append(f'📌（actions 口径）{sym} {info["qty"]}股({info["dir"]}) | 活动止损单触发价 {stop_str}')
-        return '\n'.join(lines)
-    for sym, info in holding.items():
-        code = sym.split('.')[-1]
+            continue
         # 账户持仓匹配（老虎持仓 symbol 为裸代码，取 p.contract.symbol——见 _pos_symbol）
         acct_pos = [p for p in positions if _pos_symbol(p) == code]
         acct_qty = sum(int(getattr(p, 'quantity', 0) or 0) for p in acct_pos)
@@ -457,15 +545,19 @@ def position_status():
                     note = (f' | 👤 用户改单：账户止损 {stop:.2f} ≠ 记录 {rec_stop:.2f}'
                             f'（判定为您在 App 手动修改，非脚本异常）——较记录{risk_word}{warn}')
             lines.append(base + ' | 账户一致 ✅' + note)
-    # 账户有持仓而 actions 无记录 → 提示（用户手动开仓等漏网路径）。
+    # 账户有持仓而 actions 无记录 → 提示（用户手动开仓等漏网路径）。按账户分组判
+    # （2026-09-02 T136）：每个账户只与本账户在管的标的比对，不跨账户误报。
     # 空 symbol（合约缺代码的脏数据）不计入（2026-08-19 修「无记录持仓 ['']」假告警）。
-    acct_syms = {_pos_symbol(p) for p in positions} - {None, ''}
-    known = {s.split('.')[-1] for s in holding}
-    extra = acct_syms - known
-    if extra:
-        lines.append(f'⚠️ 账户存在 actions 无记录的持仓 {sorted(extra)}——用户手动开仓？AI 处置：按单持仓护栏判断是否需要处理')
-    if query_err:
-        lines.append(f'⚠️ 附注（不影响持仓核对主体）: {query_err}')
+    for a, (positions, stops, account_tag, query_err) in acct_data.items():
+        if positions is None:
+            continue
+        acct_syms = {_pos_symbol(p) for p in positions} - {None, ''}
+        known = {s.split('.')[-1] for s, sa in sym_acct.items() if sa == a}
+        extra = acct_syms - known
+        if extra:
+            lines.append(f'⚠️ 账户（{account_tag}）存在 actions 无记录的持仓 {sorted(extra)}——用户手动开仓？AI 处置：按单持仓护栏判断是否需要处理')
+        if query_err:
+            lines.append(f'⚠️ 附注（不影响持仓核对主体）: {query_err}')
     return '\n'.join(lines)
 
 

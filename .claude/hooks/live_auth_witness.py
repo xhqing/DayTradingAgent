@@ -33,8 +33,10 @@ tiger.live_unlock_salt，AI 读不到原料）——随后 AI 跑
 
 实测依据（2026-08-21）：PostToolUse 对 AskUserQuestion 触发，payload 含
 tool_response.answers（用户点选）与 session_id——已用临时 hook 写日志验证。
+2026-09-02 双宿主适配：ZCode 的 AskUserQuestion tool_response 同构（questions 数组 +
+answers「问题文本→答案文本」字典，源码实证 normalizeAskUserQuestionAnswers），零字段改动兼容。
 
-用法（settings.json hooks 注册）：
+用法（hooks 注册，2026-09-02 起双宿主：CC settings.json + ZCode .zcode/config.json 同挂）：
   PostToolUse matcher AskUserQuestion → python3 .claude/hooks/live_auth_witness.py
 """
 import sys
@@ -128,6 +130,20 @@ def _write_witness(session_id):
     return True, "witness_written"
 
 
+def _emit_note(msg):
+    """失败提示的双宿主输出（2026-09-02 ZCode hook 迁移立）：stderr 照旧（CC 原通道），
+    另加 stdout JSON hookSpecificOutput——两宿主官方支持的注入通道（CC / ZCode 的
+    PostToolUse schema 均含 hookSpecificOutput.additionalContext，CC 顶层 additionalContext
+    非法键会被同步校验降级、不注入，故用标准形态；细节见 monitor_guard._emit_reminder）。"""
+    sys.stderr.write(msg + "\n")
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PostToolUse",
+            "additionalContext": msg,
+        }
+    }, ensure_ascii=False))
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -143,10 +159,10 @@ def main():
             sys.exit(0)   # 问题对但用户没点确认（拒绝 / Other 输入）→ 不写凭证
         ok, note = _write_witness(payload.get("session_id"))
         if not ok:
-            sys.stderr.write(f"⚠️ 实盘授权见证失败（不写凭证）: {note}\n")
+            _emit_note(f"⚠️ 实盘授权见证失败（不写凭证）: {note}")
         sys.exit(0)
     except Exception as e:
-        sys.stderr.write(f"⚠️ live_auth_witness hook 异常（忽略）: {e}\n")
+        _emit_note(f"⚠️ live_auth_witness hook 异常（忽略）: {e}")
         sys.exit(0)
 
 

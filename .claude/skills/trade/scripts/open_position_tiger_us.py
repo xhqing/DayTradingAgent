@@ -40,49 +40,6 @@ import trade_utils_tiger as T   # 2026-08-16：降档循环用 _is_ambiguous_tim
 from trade_mutex import TradeMutex   # 多会话并行盯盘互斥（方案 A，2026-08-17，港美全局一把锁）
 
 
-def _stability_minutes(symbol, price, window_pct=0.003):
-    """读当日采样 log 统计「现价 ±window_pct 区间最近连续维持分钟数」（2026-08-21 立）。
-
-    企稳定义（trading-strategy.md「右侧入场总则」）四要素之一「维持 ≥10 分钟」的机械化核验：
-    从 log 末尾向前数「价格在 [price*(1-w), price*(1+w)] 内」的连续行数（futu_ws_segment 每秒一行
-    ≈秒数）。log 不存在/为空返回 None（无法核验时静默，AI 自行判断）；窗口默认 ±0.3%。
-    2026-08-21 实盘教训：07709 VWAP 回踩信号 40.56 在 log 里仅持续 1 秒即被当「企稳」确认——
-    本函数把「一瞬贴线」变成可机械核验的数字（维持 0.x 分钟 → 警告）。
-    """
-    import glob
-    from pathlib import Path
-    log_dir = Path(__file__).resolve().parent.parent.parent.parent.parent / "tmp"
-    stem = symbol.replace(".", "_")
-    today8 = datetime.now().strftime("%Y%m%d")
-    today_dash = datetime.now().strftime("%Y-%m-%d")
-    files = sorted(
-        glob.glob(str(log_dir / f"monitor_log_{stem}_{today8}_*.csv"))
-        + glob.glob(str(log_dir / f"monitor_log_{stem}_{today_dash}_*.csv"))
-    )
-    if not files:
-        return None
-    lo, hi = price * (1 - window_pct), price * (1 + window_pct)
-    try:
-        rows = []
-        with open(files[-1]) as f:
-            for line in f:
-                parts = line.strip().split(",")
-                if len(parts) >= 3 and parts[0] != "time":
-                    try:
-                        rows.append(float(parts[2]))
-                    except ValueError:
-                        pass
-        seconds = 0
-        for p in reversed(rows):
-            if lo <= p <= hi:
-                seconds += 1
-            else:
-                break
-        return seconds / 60.0
-    except Exception:
-        return None
-
-
 def _downscale_sequence(quantity, lot_size=1):
     """开仓降档序列：目标量优先，之后逐次减半（向下取整手）直到最低整手。
 
@@ -315,8 +272,10 @@ def main():
 
     # 止盈可达性警告（2026-08-31 T130 补齐，对齐港股版方案 A 口径——降级警告不拒单）：
     # 美股版此前缺本警告，导致「警告累计 ≥2 条」防线在美股只有 stability 一条来源、
-    # 永不触发；补齐后两市场同构。文案不引用港股样本统计（+0.30R vs +0.83R 为港股
-    # 50 笔回放数据，美股无对应标定），保留趋势日允许越日高 / 震荡日应调低的裁量逻辑。
+    # 永不触发；补齐后两市场同构。2026-09-02 stability_warning 撤销后，本警告为当前
+    # 唯一非拦截警告来源（「警告累计 ≥2 条」硬拦实际不再触发）。
+    # 文案不引用港股样本统计（+0.30R vs +0.83R 为港股 50 笔回放数据，美股无对应标定），
+    # 保留趋势日允许越日高 / 震荡日应调低的裁量逻辑。
     day_high = quote.get("high")
     day_low = quote.get("low")
     reachable = True
@@ -367,18 +326,6 @@ def main():
             f"小仓位单（按股费 + 每笔最低费占比高）赔率天然更薄，换更大止损距结构或放弃该形态。")})
         print(json.dumps(result_base, ensure_ascii=False))
         sys.exit(1)
-
-    # 企稳维持时长在场打印（2026-08-21 立，对齐港股版）：读当日采样 log 统计现价附近
-    # 最近连续维持分钟数，< 10 分钟打印「不满足企稳定义『维持 ≥10 分钟』」提醒。
-    stability = _stability_minutes(symbol, current_price)
-    if stability is not None:
-        result_base["stability_minutes"] = round(stability, 1)
-        if stability < 10:
-            result_base["stability_warning"] = (
-                f"⚠️ 现价 {current_price} 在当前价位附近连续维持仅 {stability:.1f} 分钟（< 10 分钟），"
-                f"不满足企稳定义「维持 ≥10 分钟」——若本单为回踩企稳入场，请先核验：真支撑 + ≥2 次"
-                f"测试不破 + 维持 ≥10 分钟 + 确认事件已发生（右侧入场总则）；突破入场不受此限。"
-            )
 
     # 非拦截警告累计 ≥2 条硬拦（2026-08-31 T130 落地，同港股版）：「同位置警告累计两条 =
     # 降一档置信度」（2026-08-28 立）的脚本硬判——净赔率校验后汇总本单全部非拦截警告字段
@@ -503,7 +450,10 @@ def main():
     # 多会话单持仓互斥（2026-08-17 立，方案 A，同港股版）：整个「查单 → 闸门 → 下单 →
     # 确认」临界区包进 TradeMutex——**全局一把锁、不分市场**（分市场两把锁会放过「港股
     # 持仓违规过夜 + 美股会话开新仓」的跨市场叠加路径；港美时段不重叠使全局锁代价为零）。
-    with TradeMutex(market="US", symbol=symbol, side=side_str, qty=quantity) as mutex:
+    # account 入 mutex（2026-09-02 T136）：写入 intent 供 account_status / monitor_segment
+    # 按标的精确选账户查持仓与订单（实盘会话查实盘账户，不再错查模拟账户报「已无持仓」）。
+    with TradeMutex(market="US", symbol=symbol, side=side_str, qty=quantity,
+                    account=("live" if account == "live" else None)) as mutex:
         try:
             _gate_orders = U.get_today_orders_us(config)
         except Exception as ge:
