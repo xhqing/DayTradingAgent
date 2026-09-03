@@ -1,0 +1,70 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|execute_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/monitor_guard.py pretool",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|execute_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/secret_guard.py pretool",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "TaskStop",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/monitor_guard.py taskstop",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "AskUserQuestion|ask_followup_question",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/live_auth_witness.py",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|replace_in_file|write_to_file",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/changelog_guard.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/monitor_guard.py stop",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

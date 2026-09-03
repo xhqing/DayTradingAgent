@@ -4,6 +4,42 @@
 
 ## [Unreleased]
 
+### T138 归档（CodeBuddy 宿主 hooks 端到端验证：PreToolUse + PostToolUse 两条投递链实证生效，2026-09-03 17:25）
+
+- **端到端实证（新 CodeBuddy 会话，非盘中）**：① **PreToolUse 链**——探针 `head -c 1 /tmp/nonexistent-xyz-probe/accounts.json`（假路径、不泄漏凭证）被 deny，拦截文案逐字来自本项目 `secret_guard.py`，且仅一次 deny（`.claude/settings.json` + `.codebuddy/settings.json` 双份挂载被官方自动去重、**无翻倍**）；② **PostToolUse 链**——编辑文件后 `changelog_guard` 被调用（payload `tool_name='Edit'`、`tool_input_keys=['filePath',…]`、`should_remind=True`），IDE 将 hook 输出转成 `<system-reminder>📌 CHANGELOG 记录提醒…` 注入 tool-result 的 `additionalContext`（转录实证、模型可见）——**changelog_guard 修复后首个运行时证据，改文件记 CHANGELOG 提醒链在本宿主真正打通**。
+- **剩余（非阻塞、自然场景触发，不入活跃 TODO）**：`live_auth_witness` 实盘授权点击写凭证需真实实盘授权流程、`monitor_guard` Stop/TaskStop 需盘中盯盘会话——脚本逻辑均已回归过、挂载与两条主投递链已实证，场景到了自然验证即可。
+- **回归风险评估**：本次仅文档改动（`TODO.md` 移除 T138、`TODO-archive.md` 加归档记录、CHANGELOG 本条）+ 对 `changelog_guard.py` 的临时 debug 已完全还原（git diff 确认仅剩当日修复主体，py_compile 过）——**无运行时回归面**。
+
+### 待办批量处理（2026-09-03 盘外：T121 / T122 / T126 / T116 / T124 完成归档 + T119 首次对账 + T120 首批数据 + T138 新立）
+
+- **背景**：盘外处理（13:40~14:10，无本会话盯盘任务）。多数待办原判「只能盘中实测」，改为**从已发生的真实会话留痕取证据**（actions 记录 + CC 会话转录里的真实脚本输出）+ **盘外 mock 场景构造**，把能盘外收口的全部收口。
+- **实测通过并归档（4 条）**：
+  - **T121 自问平仓检查**——09-03 真实脚本输出含 `self_check_close_question` 字段与完整文案，`actions/2026-09-03-HKT-actions.md` 两条开仓记录均带「T121 自答」行（09-02 两条同），「脚本输出了但 AI 不看/不记」的担心未发生。
+  - **T122 reason 提层**——09-02 14:09（03308）/ 09-01 12:12（02513）两笔真实拒单输出首层 `error` 均为「开仓全部失败（尝试 2 档）：Your available funds or buying power are insufficient」，具体拒因已从 `failures` 数组提到首层；reason 为空时（09-02 12:40 超时撤单）保留原文案。
+  - **T126 当日订单过滤**——09-03 真实开平 2 笔、十五会话并行下第四层「白名单外在场敞口」告警**零误报**（检索命中全为 SKILL.md 文档文本），持仓状态行止损价提取正常（351.00 与下单 LOSS 腿一致）。
+  - **T116 限价单 + 止盈单机制收尾**——三个剩余子项（④ 移盈 modify / ⑥ 无止损单平仓补设 STP / ⑥b 止损单铁律恢复链）用盘外 mock 验证通过（11 项断言全过），7 子项全数收口。新增 `tmp/test_limit_target_paths.py`。
+- **T119 首次运行对账完成**（产物 `reviews/2026-09-03-odds-reconciliation.md`）：区间 2026-08-28~09-03 港股 auto 实成交 **N=10**，**EV = −0.529R、胜率 30.0%、累计 −5.288R、净盈亏 −66,734.91 HKD**，初始预期 R 均值 2.054 → 落地 −0.529（兑现率 −25.7%）；分账户 **实盘 N=7 EV −0.705R / 模拟 N=3 EV −0.117R**；对照 2.4 时代（N=16）EV +0.23R（⚠️ 08-28 起分母改净 max_loss，**不可做精确差值比对**）。结论已写入 `trading-strategy.md`「门槛沿革」新增 **⓪-a** 段。门槛回撤预案（「期间日均亏 ≥3R 回撤 1.5」）按「期间总 R÷交易日数」口径 −1.058R/日未触发，但 08-28 单日 −3.26R 已超 3R——**两口径结论相反、交用户裁定**。
+- **T124 完成归档 + 暴露更严重的结构问题（新立 T139）**：印花税维度恶化判据未触发（不重开税闸）；但实盘账户（equity ≈ 10.6 万、B ≈ 2,126）**单笔双边固定费 188~402 HKD = B 的 8.8%~18.9%**，实盘 7 笔合计**毛亏 −1,366、费用 2,232.51（费是毛亏的 1.63 倍）**——**实盘小账户亏损主因是按笔固定费摊薄，不是方向判断、也不是印花税，提高赔率门槛治不了**。已立 T139 交用户裁定（实盘暂停日内 / 提高 risk_fraction / 维持现状）。
+- **T120 首批数据开张**：`tmp/blocked_decisions.csv` 从无到有，3 个被拦点（08-28 14:23 HK.00700 净赔率 1.10、08-28 13:56 HK.01888 净赔率 0.64、09-01 11:50 HK.02513 净赔率 0.82）已从会话实录复原并富途分钟 K 回填；样本 <5、`stats` 提示先攒数据。
+- **T137 判据作废**：实测 ZCode 三个会话 `hookCount` 恒为 0，该字段属 `stage=resolve_plugins`、只统计**插件贡献的 hook**，与 config.json 的 `hooks.events` 挂载无关——原「hookCount 应为 7」的期望值错误，已作废，收窄为剩行为验证（违规命令被 deny / Edit 收到 CHANGELOG 注入）。
+- **新立 T138（CodeBuddy 宿主未挂 hooks）**：实测当前会话宿主是 **CodeBuddy**（运行时写 `~/.codebuddy/`），项目 `.codebuddy/` 只有两个 symlink、**无 settings.json / 无 hooks 挂载**——`secret_guard`（凭证防泄漏）、`live_auth_witness`（实盘授权见证）、`monitor_guard`（盯盘硬拦）、`changelog_guard`（CHANGELOG 提醒）四条在该宿主全程不生效。**配置协议已查证（官方文档 https://www.codebuddy.ai/docs/ide/Features/hooks）**：配置放 `<workspace>/.codebuddy/settings.json`（项目级）+ `~/.codebuddy/settings.json`（用户级），**扁平结构、与 Claude Code 同款**（`{"hooks":{"PreToolUse":[{"matcher":...,"hooks":[{"type":"command","command":...,"timeout":...}]}]}}`），**无 ZCode 那层 `enabled`/`events` 包裹，不可照抄 ZCode 配置**；阻断用 exit 2（stderr 传模型）、exit 0 时靠 stdout JSON 的 `hookSpecificOutput.additionalContext` 注入（与 ZCode 同义，本项目双通道输出可复用）。**关键坑**：**IDE 宿主下 hook 脚本收到的 `tool_name` 是 IDE 风格名**（`execute_command`/`write_to_file`/`replace_in_file`…），matcher 虽支持双向别名匹配，**但脚本内部 `tool_name == "Bash"` 的硬判断会全部落空**——只挂配置不改脚本 = 挂着也不生效，须给四个脚本加别名兼容（详见 TODO.md T138）。
+- **进度更新**：T125 影子样本 2→3 笔；T4 验证点④（log 落 `_auto`）09-03 十五会话并行日实测通过、剩①②③；T136 模拟账户路径实测通过、剩实盘路径；T123 补 09-02 03308 同源旁证。
+- **用户裁定（2026-09-03 14:15，两条交易决策收口）**：
+  - **T119 ② 门槛回撤预案 → 维持 1.2、继续攒样本**：预案「期间日均亏 ≥3R 即回撤 1.5」按「期间总 R ÷ 交易日数」口径 = −1.058R/日判**未触发**；08-28 单日 −3.26R 不单独作为回撤依据。理由：样本仅 10 笔不足以支撑「改变执行面」的门槛调整（本项目「交易逻辑建议必须有数理统计基础」硬约束——单日 / 单笔不构成规则长期成立的依据）。`config.json risk.min_net_odds` **未改**。
+  - **T139 实盘小账户费用结构 → 维持现状继续攒样本**：不暂停实盘、不提高 `risk_fraction`、不改赔率门槛——固定费摊薄作为**已知结构性拖累**接受，继续按 2% 单笔预算攒样本。
+  - **落地**：两条结论已写入 `trading-strategy.md`「门槛沿革」⓪-a 段与 `reviews/2026-09-03-odds-reconciliation.md` 第四节；T119 收窄为只剩 ④（15 笔中间对账、30-50 笔复标，**复标必须分账户看**）；T139 归档。**已知代价如实保留**：维持现状 = 在费用结构性拖累下继续实盘交易，1.2 时代样本大概率继续呈负 EV。
+- **回归风险评估**：本次不改动任何交易/盯盘脚本（唯一新增文件是 `tmp/test_limit_target_paths.py` 测试脚本，`tmp/` 已 gitignore）；文档改动为 `trading-strategy.md` 新增 ⓪-a 段（纯追加实测数据、未改动既有结论）、`reviews/` 新增对账报告、`TODO.md` / `TODO-archive.md` 条目更新——**无运行时回归面**。
+
+### 修正（T138 CodeBuddy hooks「未挂载」误判 + IDE 差异脚本适配；T123 做空拒单真因收窄；T120 增至 4 条，2026-09-03 16:35）
+
+- **T138 误判修正（重要）**：14:05 曾判「CodeBuddy 宿主未挂 hooks、四条防护全程不生效」——**16:20 / 16:27 两次实证推翻**：CodeBuddy 会话里 `secret_guard` 成功拦截 AI 读 accounts.json 的命令、拦截文案逐字来自本项目 secret_guard.py，而该 hook 只挂在项目 `.claude/settings.json` 一处 → **CodeBuddy 官方兼容 Claude Code hooks 规范、直接读项目 `.claude/settings.json`，六条项目 hook 本就生效**（`monitor_guard` / `secret_guard` 不看 tool_name、只读 `tool_input.command`，天然跨宿主）。新增项目 `.codebuddy/settings.json` 作显式兜底（matcher 同时写 CLI 与 IDE 两种工具名）。全局守卫 `pre-tool-use-guard.sh` 不挂 CodeBuddy 用户级（用户裁定）。
+- **IDE 差异脚本适配（单源改一处、三宿主同享，全部向后兼容）**：① `live_auth_witness.py` 认 CodeBuddy 的 `ask_followup_question` 工具名 + 新增 `_xml_question_answer_texts()` 解析其 XML 字符串形态 tool_response（解析不出按无答案处理=不写凭证，保守方向安全）；② `changelog_guard.py` 兼容 IDE 驼峰字段 `filePath`；③ `pre-tool-use-guard.sh` 认 `execute_command`。
+- **顺带修复 changelog_guard 的 `_PROJECT_ROOT` 少算一层 bug（该 hook 自上线以来大部分场景从未触发过）**：原 `_PROJECT_ROOT = Path(__file__).resolve().parent.parent` 算到 `.claude/` 而非项目根 → 项目根与 `.claude` 之外路径的文件 `relative_to` 全部抛 ValueError、`_should_remind` 一律 False——**即 CHANGELOG 提醒 hook 对日常改的代码 / 文档（根目录 TODO.md、references/*.md 等）自 2026-09-02 上线起一直是静默 no-op**，只有 `.claude/` 子树内的文件碰巧能触发。改为三层 `parent.parent.parent`。验证：`_should_remind(刚改的 hook)` 由 False → True；排除项回归（tmp/ / accounts.json / CHANGELOG.md 自身）仍为 False；驼峰 `filePath` 与蛇形 `file_path` 两种入参均能触发提醒。
+- **文档**：项目 CLAUDE.md「hooks 双宿主挂载」节改「hooks 三宿主：CC / ZCode / CodeBuddy 同一份脚本」，写明 CodeBuddy 走 `.claude/settings.json` 的实证依据、IDE 工具名 / 字段名差异与三处脚本适配点、`.codebuddy/settings.json` 的兜底定位与「提醒翻倍则删」的判据。
+- **T123 做空拒单真因复核（盘外只读查询完成）**：`get_contract` 实查 **07747 `short_initial_margin = 0.7`**（CSOP Samsung Electronics Daily 2x Leveraged Product，long 0.65、lot 100、shortable=True）；富途分钟 K 实取 08-25 10:15 实价 **69.10 HKD**；实算最大可空 = 443,843.84 ÷ 0.7 ÷ 69.10 ≈ **9,176 股**，4100 股占用保证金 198,317 HKD——在「购买力」口径下完全够，**保证金率口径解释不了拒单、原候选一排除**。**真因收窄**：4100 股所需保证金 = 实盘 equity（≈106,358）的 **186.5%** → 大概率是 **buying_power（含杠杆购买力 44.4 万）≠ available funds（现金可用）** 的口径差（做空保证金从现金出）；次要候选 = 借券可用性（`shortable_count = None`）。剩：下次实盘解锁取 available funds 实测值终验。
+- **T120 增至 4 条**：新增 `2026-09-03 11:15 HK.06869 长飞 long @164.2 / 止损 162.2 / 止盈 167.5 / 净赔率 1.18`（当日盯盘实录实时登记，与前三条靠事后翻录不同）→ 回填 high 166.5 / low 163.2、假想 R +1.150。
+- **回归风险评估**：三处脚本改动均为「多认一个名字 / 多认一个字段」的增量分支，CC / ZCode 原路径（`AskUserQuestion`、`file_path`、`Bash`）行为不变；CC 原样例 payload 回归通过。TODO / CHANGELOG 为文档。无交易链路改动。
+
 ### 修复（account_status.py query_err 未初始化——持仓查询成功路径 NameError，2026-09-03）
 
 - **为什么改**：2026-09-03 盘中开仓 00100 后，采样段「📌 持仓状态」行连续报 `[持仓状态检查 err:cannot access local variable 'query_err' where it is not associated with a value]`——持仓状态监控（2026-08-18 立的工具强制）完全失效。根因：`_query_account` 的 `query_err` 只在 `get_positions` 抛异常的 except 分支赋值，持仓查询**成功**路径上从未初始化；下方止损单查询的 except 分支（`query_err + '；' if query_err else ...`）与函数返回行引用它时即 NameError。

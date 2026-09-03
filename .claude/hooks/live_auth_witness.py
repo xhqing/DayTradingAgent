@@ -41,6 +41,7 @@ answers「问题文本→答案文本」字典，源码实证 normalizeAskUserQu
 """
 import sys
 import os
+import re
 import json
 import time
 import hmac
@@ -63,13 +64,47 @@ def _auth_path(session_id):
 _CONFIRM_WORDS = ("确认", "授权", "同意", "开", "yes", "ok", "准")
 
 
+def _xml_question_answer_texts(text):
+    """从 CodeBuddy ask_followup_question 的字符串形态 tool_response 提取问题与答案。
+
+    CodeBuddy 的 tool_response 是 harness 生成的 XML 片段（question_answer 格式）：
+      <question_answer><question_item id="x"><question>Q…</question><answers>A…</answers>
+      </question_item>…</question_answer>
+    与 CC / ZCode 的 dict（questions 数组 + answers 字典）结构不同，单独解析；解析失败
+    返回空列表（调用方按「无答案」处理 → 不写凭证，保守方向安全）。
+    """
+    out = []
+    for tag in ("question", "answers"):
+        for m in re.finditer(r"<%s>(.*?)</%s>" % (tag, tag), text or "", re.S):
+            frag = m.group(1)
+            if "<" in frag:      # 内嵌子标签（富文本选项）→ 剥掉标签留文本
+                frag = re.sub(r"<[^>]+>", " ", frag)
+            frag = frag.strip()
+            if frag:
+                out.append(frag)
+    return out
+
+
 def _question_texts(payload):
-    """从 tool_input / tool_response 提取全部问题与答案文本（两处都带，取并集更稳）。"""
+    """从 tool_input / tool_response 提取全部问题与答案文本（两处都带，取并集更稳）。
+
+    2026-09-03 T138：CodeBuddy 的 tool_response 是 XML 字符串（非 dict），字符串形态
+    交给 _xml_question_answer_texts 单独解析；dict 形态走原逻辑。questions 本身若是
+    JSON 字符串（CodeBuddy 允许传 JSON 字符串而非数组）先尝试还原成结构。"""
     texts = []
     for src in (payload.get("tool_input"), payload.get("tool_response")):
+        if isinstance(src, str):
+            texts.extend(_xml_question_answer_texts(src))
+            continue
         if not isinstance(src, dict):
             continue
-        for q in src.get("questions") or []:
+        qs = src.get("questions")
+        if isinstance(qs, str):
+            try:
+                qs = json.loads(qs)
+            except Exception:
+                qs = None
+        for q in qs or []:
             if isinstance(q, dict):
                 texts.append(str(q.get("question", "")))
         ans = src.get("answers")
@@ -95,9 +130,15 @@ def _is_live_auth_question(texts):
 
 
 def _has_confirm_answer(payload):
-    """用户点选的答案是否为确认授权（读 tool_response.answers——harness 生成的真实点击）。"""
+    """用户点选的答案是否为确认授权（读 tool_response.answers——harness 生成的真实点击）。
+
+    2026-09-03 T138：CodeBuddy 的 tool_response 是 XML 字符串，字符串形态先解析出
+    <answers> 文本再判确认词；解析不出 → 无答案 → 不写凭证（保守方向安全）。"""
     answers = []
     for src in (payload.get("tool_response"), payload.get("tool_input")):
+        if isinstance(src, str):
+            answers.extend(_xml_question_answer_texts(src))
+            continue
         if isinstance(src, dict):
             ans = src.get("answers")
             if isinstance(ans, dict):
@@ -149,7 +190,9 @@ def main():
         payload = json.load(sys.stdin)
     except Exception:
         sys.exit(0)   # 解析失败静默放行（hook 不卡正常流程）
-    if payload.get("tool_name") != "AskUserQuestion":
+    if payload.get("tool_name") not in ("AskUserQuestion", "ask_followup_question"):
+        # 2026-09-03 T138：CodeBuddy IDE 宿主的同类工具名是 ask_followup_question
+        # （CLI / CC / ZCode 是 AskUserQuestion），两个名字都认、其余单源兼容。
         sys.exit(0)
     try:
         texts = _question_texts(payload)

@@ -34,7 +34,10 @@ _EXCLUDE_DIRS = {'tmp', 'signals', 'actions', 'reviews', 'archive', 'cache'}
 _EXCLUDE_NAMES = {'accounts.json', 'CHANGELOG.md', 'VERSION', '.commit-cache.md'}
 _EXCLUDE_SUFFIXES = ('.local', '.local.json', '.local.yaml', '.local.yml')
 
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent  # hooks/ 的上一级 = 项目根
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+# ⚠️ 三层 parent：hooks/ → .claude/ → 项目根（2026-09-03 修 T138 验证时发现的 bug）。
+# 原来只写两层 = 算到 .claude/，项目根下的文件 relative_to 全部抛 ValueError → 一律不提醒，
+# 即本 hook 自 2026-09-02 上线以来对项目根 / 非 .claude 路径的文件从未真正触发过。
 
 
 def _should_remind(file_path):
@@ -65,7 +68,9 @@ def main():
     except Exception:
         return 0
     tool_input = data.get('tool_input', {})
-    file_path = tool_input.get('file_path', '')
+    file_path = tool_input.get('file_path') or tool_input.get('filePath') or ''
+    # 2026-09-03 T138：CodeBuddy IDE 宿主的 replace_in_file / write_to_file 用驼峰
+    # filePath（CC 的 Edit / Write 用蛇形 file_path），两写法都收、跨宿主单源兼容。
     if not file_path:
         return 0
     if _should_remind(file_path):
