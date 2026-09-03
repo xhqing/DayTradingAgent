@@ -342,6 +342,78 @@ def _claim_holder_alive(sid):
         return False
 
 
+def _is_monitoring_session(sid):
+    """本会话是否盯盘会话（2026-09-02 立，stop 提醒门槛——非盯盘会话不提醒）。
+
+    背景：守卫 stop 分支原来只判「盘中 + 无采样」，不看提醒对象是谁——美股盘中窗口
+    （美东 04:00-16:00 = 北京 16:00-次日 04:00）里任何非盯盘会话（/commit、写代码、
+    复盘）每个回合结束都触发提醒，2026-09-02 实录纯 commit 会话被无限唤醒 160+ 轮。
+
+    判定（三判据任一命中 = 盯盘会话；全部只读、无副作用）：
+    ① 会话在盯盘注册表 tmp/monitor_sessions.txt（preflight 港股盯盘注册、
+       monitor_unregister.sh 停盯注销）；
+    ② 当日认领表 tmp/pool_claims.json 的 claims 里有本 sid（认领 = 在盯标的）；
+    ③ 当日开过仓：tmp/trade_intent.log 当日行含本 sid（开仓会话必然在盯盘）。
+    另一前提：**今天全项目完全没有采样日志**（tmp/monitor_log_*_今日日期_*.csv 一个都
+    没有）= 今天没有任何会话开过盯盘 → 直接 False（没盯过就不存在「断了」）。
+
+    局限（诚实）：③ 只认「开过仓」，纯信号盯盘没开仓、且既没注册（美股会话按
+    2026-08-12 规矩不注册）也没认领（claim 是港股池概念）的美股盯盘会话会被漏拦——
+    该场景由 pretool 分支的密采样阻断与用户监督兜底；stop 误扰的代价（死循环）远
+    大于这个窄缝的漏提醒，权衡后收窄。
+    """
+    try:
+        import glob as _glob
+        today = datetime.now().strftime("%Y%m%d")
+        # 前提：今天没有任何采样日志 → 没有会话开过盯盘
+        if not _glob.glob(os.path.join(TMP_DIR, f"monitor_log_*_{today}_*.csv")):
+            return False
+        if not sid:
+            return False
+        # ① 盯盘注册表
+        reg = os.path.join(TMP_DIR, "monitor_sessions.txt")
+        if os.path.isfile(reg):
+            try:
+                with open(reg) as f:
+                    if sid in f.read().splitlines():
+                        return True
+            except OSError:
+                pass
+        # ② 当日认领表
+        claims = os.path.join(TMP_DIR, "pool_claims.json")
+        if os.path.isfile(claims):
+            try:
+                with open(claims) as f:
+                    data = json.load(f)
+                if data.get("date") == datetime.now().strftime("%Y-%m-%d"):
+                    if any(c.get("session") == sid for c in data.get("claims", [])):
+                        return True
+            except Exception:
+                pass
+        # ③ 当日开仓 intent
+        intent = os.path.join(TMP_DIR, "trade_intent.log")
+        if os.path.isfile(intent):
+            try:
+                today_dash = datetime.now().strftime("%Y-%m-%d")
+                with open(intent) as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or today_dash not in line:
+                            continue
+                        try:
+                            rec = json.loads(line)
+                        except Exception:
+                            continue
+                        if rec.get("session_id") == sid:
+                            return True
+            except OSError:
+                pass
+        return False
+    except Exception:
+        # 判定链任何异常 → 保守按盯盘会话处理（宁可多提醒一次，不漏拦真断采样）
+        return True
+
+
 def _emit_reminder(msg, hook_event_name):
     """提醒类输出（不阻断）的双宿主适配（2026-09-02 ZCode hook 迁移立）。
 
@@ -499,7 +571,21 @@ def main():
         sys.exit(0)
 
     if hook_type == "stop":
-        if not running:
+        # 只提醒盯盘会话（2026-09-02 立，修 160+ 轮死循环实录）：守卫原来只判「盘中 +
+        # 无采样」，不判「本会话是不是盯盘会话」——美股盘中窗口（美东 04:00-16:00 = 北京
+        # 16:00-次日 04:00）里任何非盯盘会话（如纯 /commit、写代码、复盘会话）每个回合
+        # 结束都会触发一次提醒 → 提醒注入上下文唤醒模型 → 模型回复 → 回合又结束 → 再提醒，
+        # 无限循环。修复 = 加「盯盘会话」门槛，三个判据任一命中才提醒（都只读、无副作用）：
+        # ① 本会话在盯盘注册表（tmp/monitor_sessions.txt，preflight 港股盯盘时写入、
+        #    monitor_unregister.sh 停盯注销）——注册过 = 盯盘会话；
+        # ② 本会话当日认领过标的（tmp/pool_claims.json 当日 claims 里有本 sid）——
+        #    认领 = 在盯标的 = 盯盘会话；
+        # ③ 采样日志今天有本会话会话标记（monitor_log_*_{sid8}*.csv）——写过采样日志
+        #    = 跑过密采样 = 盯盘会话。
+        # 都不命中 = 非盯盘会话，静默退出（AI 不自主启动盯盘，盘中开盯的会话必然先走
+        # preflight 注册 / claim 认领 / 写采样日志之一，不会漏拦真盯盘会话的断采样）。
+        sid = payload.get("session_id") or os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+        if not running and _is_monitoring_session(sid):
             msg = (
                 f"⚠️ 密采样守卫提醒：回合结束，盘中但密采样未在跑（{why}）。"
                 f"盯盘期间必须保持 monitor_segment / ws_segment 40 秒密采样循环（不得擅自停/降频，2026-08-04 教训）。"

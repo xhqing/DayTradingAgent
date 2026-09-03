@@ -426,6 +426,9 @@ def _query_account(account):
         positions = None
         query_err = f'持仓查询失败: {str(e)[:120]}'
     # 止损价：活动 STP 单最新触发价（同 monitor_segment.query_stop_prices 口径）
+    # query_err 初始化在持仓查询成功路径上缺失（get_positions 正常时 query_err 未定义，
+    # 下方止损查询 except 或返回行引用即 NameError——2026-09-03 盘中实测），先置空串兜底
+    query_err = ''
     stops = {}
     try:
         orders = get_today_orders_tiger(config)

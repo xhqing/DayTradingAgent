@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### 修复（account_status.py query_err 未初始化——持仓查询成功路径 NameError，2026-09-03）
+
+- **为什么改**：2026-09-03 盘中开仓 00100 后，采样段「📌 持仓状态」行连续报 `[持仓状态检查 err:cannot access local variable 'query_err' where it is not associated with a value]`——持仓状态监控（2026-08-18 立的工具强制）完全失效。根因：`_query_account` 的 `query_err` 只在 `get_positions` 抛异常的 except 分支赋值，持仓查询**成功**路径上从未初始化；下方止损单查询的 except 分支（`query_err + '；' if query_err else ...`）与函数返回行引用它时即 NameError。
+- **改了什么**：`_query_account` 内止损查询段前补 `query_err = ''` 初始化（成功路径兜底空串，except 分支照旧拼接）。
+- **验证**：py_compile / ast.parse 通过；下一段采样「持仓状态」行实跑确认恢复正常。
+- **回归风险评估**：纯加一行初始化，异常路径（query_err 已赋值）逻辑不变，无回归面。
+
 ### 新增（CC hooks 全量迁移 ZCode：双宿主工具强制同挂，2026-09-02）
 
 - **为什么改**：本项目工具强制体系（「文档规定必须尽可能配工具强制」）此前只挂在 Claude Code（`.claude/settings.json` hooks），ZCode 会话在同一项目里跑时全部 hook 防护不在场（密采样守卫 / 凭证读取守卫 / 实盘授权见证 / CHANGELOG 提醒 / 杀 VSC 与远程窗口守卫），双 agent 单源共用架构下防护只盖一半。用户要求把 CC 体系下全部 hook 功能迁到 ZCode、功能 100% 一致。
@@ -19,6 +26,13 @@
 - **验证**：按 ZCode 源码构造同构样例 payload 逐脚本喂测——monitor_guard pretool 正常命令 exit 0 / && 连跑两段 exit 2+stderr；secret_guard cat accounts.json exit 2+stderr；changelog_guard 改新文件输出 additionalContext JSON；stop / taskstop 双通道（stderr+stdout JSON）输出到位；live_auth_witness 实盘授权确认 payload 凭证写出（`sess_` 过滤形态与 live_unlock 一口）后测试凭证已删；guard.sh 三路径（杀 VSC deny JSON / vscode:// URI deny JSON / 授权标记放行）stdout 全部合法 JSON 或空；`_claim_holder_alive` 真实 rollout 文件 True / 虚构 sess_ False / 裸 UUID False。**CC 侧回归端到端实测（2026-09-02 晚，headless `claude -p` + 会话 transcript 取证）**：读 CC 2.1.226 源码实证其 hook stdout 为逐行提取 JSON（多行也能命中）+ 校验失败宽容降级；两轮 headless 会话 transcript 记录——① `cat accounts.json` 工具调用被 secret_guard 以 `PreToolUse:Bash hook error` 阻断、stderr 原文完整返回模型（阻断链完好）；② Stop 提醒以 hookSpecificOutput.additionalContext 形态注入、模型 thinking 确认收到（注入链完好）。**宿主端到端（ZCode 侧配置加载、事件投递、注入）须新 ZCode 会话验证**（启动时加载），已立 T137 跟踪。
 - **补充升级（同日，CC 回归验证中发现）**：提醒类输出从顶层 `additionalContext` 升级为 `hookSpecificOutput{hookEventName, additionalContext}` 标准形态——读 CC 源码发现顶层 additionalContext 非 CC 顶层合法键（同步校验降级 plainText、不注入），而 hookSpecificOutput.additionalContext 是 CC 与 ZCode 两宿主 schema 都原生支持的注入通道（CC 每个事件均含该字段，Stop 事件官方描述「feedback delivered to the model」；ZCode Jxn discriminatedUnion 各 case 同构）。对 CC 是纯增强（原 stderr 通道保留 + 新增确定注入），对 ZCode 行为不变；`_emit_reminder` 按子命令传真实事件名（两宿主均强校验 hookEventName 必须匹配）。
 - **回归风险评估**：① 脚本改动全部为「加输出通道 / 加判活路径 / 修输出 bug」，原 CC 行为路径（exit 2+stderr 阻断、CC stderr 提醒）一字未动；② changelog_guard 从纯文本改 JSON 在 CC 下同样注入（PostToolUse additionalContext 是 CC 支持键），提醒效果不降；③ guard.sh 两处修复对 CC 是让输出更干净（消除 stdout 污染与非法 JSON），deny 语义不变——无「修复引入回归」面；④ `.zcode/config.json` 进 git 跟踪（含本机绝对路径、无敏感值，与 `.claude/settings.json` 同口径）；⑤ 双宿主同挂后同一 hook 在 CC 会话与 ZCode 会话各自由宿主触发，互不重复调用。
+
+### 修复（monitor_guard Stop 提醒加「盯盘会话」门槛——非盯盘会话不再被无限唤醒，2026-09-02）
+
+- **为什么改**：2026-09-02 晚实录——同日 `_emit_reminder` 升级把 Stop 提醒接入 hookSpecificOutput 注入通道（见上「CC hooks 全量迁移 ZCode」条的补充升级）后，Stop 提醒从「stderr 无人看见」变成「注入上下文、唤醒模型」；而 monitor_guard 的 stop 分支只判「盘中 + 无采样」、从不判「本会话是不是盯盘会话」——美股盘中窗口（美东 04:00-16:00 = 北京 16:00-次日 04:00）里一个纯 `/commit` 会话（无盯盘任务、港股已收盘）每个回合结束都被提醒唤醒，回复「忽略」后回合又结束、又被提醒，无限循环 160+ 轮（用户两次指出「这个不是盯盘会话呀」「不是盯盘会话不要提醒」）。根因 = 提醒对象不限定的设计缺口，在注入通道升级后从「无害噪声」放大成「死循环」。
+- **改了什么**：`monitor_guard.py` stop 分支加 `_is_monitoring_session(sid)` 门槛（全部只读、无副作用）——三判据任一命中才提醒：① 会话在盯盘注册表 `tmp/monitor_sessions.txt`（preflight 港股盯盘注册、monitor_unregister.sh 停盯注销）；② 当日认领表 `tmp/pool_claims.json` claims 含本 sid；③ 当日 `tmp/trade_intent.log` 含本 sid 的开仓行（开仓会话必然在盯盘）。另加前提：今天全项目无任何采样日志（`tmp/monitor_log_*_<今日>_*.csv` 一个都没有）= 没有任何会话开过盯盘 → 直接不提醒。判定链任何异常保守按盯盘会话处理（宁可多提醒、不漏拦真断采样）。pretool / taskstop 分支不动。
+- **验证**：py_compile 过；五路冒烟——本会话 sid（三判据不命中、今天有日志）无输出 ✅、注册表内 sid 输出提醒 ✅、当日开仓 sid 输出提醒 ✅、无 sid（手动跑）无输出 ✅、pretool 正常命令回归 exit 0 ✅。
+- **回归风险评估**：① 真盯盘会话（港股注册 / claim 认领 / 当日开仓）三判据全覆盖，断采样仍会被提醒——防 2026-08-04 降频教训的原防护不弱化；② 已知窄缝：纯信号美股盯盘会话（按 2026-08-12 规矩不注册 watcher、纯 signal 不开仓、claim 是港股池概念）若断采样，stop 分支不再提醒——由 pretool 分支的密采样阻断与用户监督兜底，且该缝的漏提醒代价远小于死循环代价；③ 判定异常时保守放行为提醒（fail-safe 方向与原行为一致）；④ CC 与 ZCode 双宿主同一脚本，门槛对两宿主同时生效。
 
 ### 修复（持仓状态行 / 止损单查询按下单账户选账户——实盘会话误查模拟账户，2026-09-02 T136）
 
