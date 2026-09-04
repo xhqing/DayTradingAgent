@@ -60,6 +60,51 @@
 - **美股老虎默认账户独立一套**（2026-08-05 立，与港股 tiger 解耦）：`trade_utils_tiger_us.py`（复用 trade_utils_tiger 不分市场基础设施 + 美股特定：symbol 裸代码 MU、lot 1、tick 0.01、USD 净值、费率走 `fee_schedule.py` 老虎真实费率按股结构（佣金 0.0039/股 + 平台费 0.004/股 + 代收近似 0.00396/股，2026-08-17 起；旧「3bps/边」笼统口径已废，见 `risk-management.md`「费率与成本」））+ `open_position_tiger_us.py` / `close_position_tiger_us.py` / `move_stop_tiger_us.py` / `move_target_tiger_us.py`（移盈，2026-08-23 新增）。**美股默认账户，未特别说明即用这套**。`close_position_tiger_us` 走「止损/止盈交替逼近」循环（2026-08-23，同港股）、`move_stop_tiger_us` 走「modify aux_price」单步路径（同港股 2026-08-05 改造）、`move_target_tiger_us` 移盈同港股版；`cancel_all_stop_orders_us` 含 TRAIL（吸收中芯残留事故教训）。✅ 实测状态（2026-08-05 美股盘中）：三动作全链路已 paper 端到端实测通过（SPY 2 股小仓位——开仓 LMT Filled @773.68 + 附加止损腿 LOSS 激活；移损 modify aux_price 770.61→771.71 验证成功；平仓 modify 触发价=现价、止损单触发 MO Filled @773.44、持仓归零无残留止损单）。**✅ 2026-08-23 双腿 BRACKETS 机制起美股实盘实测通过（2026-08-28~29：NVDA/CRM/PLTR 实盘开仓 LMT+双腿成交、PLTR「第 1 轮止损单触发价改现价即触发」交替逼近平仓、「LMT 186.68 挂起超时撤后重挂成交」超时撤单路径——港股段同日结论适用美股，见上方港股条「2026-08-23 双腿 BRACKETS 机制起实盘实测通过」；未实测三项同港股 T116 剩余）**。⚠️ **行情数据源（2026-08-05 实测修复）**：老虎 TBNZ 账户**美股无行情权限**（`get_stock_briefs` 实测报 code=4 msg=4000 permission denied US market），美股脚本 `get_quote_us` 已改走**富途 OpenD 单源**（美股行情只有富途可用，与 `account-tools.md`「数据源分工总则」一致）；美股下单脚本（open/close/move_stop_us）行情输入一律富途、下单仍走老虎。
 - `log_action.sh` — 把完整交易动作写入 `actions/` 目录
 
+## auto 模式算仓位口径：模拟盘恒开对齐实盘（2026-09-03 用户立，无开关）
+
+**规则**：auto 模式下，只要下单账户是**模拟盘**（默认 17 位号 / `--account paper`），算仓位的
+两套风险基数一律取**实盘**口径：
+
+1. **单笔预算 B / f_max / 市值上限用的 equity** = 实盘账户总资产（**不是**模拟盘自身总资产）；
+2. **购买力上限**（开仓脚本可买股数上限 = buying_power × 保证金率 ÷ 参考价） = 实盘账户购买力
+   （**不是**模拟盘购买力）。
+
+**为什么**：交易记录按**净 R 口径**统计盈亏能力。模拟盘与实盘资产量级差太大（模拟盘默认余额约
+789 万 HKD 量级、实盘远小）会让每笔成交额差异巨大；而净 R 口径里按笔固定费（平台费 HK$15/笔、
+佣金最低 HK$15/笔）与整手离散在不同仓位量级下摊薄程度不同——同一形态、同一止损距，模拟盘按
+模拟资产算出的仓位与实盘按实盘资产算出的仓位，净 R 的费损耗占比完全不同，统计出来的盈亏能力
+就失真。模拟盘必须**严格模拟实盘交易**（同一笔形态、同样的仓位档位、同样的费占比），模拟样本
+的净 R 统计才能代表实盘能力。故 auto 模拟盘的每笔下注金额（B → 仓位）与总购买力必须与实盘
+对齐——本规则恒开、无关闭开关（2026-09-03 用户裁定，选定「auto+模拟盘恒开」）。
+
+**实盘数据进模拟会话的通道 = 当日快照**（2026-09-03 用户选定的落地机制）：实盘账户默认态
+物理不可达（IP 白名单连接层拦截，见上「实盘误开防护」），模拟会话读不到实盘 API；因此把实盘
+总资产（HKD / USD 两口径）与购买力（USD）快照进 `tmp/live_reference.json`（含取数时间；tmp/
+已 gitignore；实盘净值 / 购买力非敏感信息、可写文件，见项目 CLAUDE.md「实盘净值不属敏感信息」
+节，快照不含任何凭证）。模拟会话的开仓脚本 / preflight / resume 一律读快照算口径；**快照缺失
+或非当日（北京日历日）→ 开仓脚本 fail-closed 拒单**（`blocked_by: "live_reference_required"`），
+**绝不静默退回模拟盘自身资产算仓位**——「用模拟资产算 B」等于规则没执行（工具强制，脚本硬拦，
+与 2026-08-06/00100「跳过校验 = 放任超限」同类逻辑）。
+
+**刷新入口**（均需在当日**已实盘解锁**的会话执行——AskUserQuestion 实盘授权 + live_unlock
+`verify-auth` 写解锁，未解锁会被 IP 白名单在连接层拒）：
+- 实盘会话 preflight / resume（`preflight.py --mode auto --account live` / `resume.py --mode auto
+  --account live`）会自动顺手刷新快照；
+- 任一已实盘解锁的会话执行：
+  `python3 .claude/skills/trade/scripts/trade_utils_tiger.py --refresh-live-reference`；
+- 模拟盘会话 preflight / resume（`--mode auto`）检测到快照缺失 / 非当日时会自动尝试刷新一次，
+  本会话恰好已解锁则直接成功；无解锁则打印指引（开仓会被拒）。
+
+**与「取净值与下单同账户」（2026-08-20）的关系**：那条针对**实盘执行**——下单账户 = 实盘时
+equity 必须查实盘自身（不许拿模拟净值管实盘风险，2026-08-20 事故背景）。本条是**模拟盘执行**
+侧的补充。两条合起来：**auto 模式任何执行账户下，算仓位的风险基数都是实盘口径**——实盘执行
+实时查实盘、模拟盘执行读实盘当日快照。实盘路径行为零改动（照旧实时查、不进快照）；模拟盘路径
+从「查模拟盘自身」改为「读实盘快照」。
+
+**开仓结果留痕**：港股 / 美股开仓脚本的 JSON 输出带 `sizing_source` 字段（「老虎实盘账户实时」/
+「实盘参考快照 equity_xxx（取数时间）」），AI 转录 `actions/` 记录时 B / equity 照实写
+（实盘净值可写，2026-08-29 裁定）。
+
 ## 操作原则（auto 专属）
 
 1. **自动执行**：AI 拍板后立即调用对应老虎脚本（港股 `open_position_tiger.py`（开仓）/ `close_position_tiger.py`（平仓）/ `move_stop_tiger.py`（移损）/ `move_target_tiger.py`（移盈，2026-08-23 新增）、美股 `*_tiger_us.py` 同名对应），脚本主单 + 附加止损/止盈双腿一次提交（无裸奔空窗）+ 成交回查（目标最优成交价）。下单结果（order_id、成交价）由脚本 JSON 输出，AI 据此记录交易动作到 `actions/` 目录（`log_action.sh`）。

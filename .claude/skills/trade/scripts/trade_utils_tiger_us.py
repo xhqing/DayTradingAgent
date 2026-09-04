@@ -181,16 +181,41 @@ def load_equity_us(config=None):
         pass
 
 
-def get_buying_power_us(config, symbol, ref_price, tc=None):
+def auto_sizing_equity_us(config, exec_account):
+    """auto 美股开仓的算仓位权益（USD）。返回 (equity, currency, source)。
+
+    - exec_account='live'：实时查实盘账户自身（2026-08-20「取净值与下单同账户」）；
+    - exec_account 非 live（默认模拟盘）：实盘当日快照 equity_usd（2026-09-03 恒开对齐实盘，
+      机制见 trade_utils_tiger.py「实盘参考快照」节）。
+
+    equity 为 None 时 source 为失败原因，调用方**必须拒单**（fail-closed，不得退模拟资产）。
+    """
+    if exec_account == "live":
+        eq, cur = load_equity_us(config)
+        if eq is None:
+            return None, "USD", "实盘账户净值取不到（未开通交易/资产权限？），无法算仓位"
+        return eq, cur, "老虎实盘账户实时（get_assets net_liquidation USD）"
+    ref, err = T.load_live_reference_checked()
+    if ref is None:
+        return None, "USD", err
+    v = ref.get("equity_usd")
+    if v is None:
+        return None, "USD", "实盘参考快照缺 equity_usd 字段，请重新刷新快照"
+    return float(v), "USD", f"实盘参考快照 equity_usd（取数 {ref.get('fetched_at')}）"
+
+
+def get_buying_power_us(config, symbol, ref_price, tc=None, bp_usd=None):
     """美股版购买力上限查询（2026-08-21 立，修橙色待办「美股开仓脚本购买力降档查询报
-    老虎脚本只支持港股」）。
+    老虎脚本只支持港股」；2026-09-03 加 bp_usd 覆盖——auto 模拟盘对齐实盘）。
 
     背景：open_position_tiger_us.py 原来误调港股版 T.get_buying_power_tiger——其内部
     to_tiger_symbol 只认 HK.xxx、遇美股代码抛「老虎脚本只支持港股」，主动降档失效
     （购买力查询恒失败、只剩被动降档兜底、正常路径烧降档轮次）。
 
     口径（与港股版 get_buying_power_tiger 同构，美股更简单——无币种换算）：
-    - buying_power 取 get_assets().summary.buying_power（USD 计价）；
+    - buying_power 取 get_assets().summary.buying_power（USD 计价）——**bp_usd 给定时改用
+      传入值**（2026-09-03：auto 模拟盘算仓位恒用实盘口径，调用方传实盘参考快照的
+      buying_power_usd，不再查执行账户（模拟盘）自身的购买力）；
     - 保证金率取 get_contract(symbol).long_initial_margin（美股同字段；查不到按 1.0 全额、
       最保守）；
     - 可买市值上限 = buying_power × long_initial_margin；可买股数上限 = 市值上限 ÷ ref_price
@@ -201,12 +226,17 @@ def get_buying_power_us(config, symbol, ref_price, tc=None):
     try:
         if tc is None:
             tc = new_trade_client(config)
-        assets = tc.get_assets()
-        if not assets:
-            return None, None, None
-        s = assets[0].summary
-        bp = getattr(s, "buying_power", None)
-        if not bp or float(bp) <= 0:
+        if bp_usd is not None:
+            bp = float(bp_usd)
+        else:
+            assets = tc.get_assets()
+            if not assets:
+                return None, None, None
+            s = assets[0].summary
+            bp = getattr(s, "buying_power", None)
+            if not bp or float(bp) <= 0:
+                return None, None, None
+        if float(bp) <= 0:
             return None, None, None
         c = get_contract_us(tc, symbol)
         margin_rate = getattr(c, "long_initial_margin", None)

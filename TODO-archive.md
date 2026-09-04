@@ -2,6 +2,16 @@
 
 > 本文件归档**已处理**的待办条目（`✅**已完成**` / `✅**已更新**`），保留可回溯性——回溯排查时看这里（当初打算做什么、做没做、什么时候做的、后来改没改主意）；活跃待办只看 `TODO.md`（项目根文件制，2026-08-05 撤销 todo-skill 定案；方法论见全局 CLAUDE.md「待办（TODO）管理」节，本文件与 `TODO.md` 同处项目根）。
 
+## 2026-09-03 T137 完成（ZCode hook 端到端验证：② 全局链实测生效；③ 项目级挂载官方禁用、此路不通 → 新立 T140）
+
+- ✅**已完成** **T137** （完成：2026-09-03 18:58）**ZCode 会话 hook 防护生效的端到端验证——② 全局 PreToolUse deny 链实测生效；③ 项目级挂载被 ZCode 官方整体禁用、验证结论「此路不通」（非配置错误），补救已新立 T140**。**验证过程（2026-09-03 18:50~18:58，在当日 ZCode 会话内实测）**：
+
+  - **② PreToolUse deny 链 ✅ 通过**：探针 `echo "probe: pkill -f vscode"`（无害 echo、但命中全局 `~/.claude/hooks/pre-tool-use-guard.sh` 规则 1 的三条件：含 kill 类词 + 含 vscode + 无 `AI_AUTHORIZED_KILL_VSC` 标记）——命令**被拦截未执行**，拦截文案逐字来自 `pre-tool-use-guard.sh:29` 原文（「规则拦截：杀 VSCode 进程前必须先用 AskUserQuestion 征得用户授权……」），reason 完整可见。**区别于 CodeBuddy 宿主的 `safety_rule_deny: security.processPatternTooBroad`**（宿主自带安全规则），本次返回的是本项目 guard.sh 的 `permissionDecisionReason`——**用户级 `~/.zcode/cli/config.json` 挂载的 PreToolUse 投递 + deny + reason 回显全链实证生效**。
+  - **③ PostToolUse additionalContext 注入链 ❌ 不通过，根因 = ZCode 官方禁用项目级 hooks（非配置错误、无法修复配置绕过）**：探针 = Write 项目根临时文件 `hook-probe.md`（mtime 18:52 > CHANGELOG.md 18:31，满足 changelog_guard `_should_remind` 全部条件）——**未收到任何「📌 CHANGELOG 记录提醒」注入**。排查（按 T137 预案走 `zcode-guide:diagnosing-hooks` skill + 官方文档）：① 日志 `zcode-2026-09-03.jsonl` 有 8 次 `config.project_hooks.pending_trust`（"Project hooks are pending workspace trust and **remain blocked**"、configPath 明确指向本项目 `.zcode/config.json`）+ 1 次 `workspace_hook.feature_disabled`（reasonCode `workspace_hooks_feature_disabled`、module `workspace_hook_trust`）；② 交叉实证——项目级 PreToolUse 探针 `echo "probe: cat .claude/skills/trade/accounts.json"`（字符串同时命中 secret_guard 的凭证路径特征 + 读取动作特征两条件）**直接放行执行**，证明项目级 hooks（含 secret_guard / monitor_guard）整个 PreToolUse 链同样未运行；③ **官方文档定论**（zcode.z.ai/en/docs/hooks）：「**Project-level hooks are not executed in the current version**」「For security reasons, any hooks configuration in `<workspace>/.zcode/config.json` or `<workspace>/zcode.json` is **ignored as a whole — regardless of `hooks.enabled`**」，设置页已隐藏 workspace scope，官方建议共享方式 = 插件分发（plugin 的 `hooks/hooks.json` 随插件自动加载）；用户级 `~/.zcode/cli/config.json` 不受影响（这解释了 ② 为何生效）。09-02 迁移当天日志同样有 `workspace_hooks_feature_disabled`——**项目 hooks 自迁移起在 ZCode 会话从未跑过一次**。
+  - **旁证修正**：本地 zcode-guide 插件文档（0.1.0 版 diagnosing-hooks skill）称「Non-plugin (user or workspace) configuration hooks have no trust gate; with `enabled: true` they run unconditionally」——**与官方文档及本次实测矛盾**（workspace 级恰恰被整体忽略），以官方文档为准；该 skill 的排查清单（matcher / enabled / 可执行位）不覆盖本根因。
+
+  **结论与后续**：T137 的验证使命完成——全局挂载链生效（②）、项目级挂载此路不通（③，官方设计如此）。**暴露的防护缺口（secret_guard 缺席 = ZCode 会话内 Bash 读凭证无拦等）已新立 🔴 T140 跟踪补救**（选项 A 全量上移用户级 / B 插件化 / C 最小补救只上移 secret_guard + changelog_guard，待用户拍板）；`.zcode/config.json` 六条挂载保留不删（未来 ZCode 若放开自动生效）。探针临时文件 `hook-probe.md` 即建即删、净变更为零。
+
 ## 2026-09-03 批量处理（T121 / T122 / T126 / T116 / T124 完成归档 + T119 首次对账 + T120 首批数据 + T138 新立）
 
 > 背景：本批在**盘外**（2026-09-03 13:40~14:10，港股午市进行中但无本会话盯盘任务）处理。多数待办原判「只能盘中实测」，本次改为**从已发生的真实会话留痕里取证据**（actions 记录 + CC 会话转录里的真实脚本输出）+ **盘外 mock 场景构造**，把能盘外收口的全部收口；确实仍需盘中/实盘的部分保留在 `TODO.md` 并注明已验证到哪一步。

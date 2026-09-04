@@ -323,18 +323,6 @@ def print_masked_live_account():
     }))
 
 
-if __name__ == '__main__':
-    import argparse
-    _ap = argparse.ArgumentParser(description='账户信息打码查询（凭证不进上下文）')
-    _ap.add_argument('--masked-live-account', action='store_true',
-                     help='打印实盘 / 模拟账户打码号（67****91 形式）')
-    _args = _ap.parse_args()
-    if _args.masked_live_account:
-        print_masked_live_account()
-    else:
-        _ap.print_help()
-
-
 def new_trade_client(config=None):
     """创建老虎 TradeClient（下单 / 持仓 / 资产 / 订单查询）。"""
     from tigeropen.trade.trade_client import TradeClient
@@ -1341,16 +1329,18 @@ def attach_net_pnl_app(result, config, tiger_sym, direction, quantity, exit_pric
         result['net_pnl_warning'] = f'net_pnl_app 查询失败（不阻断平仓，转录时用 App 实测）: {e}'
 
 
-def get_buying_power_tiger(config, symbol, ref_price, tc=None, to_hkd=None):
+def get_buying_power_tiger(config, symbol, ref_price, tc=None, to_hkd=None, bp_usd=None):
     """按单标的保证金率算可买股数上限（2026-08-16 立，2026-08-06 00100 被拒根因闭环；
-    2026-08-18 修港股币种偏差）。
+    2026-08-18 修港股币种偏差；2026-09-03 加 bp_usd 覆盖——auto 模拟盘对齐实盘）。
 
     背景：2026-08-06 MINIMAX 58,400 股大单被拒，根因是购买力约束（buying_power ÷ 该标的
     保证金率），原开仓脚本不预算可买上限、只靠券商拒单后被动降档。本函数在**下单前**算出
     上限，让 open_position 主动降档（少踩拒单、少烧降档轮次）。
 
     口径（2026-08-12 实测 + 2026-08-16 复测确认）：
-    - buying_power 取 get_assets().summary.buying_power（USD 计价）；
+    - buying_power 取 get_assets().summary.buying_power（USD 计价）——**bp_usd 给定时改用
+      传入值**（2026-09-03：auto 模拟盘算仓位恒用实盘口径，调用方传实盘参考快照的
+      buying_power_usd，不再查执行账户（模拟盘）自身的购买力）；
     - 保证金率取 get_contract(symbol).long_initial_margin（实测 00100 = 0.75）；
     - 可买市值上限 = buying_power × long_initial_margin；
       可买股数上限 = 市值上限 ÷ ref_price，按 lot 向下取整由调用方处理（本函数返回原始股数）。
@@ -1364,10 +1354,10 @@ def get_buying_power_tiger(config, symbol, ref_price, tc=None, to_hkd=None):
     返回 (max_shares, bp, margin_rate) 或 (None, None, None)（查询失败）。
     """
     return _buying_power_impl(config, symbol, ref_price, tc=tc, to_hkd=to_hkd,
-                              direction="long")
+                              direction="long", bp_usd=bp_usd)
 
 
-def get_short_buying_power_tiger(config, symbol, ref_price, tc=None, to_hkd=None):
+def get_short_buying_power_tiger(config, symbol, ref_price, tc=None, to_hkd=None, bp_usd=None):
     """按单标的**做空**保证金率算可空股数上限（2026-08-30 立，T123）。
 
     背景（2026-08-25 07747 做空拒单排查）：get_buying_power_tiger 只按
@@ -1377,27 +1367,38 @@ def get_short_buying_power_tiger(config, symbol, ref_price, tc=None, to_hkd=None
     口径：margin_rate 取 get_contract().short_initial_margin（SDK Contract 字段
     实存），查不到时按 1.0 全额（最保守——比多头口径更保守，方向安全）。
     其余口径（buying_power USD 折 HKD、to_hkd 兜底 7.80）与多头版一致。
+    bp_usd 覆盖参数与多头版同（2026-09-03，auto 模拟盘对齐实盘用）。
     返回 (max_shares, bp, margin_rate) 或 (None, None, None)。
     """
     return _buying_power_impl(config, symbol, ref_price, tc=tc, to_hkd=to_hkd,
-                              direction="short")
+                              direction="short", bp_usd=bp_usd)
 
 
-def _buying_power_impl(config, symbol, ref_price, tc=None, to_hkd=None, direction="long"):
+def _buying_power_impl(config, symbol, ref_price, tc=None, to_hkd=None, direction="long",
+                       bp_usd=None):
     """购买力上限的公共实现（long / short 只差保证金率字段）。
 
     direction='long' → get_contract().long_initial_margin；'short' → short_initial_margin。
     查不到保证金率按 1.0 全额（最保守：上限被低估、只会少开不会多开）。
+
+    bp_usd（2026-09-03 立，auto 模拟盘对齐实盘）：非 None 时直接用传入的购买力（实盘参考
+    快照 buying_power_usd），不再查执行账户 get_assets——模拟盘执行时执行账户是模拟盘、
+    查出来的购买力是模拟盘口径，与「算仓位恒用实盘口径」冲突。
     """
     try:
         if tc is None:
             tc = new_trade_client(config)
-        assets = tc.get_assets()
-        if not assets:
-            return None, None, None
-        s = assets[0].summary
-        bp = getattr(s, "buying_power", None)
-        if not bp or float(bp) <= 0:
+        if bp_usd is not None:
+            bp = float(bp_usd)
+        else:
+            assets = tc.get_assets()
+            if not assets:
+                return None, None, None
+            s = assets[0].summary
+            bp = getattr(s, "buying_power", None)
+            if not bp or float(bp) <= 0:
+                return None, None, None
+        if float(bp) <= 0:
             return None, None, None
         c = tc.get_contract(to_tiger_symbol(symbol))
         margin_field = ("long_initial_margin" if direction == "long"
@@ -1854,13 +1855,16 @@ def load_equity(mode='signal', project_root=None, base_currency='HKD', account=N
 
     - mode='auto'：老虎账户净值（港股 base_currency='HKD'、美股 base_currency='USD'，与
       标的计价一致，见 load_equity_tiger）；查询失败 fallback signals/equity-log.csv
-      （标记非真实、需修复）。
+      （标记非真实、需修复）。**2026-09-03 例外：auto + 模拟盘账户（account 非 live）一律
+      改取实盘参考快照口径**（auto 模拟盘恒开对齐实盘，见 load_live_reference_checked）——
+      快照缺失 / 非当日直接返回 None（fail-closed，不回退模拟盘资产或 equity-log）。
     - mode='signal'：读 signals/equity-log.csv 末行 equity_after（signal 模式不连账户、
       靠累加值；无记录返回 config.risk.initial_equity）。
 
-    - account（2026-08-20 立，实盘盯盘配套）：None/paper=默认模拟账户、'live'=老虎实盘账户，
-      透传给 load_equity_tiger → load_config(account)（2026-08-20 事故：preflight/resume 固定
-      走默认账户取净值、实盘盯盘时 B 用错账户，见 load_equity_tiger docstring）。
+    - account（2026-08-20 立，实盘盯盘配套；2026-09-03 语义收窄）：None/paper=模拟账户、
+      'live'=老虎实盘账户。auto + live → 实时查实盘自身（取净值与下单同账户）；auto +
+      模拟盘 → 实盘参考快照（对齐实盘，2026-09-03 用户裁定，见 SKILL「auto 模式的账户选择」
+      与本文件「实盘参考快照」节）。
 
     auto 模式 equity 必须是账户真实总资产（2026-07-31 用户立）；signal 模式因不碰账户、用
     equity-log 累加假设盈亏（2026-08-01 双模式重构立，见 signal-mode.md「signal 模式权益更新」）。
@@ -1901,6 +1905,24 @@ def load_equity(mode='signal', project_root=None, base_currency='HKD', account=N
         return eq, currency, "signals/equity-log.csv 末行（signal 模式累加值）"
 
     # mode == 'auto'：老虎账户（港股 HKD / 美股 USD，与标的计价一致）
+    if account != 'live':
+        # auto + 模拟盘：算仓位口径恒用实盘（2026-09-03 立，无开关）。这里返回给
+        # preflight / resume 展示用的 equity 也必须是实盘口径，否则 AI 看到的 B 与下单脚本
+        # 实际按实盘快照算出的仓位对不上。快照缺失/非当日 → 返回 (None, ...) fail-closed
+        # （展示方打印警示、下单脚本拒开），绝不回退模拟盘自身资产或 equity-log——
+        # 回退 = 回到「模拟口径算 B」的旧错位，等于规则没执行。
+        _ref, _err = load_live_reference_checked()
+        if _ref is None:
+            return None, currency, f"🚨 {_err}"
+        _field = "equity_hkd" if base_currency == "HKD" else "equity_usd"
+        _v = _ref.get(_field)
+        if _v is None:
+            return None, base_currency, (f"🚨 实盘参考快照缺 {_field} 字段（快照损坏？），"
+                                         f"请重新刷新快照（python3 scripts/trade_utils_tiger.py "
+                                         f"--refresh-live-reference）")
+        return (float(_v), base_currency,
+                f"实盘参考快照 {_field}（auto 模拟盘对齐实盘 2026-09-03；取数 "
+                f"{_ref.get('fetched_at', '未知')}）")
     eq, cur = load_equity_tiger(base_currency=base_currency, account=account)
     if eq is None:
         eq = _read_equity_log()
@@ -1909,3 +1931,261 @@ def load_equity(mode='signal', project_root=None, base_currency='HKD', account=N
         return initial_equity, base_currency, f"config initial_equity={initial_equity:.0f}（⚠️老虎查询失败且 equity-log 无记录，占位非真实）"
     acct_tag = "实盘" if account == "live" else "默认（模拟）"
     return eq, cur, f"老虎账户 get_prime_assets(base_currency={cur}) 证券段净值（{acct_tag}）"
+
+
+# ---------------------------------------------------------------------------
+# 实盘参考快照（2026-09-03 立：auto 模式模拟盘恒开对齐实盘）
+# ---------------------------------------------------------------------------
+# 规则：auto 模式里凡是「算仓位 / 显示单笔预算 B」的地方（开仓脚本、preflight、resume），
+# 只要执行账户是模拟盘（None/'paper'），总资产与购买力一律取**实盘**口径——不是模拟盘
+# 自身资产。为什么：交易记录按净 R 口径统计盈亏能力，模拟盘资产（约 780 万 HKD 量级）与
+# 实盘相差过大会让每笔成交额差异巨大，而按笔固定费 / 整手离散在净 R 口径里随仓位大小
+# 摊薄程度不同，净 R 统计的盈亏能力会失真；模拟盘必须严格模拟实盘交易，模拟样本才能
+# 代表实盘能力（2026-09-03 用户立，恒开、无开关）。
+#
+# 实盘数据进模拟会话的通道 = **当日快照**（用户选定的落地机制，2026-09-03）：
+#   - fetch_live_reference()：查实盘账户总资产（HKD/USD 两口径）与购买力（USD），写入
+#     tmp/live_reference.json（含取数时间）。⚠️ 实盘默认态物理不可达（apply_proxy 实盘
+#     解锁闸），本函数必须在**当日已实盘解锁**的会话执行（AskUserQuestion 授权 + live_unlock
+#     verify-auth），否则查不到 → 返回错误并给指引。
+#   - 模拟会话开仓算仓位时读快照（load_live_reference_checked）；快照缺失 / 非当日
+#     （北京日历日）一律拒开 fail-closed——绝不静默退回模拟盘自身资产算仓位。
+#   - 快照里的实盘净值 / 购买力非敏感信息（2026-08-29 用户裁定），写 tmp/（已 gitignore）
+#     无涉密问题；文件仅存数值与取数时间，不含任何凭证。
+#
+# 与「取净值与下单同账户」（2026-08-20）的关系：该规则针对**实盘执行**（下单账户 =
+# 实盘时 equity 必须查实盘自身、不许用模拟账户净值管实盘风险）——实盘路径保持实时查自身
+# 不变；本条是补充的**模拟盘执行**规则（下单账户 = 模拟盘时 equity/购买力用实盘口径）。
+# 两条合起来：auto 模式任何执行账户下，算仓位的风险基数都必须是实盘口径。
+#
+# 刷新入口（任选其一，均需当日实盘已解锁）：
+#   ① preflight.py --mode auto --account live（实盘会话 preflight 自动刷新）；
+#   ② python3 .claude/skills/trade/scripts/trade_utils_tiger.py --refresh-live-reference
+#     （在任一已实盘解锁的会话执行）；
+#   ③ 模拟盘会话 preflight（--mode auto）检测到快照缺失/非当日时会自动尝试刷新一次，
+#      无解锁则打印上述指引（开仓会被拒，须先刷新）。
+
+_LIVE_REFERENCE_FILENAME = "live_reference.json"
+_LIVE_REFERENCE_REFRESH_HINT = (
+    "刷新方法（均需在当日**已实盘解锁**的会话执行）：\n"
+    "  ① python3 preflight.py --mode auto --account live（实盘会话 preflight 自动刷新快照）；\n"
+    "  ② python3 .claude/skills/trade/scripts/trade_utils_tiger.py --refresh-live-reference\n"
+    "  ③ 在模拟盘会话先走实盘授权流程（AskUserQuestion 确认 → python3 scripts/live_unlock.py "
+    "verify-auth 写解锁）后再执行 ① 或 ②。"
+)
+
+
+def live_reference_path():
+    """实盘参考快照文件路径：项目根 tmp/live_reference.json（tmp/ 已 gitignore）。"""
+    root = Path(__file__).resolve().parent.parent.parent.parent.parent  # scripts/ 上五级 = 项目根
+    return root / "tmp" / _LIVE_REFERENCE_FILENAME
+
+
+def _beijing_date(dt=None):
+    """把时间折算到北京日历日（Asia/Hong_Kong，UTC+8 无夏令时）；zoneinfo 不可用回退本地日。"""
+    import datetime as _dt
+    try:
+        from zoneinfo import ZoneInfo
+        base = (dt or _dt.datetime.now()).astimezone(ZoneInfo("Asia/Hong_Kong"))
+    except Exception:
+        base = dt or _dt.datetime.now()
+    return base.strftime("%Y-%m-%d")
+
+
+def fetch_live_reference(verbose=True):
+    """查实盘账户总资产与购买力，写入实盘参考快照文件（2026-09-03 立）。
+
+    取数口径与下单脚本完全一致（保证模拟盘算出的仓位 = 实盘会下的仓位口径）：
+      - equity_hkd：get_prime_assets(base_currency='HKD') 证券段 net_liquidation；
+      - equity_usd：get_prime_assets(base_currency='USD') 证券段 net_liquidation；
+      - buying_power_usd：get_assets().summary.buying_power；
+      - fx_hkd_per_usd：equity_hkd / equity_usd（与 open_position_tiger 现有汇率口径一致）。
+
+    返回 (ok, msg)。ok=False 时 msg 为错误原因（含解锁 / 授权指引）。
+    """
+    import datetime as _dt
+    import json as _json
+    try:
+        cfg = load_config(account='live')
+    except Exception as e:
+        return False, f"加载实盘配置失败：{e}"
+    eq_hkd = eq_usd = None
+    try:
+        eq_hkd, _c1 = load_equity_tiger(config=cfg, base_currency='HKD')
+        eq_usd, _c2 = load_equity_tiger(config=cfg, base_currency='USD')
+    except Exception as e:
+        return False, f"实盘净值查询失败：{e}"
+    if not eq_hkd or not eq_usd:
+        return False, ("实盘净值取不到（equity_hkd={} equity_usd={}）——账户未开通资产/交易权限，"
+                       "或实盘未解锁（默认态本地直连被老虎 IP 白名单连接层拒）。请先走实盘授权流程："
+                       "AskUserQuestion 确认授权 → python3 scripts/live_unlock.py verify-auth 写解锁，"
+                       "再重新刷新。").format(eq_hkd, eq_usd)
+    bp_usd = None
+    try:
+        tc = new_trade_client(cfg)
+        assets = tc.get_assets()
+        if assets:
+            bp_usd = getattr(assets[0].summary, "buying_power", None)
+    except Exception as e:
+        if verbose:
+            print(f"⚠️ 实盘购买力查询失败：{e}", file=sys.stderr)
+    if not bp_usd or float(bp_usd) <= 0:
+        return False, ("实盘购买力取不到（buying_power_usd={}）——快照刷不出来购买力时不允许写文件："
+                       "模拟盘算购买力上限要靠它，缺了会静默退回执行账户（模拟盘）购买力、等于对齐"
+                       "规则没执行。请重试，或先确认实盘账户资产/权限正常。").format(bp_usd)
+    now = _dt.datetime.now()
+    payload = {
+        "fetched_at": now.strftime("%Y-%m-%d %H:%M:%S %z"),
+        "fetched_epoch": now.timestamp(),
+        "equity_hkd": float(eq_hkd),
+        "equity_usd": float(eq_usd),
+        "buying_power_usd": float(bp_usd),
+        "fx_hkd_per_usd": float(eq_hkd) / float(eq_usd),
+    }
+    try:
+        path = live_reference_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _tmp = path.with_suffix(".tmp")
+        with open(_tmp, "w") as f:
+            _json.dump(payload, f, ensure_ascii=False, indent=2)
+        os.replace(_tmp, path)
+    except Exception as e:
+        return False, f"实盘参考快照写入失败：{e}"
+    return True, payload
+
+
+def read_live_reference():
+    """读实盘参考快照文件；缺失 / 损坏返回 None。"""
+    import json as _json
+    try:
+        path = live_reference_path()
+        if not path.is_file():
+            return None
+        with open(path) as f:
+            data = _json.load(f)
+        if not isinstance(data, dict) or "fetched_epoch" not in data:
+            return None
+        return data
+    except Exception:
+        return None
+
+
+def is_live_reference_fresh(ref):
+    """快照是否当日：取数时刻与当前同处北京日历日。
+
+    以北京日历日为界（用户整套运行环境在北京时区）：港盘同日 / 美盘晚间同日，一日一刷即可
+    覆盖；美盘跨北京午夜继续盯的极端场景（少见）须当夜再刷一次，否则开仓会被拒（提示刷新）。
+    """
+    import datetime as _dt
+    if not ref or not ref.get("fetched_epoch"):
+        return False
+    try:
+        from zoneinfo import ZoneInfo
+        fetched_dt = _dt.datetime.fromtimestamp(float(ref["fetched_epoch"]),
+                                                tz=ZoneInfo("Asia/Hong_Kong"))
+    except Exception:
+        try:
+            fetched_dt = _dt.datetime.fromtimestamp(float(ref["fetched_epoch"]))
+        except Exception:
+            return False
+    return _beijing_date(fetched_dt) == _beijing_date()
+
+
+# 快照必需的数值字段（任一缺失/损坏 = 快照不完整，按缺失处理 fail-closed，防止某字段
+# 缺了静默退回执行账户口径）
+_LIVE_REF_REQUIRED_FIELDS = ("equity_hkd", "equity_usd", "buying_power_usd",
+                             "fx_hkd_per_usd", "fetched_epoch")
+
+
+def load_live_reference_checked():
+    """读取并校验当日实盘参考快照。返回 (data, None) 或 (None, reason)。
+
+    reason 为可直接用于拒单 / 预检警示的中文原因（含刷新指引）。快照缺失 / 损坏 /
+    缺字段 / 非当日一律返回 (None, reason) 让调用方 fail-closed——auto 模拟盘算仓位绝不
+    允许静默退回模拟资产。
+    """
+    data = read_live_reference()
+    if data is None:
+        return None, ("实盘参考快照缺失（tmp/live_reference.json 不存在或损坏）。auto 模拟盘"
+                      "算仓位一律用实盘口径（2026-09-03 用户立，恒开），须当日先刷新快照。\n"
+                      + _LIVE_REFERENCE_REFRESH_HINT)
+    _missing = [k for k in _LIVE_REF_REQUIRED_FIELDS
+                if not isinstance(data.get(k), (int, float))]
+    if _missing:
+        return None, ("实盘参考快照字段不完整（缺 {}/非数值：{}，fetched_at={}）——快照损坏，"
+                      "auto 模拟盘算仓位一律用实盘口径（2026-09-03 用户立，恒开），请重新刷新"
+                      "快照。\n").format(len(_missing), "、".join(_missing),
+                                        data.get("fetched_at", "未知")) + _LIVE_REFERENCE_REFRESH_HINT
+    if not is_live_reference_fresh(data):
+        return None, ("实盘参考快照非当日（fetched_at={}）。auto 模拟盘算仓位一律用实盘口径"
+                      "（2026-09-03 用户立，恒开），须刷新到当日后再开仓。\n"
+                      + _LIVE_REFERENCE_REFRESH_HINT).format(data.get("fetched_at", "未知"))
+    return data, None
+
+
+def auto_sizing_equity(config, base_currency, exec_account):
+    """auto 开仓脚本的算仓位权益（单币种口径）。返回 (equity, currency, source)。
+
+    - exec_account='live'：实时查实盘账户自身（2026-08-20「取净值与下单同账户」）；
+    - exec_account 非 live（默认模拟盘）：实盘当日快照 equity（2026-09-03 恒开对齐实盘）。
+
+    equity 为 None 时 source 为失败原因，调用方**必须拒单**（fail-closed，不得退模拟盘资产）。
+    """
+    if exec_account == "live":
+        eq, cur = load_equity_tiger(config, base_currency=base_currency)
+        if eq is None:
+            return None, base_currency, "实盘账户净值取不到（未开通交易/资产权限？），无法算仓位"
+        return eq, cur, f"老虎实盘账户实时 get_prime_assets({cur})"
+    ref, err = load_live_reference_checked()
+    if ref is None:
+        return None, base_currency, err
+    field = "equity_hkd" if base_currency == "HKD" else "equity_usd"
+    v = ref.get(field)
+    if v is None:
+        return None, base_currency, f"实盘参考快照缺 {field} 字段，请重新刷新快照"
+    return float(v), base_currency, f"实盘参考快照 {field}（取数 {ref.get('fetched_at')}）"
+
+
+def auto_sizing_fx_hkd(config, exec_account):
+    """港股购买力折算汇率 HKD/USD。实盘执行 → 实盘自身净值比（与现有口径一致）；
+    模拟盘执行 → 实盘当日快照 fx。返回 (fx, err)，fx 为 None 时 err 为原因。
+    """
+    if exec_account == "live":
+        try:
+            eq_usd = load_equity_tiger(config, base_currency='USD')[0]
+            eq_hkd = load_equity_tiger(config, base_currency='HKD')[0]
+            if eq_usd and eq_hkd:
+                return eq_hkd / eq_usd, None
+        except Exception:
+            pass
+        return None, "实盘净值取不到，无法折算 HKD/USD 汇率（函数内按 7.80 保守兜底）"
+    ref, err = load_live_reference_checked()
+    if ref is None:
+        return None, err
+    fx = ref.get("fx_hkd_per_usd")
+    if not fx:
+        return None, "实盘参考快照缺 fx_hkd_per_usd，请重新刷新快照（函数内按 7.80 保守兜底）"
+    return float(fx), None
+
+
+if __name__ == '__main__':
+    import argparse
+    _ap = argparse.ArgumentParser(description='账户信息打码查询 / 实盘参考快照刷新（凭证不进上下文）')
+    _ap.add_argument('--masked-live-account', action='store_true',
+                     help='打印实盘 / 模拟账户打码号（67****91 形式）')
+    _ap.add_argument('--refresh-live-reference', action='store_true',
+                     help='刷新实盘参考快照 tmp/live_reference.json（须在当日已实盘解锁的会话执行）')
+    _args = _ap.parse_args()
+    if _args.masked_live_account:
+        print_masked_live_account()
+    elif _args.refresh_live_reference:
+        _ok, _msg = fetch_live_reference()
+        if _ok:
+            print("✅ 实盘参考快照已刷新：")
+            import json as _json
+            print(_json.dumps(_msg, ensure_ascii=False, indent=2))
+        else:
+            print(f"❌ 实盘参考快照刷新失败：{_msg}")
+            sys.exit(1)
+    else:
+        _ap.print_help()

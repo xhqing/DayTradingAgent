@@ -228,12 +228,21 @@ def main():
     # 净分母。equity 取老虎账户 USD 净值、美股 lot_size 默认 1（可零股）、选档用 entry_ref
     # 口径，费与净 max_loss 均为 2026-08-28 净口径。
     lot_size = None
+    equity = None
+    currency = None
+    sizing_source = None   # 2026-09-03：算仓位权益口径来源（实盘实时 / 实盘当日快照），写入结果留痕
     if quantity == 0:
         tc = U.new_trade_client(config)
-        equity, currency = U.load_equity_us(config)
+        # 2026-09-03：auto 算仓位 equity 一律取实盘口径（实盘执行=实时查实盘自身；模拟盘执行=
+        # 实盘当日参考快照，恒开对齐实盘）。模拟盘且快照缺失/非当日 → equity None，下面拒开
+        # （fail-closed），绝不回退模拟盘自身资产算仓位。
+        equity, currency, sizing_source = U.auto_sizing_equity_us(config, account)
         if equity is None:
-            print(json.dumps({"ok": False, "error": "老虎账户净值取不到（未开通交易/资产权限？），无法自动算仓位"},
-                             ensure_ascii=False))
+            result_stub = {"ok": False,
+                           "error": sizing_source or "老虎账户净值取不到，无法自动算仓位"}
+            if account != "live":
+                result_stub["blocked_by"] = "live_reference_required"
+            print(json.dumps(result_stub, ensure_ascii=False))
             sys.exit(1)
         lot_size = U.get_lot_size_us(tc, symbol)
         if not lot_size:
@@ -264,6 +273,7 @@ def main():
         result_base["losing_streak_forced"] = True   # T131：降频线触发但 --force 用户覆盖
     if lot_size is not None:
         result_base.update({"auto_sized": True, "equity": equity, "equity_currency": currency,
+                            "sizing_source": sizing_source,
                             "lot_size": lot_size, "budget_B": round(budget_B, 2),
                             "max_loss": round(max_loss, 2),
                             "max_loss_basis": ("net（止损距+开仓费+止损价平仓费，2026-08-28 口径）"
@@ -377,13 +387,23 @@ def main():
         result_base["stop_loss_adjusted"] = f"{_stop_raw} → {stop_loss}（取整到美股 tick 0.01）"
 
     # 显式传量的风控校验（2026-08-16 立，同港股版：显式传量不再绕过 f_max / max_leverage）
+    # 2026-09-03：算风控用的 equity 同样走实盘口径（auto_sizing_equity_us）——模拟盘 + 快照
+    # 缺失/非当日时**拒开**（fail-closed），跳过校验 = 放任显式传量超实盘口径风控上限。
     if not result_base.get("auto_sized"):
         try:
-            equity, currency = U.load_equity_us(config)
+            equity, currency, sizing_source = U.auto_sizing_equity_us(config, account)
         except Exception:
-            equity, currency = None, None
+            equity, currency, sizing_source = None, None, None
         if equity is None:
+            if account != "live":
+                result_base.update({"ok": False, "blocked_by": "live_reference_required",
+                                    "error": (sizing_source or "实盘参考快照取不到，无法校验显式"
+                                              "传量的风控上限（f_max / max_leverage）")})
+                print(json.dumps(result_base, ensure_ascii=False))
+                sys.exit(1)
             result_base["risk_check_note"] = "账户净值取不到，跳过 f_max / max_leverage 校验"
+        else:
+            result_base["sizing_source"] = sizing_source
         ok, err = _enforce_explicit_quantity_risk(quantity, entry_ref, stop_loss, equity,
                                                   symbol=symbol)
         if not ok:
@@ -397,7 +417,15 @@ def main():
     # T.get_buying_power_tiger——其 to_tiger_symbol 只认 HK.xxx、美股代码报「老虎脚本
     # 只支持港股」、主动降档恒失效。改调本市场版 U.get_buying_power_us，口径同构、
     # USD 同币种无汇率换算：可买股数上限 = buying_power × long_initial_margin ÷ 参考价）。
-    _bp_shares, _bp_val, _bp_margin = U.get_buying_power_us(config, symbol, entry_ref)
+    # 2026-09-03：auto 模拟盘算购买力同样走实盘口径——模拟盘执行时 bp 取实盘当日快照
+    # buying_power_usd（经 bp_usd 传入），不再查模拟盘自身的购买力。
+    _bp_override_usd = None
+    if account != "live":
+        _sref, _serr = T.load_live_reference_checked()
+        if _sref is not None and _sref.get("buying_power_usd"):
+            _bp_override_usd = _sref.get("buying_power_usd")
+    _bp_shares, _bp_val, _bp_margin = U.get_buying_power_us(config, symbol, entry_ref,
+                                                             bp_usd=_bp_override_usd)
     if _bp_shares is not None and quantity > _bp_shares:
         _lot_bp = lot_size if lot_size else 1
         capped = max(int(_bp_shares // _lot_bp) * _lot_bp, 0)

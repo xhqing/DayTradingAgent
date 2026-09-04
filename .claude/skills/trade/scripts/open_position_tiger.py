@@ -349,11 +349,18 @@ def main():
     lot_size = None
     equity = None
     currency = None
+    sizing_source = None   # 2026-09-03：算仓位权益口径来源（实盘实时 / 实盘当日快照），写入结果留痕
     if quantity == 0:
         tc = U.new_trade_client(config)
-        equity, currency = U.load_equity_tiger(config, base_currency='HKD')
+        # 2026-09-03：auto 算仓位 equity 一律取实盘口径（实盘执行=实时查实盘自身；模拟盘执行=
+        # 实盘当日参考快照，恒开对齐实盘）。模拟盘且快照缺失/非当日 → equity None，下面拒开
+        # （fail-closed），绝不回退模拟盘自身资产算仓位。
+        equity, currency, sizing_source = U.auto_sizing_equity(config, 'HKD', account)
         if equity is None:
-            result_stub = {"ok": False, "error": "老虎账户净值取不到（未开通交易/资产权限？），无法自动算仓位"}
+            result_stub = {"ok": False,
+                           "error": sizing_source or "老虎账户净值取不到，无法自动算仓位"}
+            if account != "live":
+                result_stub["blocked_by"] = "live_reference_required"
             print(json.dumps(result_stub, ensure_ascii=False))
             sys.exit(1)
         lot_size = U.get_lot_size_tiger(tc, symbol)
@@ -389,6 +396,7 @@ def main():
     # 自动算仓位的落档信息（在费上下文/校验之后写进 result，拒单报错里也带上真实股数与赔率）
     if lot_size is not None:
         result_base.update({"auto_sized": True, "equity": equity, "equity_currency": currency,
+                            "sizing_source": sizing_source,
                             "lot_size": lot_size, "budget_B": round(budget_B, 2),
                             "max_loss": round(max_loss, 2),
                             "max_loss_basis": ("net（止损距+开仓费+止损价平仓费，2026-08-28 口径）"
@@ -577,14 +585,24 @@ def main():
 
     # 显式传量的风控校验（2026-08-16 立）：显式传量此前绕过 f_max / max_leverage 全部
     # 上限（唯一护栏是券商保证金拒单）。现在与自动算仓位同一套约束：超限拒绝下单。
+    # 2026-09-03：算风控用的 equity 同样走实盘口径（auto_sizing_equity）——模拟盘 + 快照
+    # 缺失/非当日时**拒开**（fail-closed），跳过校验 = 放任显式传量超实盘口径风控上限。
     if not result_base.get("auto_sized"):
         try:
-            equity, currency = U.load_equity_tiger(config, base_currency='HKD')
+            equity, currency, sizing_source = U.auto_sizing_equity(config, 'HKD', account)
         except Exception:
-            equity, currency = None, None
+            equity, currency, sizing_source = None, None, None
         if equity is None:
+            if account != "live":
+                result_base.update({"ok": False, "blocked_by": "live_reference_required",
+                                    "error": (sizing_source or "实盘参考快照取不到，无法校验显式"
+                                              "传量的风控上限（f_max / max_leverage）")})
+                print(json.dumps(result_base, ensure_ascii=False))
+                sys.exit(1)
             result_base["risk_check_note"] = "账户净值取不到，跳过 f_max / max_leverage 校验（仅整手校验）"
             equity = None
+        else:
+            result_base["sizing_source"] = sizing_source
         _lot_for_check = lot_size if lot_size else U.get_lot_size_tiger(_tc_tick, symbol)
         ok, err = _enforce_explicit_quantity_risk(
             quantity, entry_ref, stop_loss, result_base, equity, currency, _lot_for_check)
@@ -631,16 +649,26 @@ def main():
     # 小账户直接降档到 0 误拒（实测实盘 bp 折算后远不足 1 手被拒）。
     # 汇率从两币种净值之比推（load_equity_tiger 的 HKD 净值 ÷ get_assets 的 USD 净值
     # = 老虎自身 forex_rate），拿不到时函数内按 7.80 保守兜底。
+    # 2026-09-03：auto 模拟盘算购买力同样走实盘口径——实盘执行：实时查实盘（原逻辑）；
+    # 模拟盘执行：bp 与汇率取实盘当日快照（buying_power_usd / fx_hkd_per_usd），传给
+    # get_buying_power_tiger 的 bp_usd / to_hkd，不再查模拟盘自身的购买力。
     _fx_hkd = None
-    try:
-        _eq_usd = U.load_equity_tiger(config, base_currency='USD')[0]
-        _eq_hkd = U.load_equity_tiger(config, base_currency='HKD')[0]
-        if _eq_usd and _eq_hkd:
-            _fx_hkd = _eq_hkd / _eq_usd
-    except Exception:
-        pass
+    _bp_override_usd = None
+    if account == "live":
+        try:
+            _eq_usd = U.load_equity_tiger(config, base_currency='USD')[0]
+            _eq_hkd = U.load_equity_tiger(config, base_currency='HKD')[0]
+            if _eq_usd and _eq_hkd:
+                _fx_hkd = _eq_hkd / _eq_usd
+        except Exception:
+            pass
+    else:
+        _fx_hkd, _fx_err = U.auto_sizing_fx_hkd(config, account)
+        _sref, _serr = U.load_live_reference_checked()
+        if _sref is not None and _sref.get("buying_power_usd"):
+            _bp_override_usd = _sref.get("buying_power_usd")
     _bp_shares, _bp_val, _bp_margin = U.get_buying_power_tiger(
-        config, symbol, entry_ref, tc=_tc_tick, to_hkd=_fx_hkd)
+        config, symbol, entry_ref, tc=_tc_tick, to_hkd=_fx_hkd, bp_usd=_bp_override_usd)
     if _bp_shares is not None and quantity > _bp_shares:
         _lot_bp = lot_size if lot_size else (U.get_lot_size_tiger(_tc_tick, symbol) or 1)
         capped = max(int(_bp_shares // _lot_bp) * _lot_bp, 0)

@@ -66,9 +66,12 @@ try:
     _sys.path.insert(0, _os.path.dirname(__file__))
     from trade_utils_tiger import load_equity as _le, parse_mode as _pm
     _mode = _pm()
-    # 账户选择（2026-08-20 立，实盘盯盘配套）：--account live 切实盘账户取净值——
-    # 2026-08-20 事故：实盘盯盘时 preflight 固定走默认模拟账户（约 789 万 HKD）算 B、
-    # 实盘净值远小于模拟净值（量级见本机实查）、偏差 68 倍。修复 = 取净值与下单同账户（load_equity 透传）。
+    # 账户选择（2026-08-20 立，实盘盯盘配套；2026-09-03 补模拟盘对齐实盘）：--account live
+    # 切实盘账户取净值——2026-08-20 事故：实盘盯盘时 preflight 固定走默认模拟账户（约 789 万 HKD）
+    # 算 B、实盘净值远小于模拟净值（量级见本机实查）、偏差 68 倍。修复 = 取净值与下单同账户
+    # （load_equity 透传）。2026-09-03：auto + 模拟盘账户（默认 / --account paper）时，算仓位的
+    # equity 恒取实盘口径（当日实盘参考快照，load_equity 已改）；快照缺失/非当日 fail-closed
+    # （返回 None，触发下方 🚨 警示 + 自动尝试刷新）。
     _acct = None
     for _i, _a in enumerate(_sys.argv[1:]):
         if _a == '--account' and _i + 1 < len(_sys.argv[1:]):
@@ -80,11 +83,45 @@ try:
     _frac = _risk.get('risk_fraction'); _fmax = _risk.get('f_max', _frac)
     _lev = _risk.get('max_leverage', 10)
     _eq_now, _cur, _eq_src = _le(_mode, account=_acct)
+    # auto 模式实盘参考快照联动（2026-09-03 立，auto 模拟盘恒开对齐实盘）：
+    #   - 实盘会话（--account live）：顺手把实盘总资产/购买力刷成当日快照，供同日 auto 模拟盘
+    #     会话算仓位用（失败仅静默，不阻断实盘会话——快照刷新不依赖本次是否成功）。
+    #   - 模拟盘会话（默认/--account paper）：显示 B 用的是实盘口径（load_equity 已改）；快照
+    #     缺失/非当日时自动尝试刷新一次，仍失败则打印指引（开仓会被拒 fail-closed）。
+    if _mode == "auto":
+        try:
+            from trade_utils_tiger import fetch_live_reference as _flr
+            from trade_utils_tiger import read_live_reference as _rlr
+            from trade_utils_tiger import is_live_reference_fresh as _ilf
+            if _acct == "live":
+                # 实盘会话：快照缺失 / 非当日才刷（当天已刷过就不再打实盘 API）。
+                _rl = _rlr()
+                if _rl is None or not _ilf(_rl):
+                    _ok_r, _msg_r = _flr(verbose=False)
+                    if _ok_r:
+                        print(f"🪞 实盘参考快照已刷新（供 auto 模拟盘对齐实盘，取数 {_msg_r.get('fetched_at')}）")
+            else:
+                if _eq_now is None:
+                    print(f"🚨 auto 模拟盘算仓位须用实盘口径（2026-09-03 恒开）：{_eq_src}")
+                    print(f"   刷新前模拟盘开仓会被拒（blocked_by: live_reference_required）——"
+                          f"在已实盘解锁的会话执行 python3 scripts/trade_utils_tiger.py "
+                          f"--refresh-live-reference 即可。")
+                    # 快照缺失/非当日时自动尝试刷新一次：本会话恰有实盘解锁则直接成功
+                    # （省一次手动命令）；无解锁则失败（含解锁指引）、开仓仍会被拒。
+                    _ok_r, _msg_r = _flr(verbose=False)
+                    if _ok_r:
+                        print(f"🪞 实盘参考快照已刷新（取数 {_msg_r.get('fetched_at')}）")
+                        _eq_now, _cur, _eq_src = _le(_mode, account=_acct)
+        except Exception as _er:
+            print(f"⚠️ 实盘参考快照联动检查失败（{_er}）")
     if _frac is not None and _eq_now is not None:
         _M = _frac * _eq_now
         print(f"💰 模式 {_mode} | 风险比例 {_frac*100:.1f}% × 当前 equity {_eq_now:,.2f} {_cur} = 单笔预算 B {_M:,.2f}（f_max 硬上限 {_fmax*100:.1f}%，max_loss 不得突破）")
         print(f"   equity 来源：{_eq_src}")
         print(f"⚖️  开仓市值上限 = equity × {_lev} 倍杠杆 = {_eq_now * _lev:,.2f} {_cur}（权益 {_eq_now:,.0f} → 最高开仓 {_eq_now * _lev:,.0f} 市值；选仓位时 max_loss 与市值两约束同时满足）")
+    elif _mode == "auto" and _acct != "live" and _eq_now is None:
+        # auto 模拟盘且实盘快照取不到：B 行已在上面 🚨 警示里说明原因，这里不再重复打。
+        pass
     else:
         print(f"💰 ⚠️ config 缺 risk_fraction，盘中算仓位前务必手动确认")
 except Exception as _e:

@@ -4,6 +4,75 @@
 
 ## [Unreleased]
 
+### 变更（T140 办结当日回归：恢复用户级两条挂载并 headless 双探针实证生效 + 修项目级死配置旧路径 + zcode-cli 侧登记开发主体，2026-09-04 12:07）
+
+- **为什么改**：用户指令「把 T140 待办直接办了」——上一条目登记的回归（11:41 用户级配置重写冲掉 secret_guard / changelog_guard、凭证防线洞开）当日修复，并完成 T140 本项目侧全部可办动作。
+- **改了什么**：
+  - `~/.zcode/cli/config.json`（ZCode 用户级）：改前备份 `tmp/zcode-user-config-backup-20260904-pre-restore.json`，恢复 PreToolUse(Bash) 的 `secret_guard.py pretool` 与 PostToolUse(Edit|Write) 的 `changelog_guard.py` 两条挂载（与 guard.sh 并列、timeout 10、路径用项目现址）；回读验证 JSON 合法、挂载数 PreToolUse(Bash)=2 / PostToolUse(Edit|Write)=1，provider / model / permission / usage 段完整保留（含当日新增 glm-5.3-flash）。
+  - `.zcode/config.json`（项目级死配置）：7 处旧路径（6 条挂载命令 + 1 条 disallowedTools）全部由旧址 `/Users/xhq/Documents/Projects/DayTradingAgent` 替换为现址 `/Users/xhq/Developer/DayTradingAgent`，JSON 校验合法——未来 ZCode 放开项目级 hooks 时六条可原生生效。
+  - `zcode-cli` 项目（跨项目登记，T140 ① 的开发主体）：新建其项目根 `TODO.md` 并登记 **T1**（bootstrap 传 `workspaceHookTrustEnabled: true`，含 vendor/zcode.cjs 三处 offset 定位材料、完成后验证口径、同源风险提示「设置保存用旧快照整体重写 config.json」），其 CHANGELOG 已记对应条目。
+  - `TODO.md`：T140 补办结段、降回橙色、移回橙色节；头部摘要更新。
+- **验证（headless 新会话双探针，运行时端到端）**：① cat 假凭证路径 `/tmp/nonexistent-xyz-probe/accounts.json` **被拦**（deny 文案逐字来自 secret_guard）——PreToolUse 拦截链恢复实证；② Write 项目根探针文件收到**「📌 CHANGELOG 记录提醒」完整注入**（changelog_guard 经 `hookSpecificOutput.additionalContext` 通道）——PostToolUse 注入链恢复实证。探针文件即建即删、净变更为零。首次 changelog_guard 探针误用 tmp/ 路径而静默——tmp/ 在脚本 `_EXCLUDE_DIRS` 排除清单内属设计内行为，换项目根路径后实证（探针有效性辨析已写入 T140）。
+- **重写来源结论（⓪b，间接证据链）**：写入动作未留日志，但 7 个 09-02 19:12~19:15（hooks 迁移当晚、早于 C 方案落盘）启动的后台 zcode-cli 进程至今存活（ps 实测 PID 29313/29363/29795/29863/29917/30951 等），其内存配置快照 = guard.sh 单挂，任一进程做设置保存即用旧快照整体重写 config.json——与实测「重写后 = 单挂 + glm-5.3-flash」完全吻合。**处置建议已报用户（关闭这批残留进程）；防再冲口径：后续改 ZCode 配置一律文本编辑 + 改后回读校验挂载数，不从客户端设置入口保存。**
+- **回归风险评估**：① 两条挂载内容与 09-03 C 方案落盘版逐字同源（同脚本、同 matcher、同 timeout），CC / CodeBuddy 宿主零影响（互不相通的配置文件）；② 本会话（改动者）hooks 快照为改动前状态，本会话内两条不生效——已由独立 headless 新会话验证替代；③ 剩余风险 = 旧快照进程再次设置保存会再冲（用户关闭进程后消除）；④ zcode-cli 项目只新增 TODO.md 与 CHANGELOG 条目、无代码改动。
+
+### 发现（T140 回归：ZCode 用户级 C 方案挂载被配置重写冲掉——secret_guard / changelog_guard 丢失、凭证防线再次洞开，T140 升回红色，2026-09-04 11:51）
+
+- **为什么查**：用户问「本项目的所有 hook 目前 ZCode 都能正常使用吗」，在 ZCode 会话内实测核对（而非凭文档回答）。
+- **发现（三探针实测 + 配置 / 日志取证）**：
+  - **回归事实**：用户级 `~/.zcode/cli/config.json` 当日 **11:41:15 被整体重写**（mtime 实测），09-03 T140 C 方案上移的 secret_guard（PreToolUse）与 changelog_guard（PostToolUse）两条挂载**丢失**，只剩 guard.sh 一条；重写后内容 = 09-03 落盘前备份（`tmp/zcode-user-config-backup-20260903.json`）+ 新增 `glm-5.3-flash` 模型条目——高度疑似 ZCode 客户端某次设置保存用旧配置快照整体重写（写入动作未留日志、写入者身份未坐实，T140 前插待查项）。
+  - **本会话三探针（11:41:16 起的新 ZCode 会话，加载的即缺两条的配置）**：① cat 假凭证路径 `/tmp/nonexistent-xyz-probe/accounts.json` **放行**（secret_guard 缺席）；② `echo "probe: pkill -f vscode"` **被拦**（guard.sh 在场、ZCode deny 链正常，文案逐字来自脚本）；③ Write 项目内 tmp 探针文件**无「📌 CHANGELOG 记录提醒」注入**（changelog_guard 缺席；探针文件即建即删、净变更为零）。
+  - **副发现**：项目 `.zcode/config.json`（项目级死配置）六条挂载的脚本路径仍是项目旧位置 `/Users/xhq/Documents/Projects/DayTradingAgent/`——实测该路径已不存在（项目现址 `/Users/xhq/Developer/DayTradingAgent`），未来 ZCode 放开项目级 hooks、六条原生生效前须先修路径。
+- **改了什么文件**：`TODO.md`（T140 升回红色、移入红色节、补 2026-09-04 回归段与前插两项剩余动作「恢复两条挂载 + 查明重写来源防再冲」+ 副发现登记；头部摘要追加）；本 CHANGELOG 条目。**运行时零改动**（未动任何 hook 脚本与挂载配置——恢复两条挂载涉及用户级配置、写入者未查明，待用户拍板后执行）。
+- **回归风险评估**：本次为诊断 + 文档登记，无代码 / 配置改动面；登记的回归本身（secret_guard / changelog_guard 在 ZCode 缺席）恢复到 09-03 19:15 之前的状态，影响面 = ZCode 会话内 Bash 读凭证无拦、CHANGELOG 提醒缺失——CC / CodeBuddy 宿主不受影响（挂载在项目 `.claude/settings.json` / `.codebuddy/settings.json`，与用户级文件互不相通）。
+
+### 变更（T140 深化：trust grant 已授信但 zcode-cli 会话层仍禁用——根因定位到 runtime 宿主参数 `workspaceHookTrustEnabled`，开发移交 zcode-cli 项目，2026-09-03 21:04）
+
+- **为什么改**：用户提出「zcode-cli 是自己基于官方后端开发的，能否自己开发项目级 hook 功能」，授权实测 grant + 新会话验证——目标是让项目级六条挂载原生生效（覆盖比 C 方案两条全），零开发最好。
+- **做了什么 / 发现**：
+  - **runtime 已内置完整信任体系（非没做）**：状态机 `pending_trust → trusted_persistent`、声明 sha256 + bundle 摘要绑定、持久 trust store `workspace-hook-trust-v1.json`、命令族 `zcode hooks trust status/grant/revoke`（实测可用）。`status` 完整识别本项目六条挂载并逐条给 digest。
+  - **grant 授信成功（20:35）**：`zcode hooks trust grant --workspace <本项目> --all-current --bundle-digest 30d62941…` → 六条全部 `trusted_persistent`，trust store 持久化。
+  - **但 grant 后三个 headless 新会话（20:40/20:41/20:49）日志仍全部打 `feature_disabled`**——信任层开了、宿主能力层仍关。runtime 源码定位：`n = e.workspaceHookTrustEnabled === true`，zcode-cli 构造会话时**从未传该参数**（客户端源码 grep 零命中）→ `enabled:false` → 整个体系禁用。runtime 内部已有 `workspaceHookTrustEnabled:!0` 的调用样例（offset≈11922028，带 reviewHost 的完整构造）可参考。
+  - **探针辨析修正**：echo 拼接形态（`echo "probe: cat …/accounts.json"`）在 secret_guard 的「段首动词为读取类」分段判定下**本就放行**——T137 当晚用它作「项目级 PreToolUse 未运行」的交叉证据属无效探针（该结论靠 changelog_guard 无注入 + 日志 warning 仍成立，T140 已注记瑕疵）；有效探针 = cat 不存在的凭证路径（命中拦截条件且无泄漏风险），grant 后实测**被拦**（文案逐字来自 secret_guard）——但拦的是**用户级 C 方案那份**（项目级仍禁用），C 方案兜底实证有效。
+  - **结论**：零开发路线不通，需 zcode-cli 侧传参启用（一行级改动 + 发布）——**移交 zcode-cli 项目 / Atlas**，定位材料已写入 T140（构造点 offset≈11703354 `len()`、bootstrap 消费点 ≈11762913、`!0` 样例 ≈11922028；headless 可不传 reviewHost，授权走 CLI grant 已持久化）。
+- **改了什么文件**：`TODO.md` T140 更新（grant 已授信、根因深化、剩余动作改为「等 zcode-cli 升级 → 验证 → 撤回用户级上移切项目级单源」）；本 CHANGELOG 条目；memory 同步。**运行时零改动**（用户级 C 方案挂载保持原样、未撤回）。
+- **回归风险评估**：无运行时回归面（只读验证 + 文档更新）；grant 授信写入 trust store 属持久状态但可随时 `zcode hooks trust revoke` 撤销，且授信对象仅为用户自己的六条挂载声明。
+
+### 变更（T140 C 方案落地：secret_guard + changelog_guard 上移 ZCode 用户级挂载，堵「ZCode 项目级 hooks 官方禁用」暴露的凭证防线缺口，2026-09-03 19:15）
+
+- **用户裁定与为什么改**：T137 端到端验证发现 ZCode 官方整体禁用项目级 hooks（详见上条 T137 归档），致本项目四守卫自 09-02 迁移起在 ZCode 会话从未生效——其中 secret_guard 缺席 = ZCode 会话内 Bash 读 accounts.json / ~/.tigeropen 凭证无任何拦截（`permission.disallowedTools` 只挡 Read 工具）。用户裁定采 **C 方案（最小补救）**：只上移跨项目安全的两条，其余留 CC / CodeBuddy 宿主。
+- **改了什么**：
+  - `~/.zcode/cli/config.json`（ZCode 用户级）：PreToolUse(Bash) 追加 `secret_guard.py pretool`（与既有 guard.sh 并列）、新增 PostToolUse(Edit|Write) 挂 `changelog_guard.py`——改前备份 `tmp/zcode-user-config-backup-20260903.json`，回读验证 JSON 合法、挂载数 PreToolUse 2 / PostToolUse 1。
+  - `.claude/CLAUDE.md`（= AGENTS.md 软链）「hooks 三宿主」节修订：标注「ZCode 走 `.zcode/config.json`」已失效（官方禁用）、新增「ZCode 修订」段（C 方案内容、ZCode 会话不用于盯盘 / 实盘执行的约束、挂载同步口径改为用户级三条、项目 `.zcode/config.json` 保留为未来兼容的死配置）。
+  - `TODO.md` T140 更新（C 方案落地、红色→橙色、剩新会话验证）+ 头部摘要；memory 同步。
+  - **不改**：两个 hook 脚本本身一字未动（CC / CodeBuddy 侧行为零变化）；项目 `.claude/settings.json` / `.codebuddy/settings.json` / `.zcode/config.json` 均保持原样。
+- **为什么对 CC / CodeBuddy 零影响**：`~/.zcode/cli/config.json` 仅 ZCode 读取；CC 读 `~/.claude/settings.json` + 项目 `.claude/settings.json`，CodeBuddy 读项目 `.claude/settings.json` + `.codebuddy/settings.json`，三家配置文件互不相通。跨项目影响也已验证：changelog_guard 项目判定从脚本路径推导、其它项目文件静默（实测）；secret_guard 拦通用凭证路径特征、跨项目安全。
+- **验证**：样例 payload 四分支实测全过——secret_guard 拦凭证命令 exit 2 + stderr「⛔ 凭证读取守卫」、普通命令 exit 0 静默；changelog_guard 项目内文件（mtime 新于 CHANGELOG.md）输出 additionalContext JSON、其它项目文件静默。**hooks 无热加载，运行时端到端生效须待新 ZCode 会话**（T140 剩两条探针收尾：① `echo` 拼凭证路径应被拦；② Edit 项目内文件应收「📌 CHANGELOG 记录提醒」注入）。
+- **回归风险评估**：① 用户级配置改动经回读验证、且原配置已备份可秒回滚；② 最坏情形 = 新会话探针不过 → 用户级挂载未生效，退回 T137 已验证状态（guard.sh 单挂），不会比改动前更差；③ secret_guard 误拦面 = 命令同时含凭证路径特征 + 读取动作特征（本来就该拦的形态），正常交易链路（跑 trade 脚本、git 只读）白名单放行逻辑未动；④ 本会话（改配置的会话）hooks 快照为旧配置，本会话内两条新挂载不生效——不影响任何已开会话，仅新会话生效。
+
+### T137 归档（ZCode 宿主 hooks 端到端验证：② 全局 PreToolUse deny 链实测生效；③ 项目级挂载被 ZCode 官方整体禁用、此路不通，新立 T140 补救，2026-09-03 18:58）
+
+- **为什么改**：T137 要求对「2026-09-02 CC hooks 全量迁移 ZCode」做端到端行为验证（① hookCount 判据已作废，剩 ② PreToolUse deny 链、③ PostToolUse 注入链两项）。2026-09-03 晚间在 ZCode 会话内实测完成，发现影响超出验证本身的官方限制。
+- **改了什么 / 验证结论**：
+  - **② 通过**：探针 `echo "probe: pkill -f vscode"`（无害 echo）被拦、未执行，拦截文案逐字来自全局 `~/.claude/hooks/pre-tool-use-guard.sh:29`——**用户级 `~/.zcode/cli/config.json` 挂载的 PreToolUse 投递 + deny + reason 回显全链实证生效**（区别于 CodeBuddy 宿主自带 `safety_rule_deny`，本次是本项目 hook 的 `permissionDecisionReason`）。
+  - **③ 不通过，根因 = ZCode 官方禁用项目级 hooks（非配置错误）**：changelog_guard 探针（Write 项目根临时文件、mtime 晚于 CHANGELOG.md）无任何注入；交叉实证——secret_guard 探针 `echo "probe: cat .claude/skills/trade/accounts.json"`（字符串同时命中其「凭证路径 + 读取动作」两条件）**直接放行执行**，项目级 PreToolUse 链同样未运行；日志有 `config.project_hooks.pending_trust`（"remain blocked"）与 `workspace_hook.feature_disabled`（09-02 迁移当天即有——**项目四守卫自迁移起在 ZCode 会话从未跑过一次**）；**官方文档定论**（zcode.z.ai/en/docs/hooks）：「Project-level hooks are not executed in the current version」，`<workspace>/.zcode/config.json` 的 hooks **整体忽略（regardless of `hooks.enabled`）**，设置页已隐藏 workspace scope，官方建议插件分发；用户级配置不受影响（解释 ② 为何生效）。
+  - **新立 🔴 T140**（secret_guard 缺席 = ZCode 会话内 Bash 读凭证无任何拦截，凭证防线洞开）：补救选项 A 全量上移用户级 / B 插件化 / C 最小补救只上移 secret_guard + changelog_guard，**待用户拍板**；`.zcode/config.json` 六条挂载保留不删。另：本地 zcode-guide 插件文档（0.1.0）「配置文件 hooks 无 trust 门槛」与官方文档及实测矛盾，以官方文档为准。
+  - 文档动作：`TODO.md` 移除 T137、新立 T140、头部摘要更新；`TODO-archive.md` 加「2026-09-03 T137 完成」归档节。探针临时文件 `hook-probe.md` 即建即删、净变更为零。
+- **回归风险评估**：本次**零代码改动**（只读验证 + 文档更新），无运行时回归面；唯一环境动作 = 删除自建探针文件。但**发现既有缺口**：ZCode 会话内 secret_guard / monitor_guard / changelog_guard / live_auth_witness 自 09-02 起全部缺席（该状态为迁移以来一直如此、非本次引入），补救方案见 T140。
+
+### 新增（auto 模式模拟盘恒开对齐实盘：算仓位的下注金额 / 总购买力一律取实盘口径，2026-09-03）
+
+- **用户裁定（2026-09-03，机制二问）**：① **当日快照制**——实盘数据进模拟会话不走模拟会话直连实盘 API（默认态被 IP 白名单连接层拦截），而是把实盘总资产 / 购买力快照到 `tmp/live_reference.json`（含取数时间），模拟会话算仓位读快照、快照缺失 / 非当日拒开；② **auto + 模拟盘恒开、无关闭开关**。
+- **为什么**：交易记录按净 R 口径统计盈亏能力；模拟盘（约 789 万 HKD）与实盘资产量级差太大 → 每笔成交额差异巨大 → 净 R 口径里按笔固定费 / 整手离散随仓位量级摊薄不同，统计出的盈亏能力失真。模拟盘必须严格模拟实盘交易，模拟样本才能代表实盘能力（2026-09-03 用户立，规则详见 `SKILL.md` 护栏 1、`auto-mode.md`「auto 模式算仓位口径」节、`risk-management.md`「权益更新」节）。
+- **改了什么**：
+  - `trade_utils_tiger.py` 新增「实盘参考快照」模块：`fetch_live_reference`（查实盘 HKD/USD 净值 + buying_power 写快照）、`read_live_reference` / `is_live_reference_fresh` / `load_live_reference_checked`（读 + 北京日历日新鲜度校验，缺失 / 非当日返回拒单文案）、`auto_sizing_equity` / `auto_sizing_fx_hkd`（算仓位 equity 与 HKD 折算汇率的统一入口：实盘执行 = 实时查实盘自身；模拟盘执行 = 实盘当日快照）；`load_equity` auto 分支对模拟盘账户改走实盘快照、缺失 / 非当日 **fail-closed 返回 None**（不回退模拟资产 / equity-log）；`get_buying_power_tiger` / `get_short_buying_power_tiger` / `_buying_power_impl` / `get_buying_power_us` 加 `bp_usd` 覆盖参数（模拟盘执行时传实盘快照购买力，不再查模拟盘自身）；CLI 增加 `--refresh-live-reference`；`__main__` 块从文件中段移到末尾（原位置会先于后续函数定义执行、挡 CLI 扩展）。
+  - `open_position_tiger.py` / `open_position_tiger_us.py`：自动算仓位 / 显式传量风控校验的 equity、购买力降档的 bp，模拟盘执行一律改走实盘当日快照；快照缺失 / 非当日 → `blocked_by:"live_reference_required"` 拒开（**fail-closed，跳过校验 = 放任超限**）；实盘执行（`--account live`）行为零改动（照旧实时查实盘自身）；开仓结果新增 `sizing_source` 字段留痕。
+  - `preflight.py` / `resume.py`：auto + 模拟盘会话的 B 显示走实盘口径；快照缺失 / 非当日打印 🚨 警示 + 自动尝试刷新一次；auto + 实盘会话顺手把快照刷成当日（供同日模拟盘用）。
+  - 文档：`SKILL.md` 护栏 1、`references/auto-mode.md`（新增专节）、`references/risk-management.md`（权益更新节）、`config.json` / `config.example.json`（`_comment_sim_live_alignment` 说明）。
+- **刷新入口**（均需在当日已实盘解锁的会话执行）：实盘会话 `preflight.py --mode auto --account live` / `resume.py` 自动刷；任一已解锁会话跑 `python3 .claude/skills/trade/scripts/trade_utils_tiger.py --refresh-live-reference`。
+- **验证**：6 个改动脚本 py_compile / ast 全过、read_lints 零告警；快照读写 / 北京日历日新鲜度 / 缺失与过期拒单文案 / auto_sizing 三口径纯函数自测通过（隔离 /tmp 路径，未触碰真实 tmp）；`load_equity` auto+paper 无快照返回 None（不回退）、signal 路径照常读 equity-log。
+- **回归风险评估**：① 实盘执行路径（`--account live`）所有分支保持「实时查实盘自身」原逻辑，唯一触碰 = equity 经 `auto_sizing_equity` 薄包装返回（语义不变），实盘下单链路无行为改动；② 模拟盘执行从此**必须有当日实盘快照才能开仓**——无快照时开仓被拒属**有意行为**（fail-closed），但机制测试 / 只想跑模拟盘而当日无实盘会话的场景会因此被挡，须先刷快照（文档已给三条入口）；③ 新增 CLI 需在已实盘解锁会话执行，未解锁直接报错并给指引（不静默）；④ 快照文件在 `tmp/`（已 gitignore），含实盘净值 / 购买力（非敏感信息，2026-08-29 裁定可写），不含任何凭证；⑤ 若未来需按模拟盘自身资产跑（如纯机制测试），需先推翻「恒开」裁定、非本版本范围。
+
 ### T138 归档（CodeBuddy 宿主 hooks 端到端验证：PreToolUse + PostToolUse 两条投递链实证生效，2026-09-03 17:25）
 
 - **端到端实证（新 CodeBuddy 会话，非盘中）**：① **PreToolUse 链**——探针 `head -c 1 /tmp/nonexistent-xyz-probe/accounts.json`（假路径、不泄漏凭证）被 deny，拦截文案逐字来自本项目 `secret_guard.py`，且仅一次 deny（`.claude/settings.json` + `.codebuddy/settings.json` 双份挂载被官方自动去重、**无翻倍**）；② **PostToolUse 链**——编辑文件后 `changelog_guard` 被调用（payload `tool_name='Edit'`、`tool_input_keys=['filePath',…]`、`should_remind=True`），IDE 将 hook 输出转成 `<system-reminder>📌 CHANGELOG 记录提醒…` 注入 tool-result 的 `additionalContext`（转录实证、模型可见）——**changelog_guard 修复后首个运行时证据，改文件记 CHANGELOG 提醒链在本宿主真正打通**。

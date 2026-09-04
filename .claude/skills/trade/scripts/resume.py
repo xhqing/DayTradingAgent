@@ -218,6 +218,8 @@ else:
 
 # ---------- 当前 equity + 单笔预算 B（按模式取：auto 走账户 API、signal 走 equity-log；与 preflight.py 同口径）----------
 # 2026-08-01 双模式重构：equity 按 mode 取（auto 账户 API / signal equity-log）。
+# 2026-09-03 修订：auto + 模拟盘账户时算仓位的 equity 恒取实盘口径（当日参考快照，对齐实盘），
+#   见下方快照联动块与 trade_utils_tiger.py「实盘参考快照」节。
 try:
     sys.path.insert(0, SCRIPT_DIR)
     from trade_utils_tiger import load_equity as _le
@@ -228,6 +230,32 @@ try:
     fmax = risk.get("f_max", frac)
     lev = risk.get("max_leverage", 10)
     eq_now, cur, eq_src = _le(mode, account=ACCOUNT)
+    # auto 模式实盘参考快照联动（2026-09-03 立，auto 模拟盘恒开对齐实盘，与 preflight 同口径）：
+    # 实盘会话（--account live）顺手刷新当日快照供同日模拟盘用；模拟盘会话快照缺失/非当日时
+    # 打印警示（B 已按实盘口径 fail-closed 返回 None）并自动尝试刷新一次（无解锁则失败含指引）。
+    if mode == "auto":
+        try:
+            from trade_utils_tiger import fetch_live_reference as _flr
+            from trade_utils_tiger import read_live_reference as _rlr
+            from trade_utils_tiger import is_live_reference_fresh as _ilf
+            if ACCOUNT == "live":
+                # 实盘会话：快照缺失 / 非当日才刷（当天已刷过就不再打实盘 API）。
+                _rl = _rlr()
+                if _rl is None or not _ilf(_rl):
+                    _ok_r, _msg_r = _flr(verbose=False)
+                    if _ok_r:
+                        print(f"🪞 实盘参考快照已刷新（供 auto 模拟盘对齐实盘，取数 {_msg_r.get('fetched_at')}）")
+            elif eq_now is None:
+                print(f"🚨 auto 模拟盘算仓位须用实盘口径（2026-09-03 恒开）：{eq_src}")
+                print(f"   刷新前模拟盘开仓会被拒（blocked_by: live_reference_required）——"
+                      f"在已实盘解锁的会话执行 python3 scripts/trade_utils_tiger.py "
+                      f"--refresh-live-reference 即可。")
+                _ok_r, _msg_r = _flr(verbose=False)
+                if _ok_r:
+                    print(f"🪞 实盘参考快照已刷新（取数 {_msg_r.get('fetched_at')}）")
+                    eq_now, cur, eq_src = _le(mode, account=ACCOUNT)
+        except Exception as _er:
+            print(f"⚠️ 实盘参考快照联动检查失败（{_er}）")
     if frac is not None and eq_now is not None:
         print(
             f"\n💰 模式 {mode} | 当前 equity {eq_now:,.2f} {cur} × {frac*100:.1f}% = 单笔预算 B {frac*eq_now:,.2f}"

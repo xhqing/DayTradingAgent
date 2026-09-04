@@ -20,7 +20,7 @@
     "deny": [
       "CronCreate",
       "Read(.claude/skills/trade/accounts.json)",
-      "Read(//Users/xhq/Documents/Projects/DayTradingAgent/.claude/skills/trade/accounts.json)"
+      "Read(//Users/xhq/Developer/DayTradingAgent/.claude/skills/trade/accounts.json)"
     ]
   },
   "hooks": {
@@ -28,26 +28,26 @@
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/monitor_guard.py pretool" }
+          { "type": "command", "command": "python3 /Users/xhq/Developer/DayTradingAgent/.claude/hooks/monitor_guard.py pretool" }
         ]
       },
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/secret_guard.py pretool" }
+          { "type": "command", "command": "python3 /Users/xhq/Developer/DayTradingAgent/.claude/hooks/secret_guard.py pretool" }
         ]
       },
       {
         "matcher": "TaskStop",
         "hooks": [
-          { "type": "command", "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/monitor_guard.py taskstop" }
+          { "type": "command", "command": "python3 /Users/xhq/Developer/DayTradingAgent/.claude/hooks/monitor_guard.py taskstop" }
         ]
       }
     ],
     "Stop": [
       {
         "hooks": [
-          { "type": "command", "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/monitor_guard.py stop" }
+          { "type": "command", "command": "python3 /Users/xhq/Developer/DayTradingAgent/.claude/hooks/monitor_guard.py stop" }
         ]
       }
     ],
@@ -55,13 +55,13 @@
       {
         "matcher": "AskUserQuestion",
         "hooks": [
-          { "type": "command", "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/live_auth_witness.py" }
+          { "type": "command", "command": "python3 /Users/xhq/Developer/DayTradingAgent/.claude/hooks/live_auth_witness.py" }
         ]
       },
       {
         "matcher": "Edit|Write",
         "hooks": [
-          { "type": "command", "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/changelog_guard.py" }
+          { "type": "command", "command": "python3 /Users/xhq/Developer/DayTradingAgent/.claude/hooks/changelog_guard.py" }
         ]
       }
     ]

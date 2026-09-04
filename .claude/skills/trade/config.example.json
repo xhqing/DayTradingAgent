@@ -12,6 +12,7 @@
     "_comment_fmax": "风险比例硬上限:实际 max_loss 不得超过 equity×f_max(选仓位选最接近 B 的档、但 max_loss 不可超此上限)。当前 f_max 10% 远大于 risk_fraction f 2%(B=equity×2%),max_loss 上限=equity×10% 是 B 的 5 倍,给 lot_size 离散选档留足向上余量(选最接近 B 的档即可,很难触顶)。AI 不得自行突破。",
     "max_leverage": 10,
     "_comment_max_leverage": "开仓市值杠杆上限:开仓市值(=数量×开仓价)不得超过 equity×max_leverage。默认 10 倍——权益 10 万最高可开 100 万市值。与 f_max 是两套独立约束:f_max 限 max_loss(风险敞口)、max_leverage 限开仓市值(名义敞口),选仓位时两者同时满足。AI 不得自行突破。",
+    "_comment_sim_live_alignment": "auto 模式模拟盘恒开对齐实盘(2026-09-03 用户立,无开关、非本文件参数):下单账户是模拟盘时,算仓位的 equity / 购买力一律取实盘口径——实盘总资产与购买力来自实盘当日参考快照 tmp/live_reference.json(实盘会话 preflight/resume 或 --refresh-live-reference 刷新);快照缺失/非当日则开仓脚本 fail-closed 拒单(blocked_by:live_reference_required)。目的:模拟盘严格模拟实盘交易,净 R 统计不失真。细节见 auto-mode.md「auto 模式算仓位口径」节。",
     "loss_limit_scope": "per_trade",
     "_comment_scope": "损失限额周期: per_trade=每笔独立无日累计上限; per_day=日累计上限。默认 per_trade。",
     "stop_loss_method": "technical",

@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/monitor_guard.py pretool",
+            "command": "python3 /Users/xhq/Developer/DayTradingAgent/.claude/hooks/monitor_guard.py pretool",
             "timeout": 10
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/secret_guard.py pretool",
+            "command": "python3 /Users/xhq/Developer/DayTradingAgent/.claude/hooks/secret_guard.py pretool",
             "timeout": 10
           }
         ]
@@ -26,7 +26,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/monitor_guard.py taskstop",
+            "command": "python3 /Users/xhq/Developer/DayTradingAgent/.claude/hooks/monitor_guard.py taskstop",
             "timeout": 10
           }
         ]
@@ -38,7 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/live_auth_witness.py",
+            "command": "python3 /Users/xhq/Developer/DayTradingAgent/.claude/hooks/live_auth_witness.py",
             "timeout": 10
           }
         ]
@@ -48,7 +48,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/changelog_guard.py",
+            "command": "python3 /Users/xhq/Developer/DayTradingAgent/.claude/hooks/changelog_guard.py",
             "timeout": 10
           }
         ]
@@ -60,7 +60,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/monitor_guard.py stop",
+            "command": "python3 /Users/xhq/Developer/DayTradingAgent/.claude/hooks/monitor_guard.py stop",
             "timeout": 10
           }
         ]
