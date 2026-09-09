@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### 修复（monitor-watcher launchd 路径失效：项目迁移后 watcher 静默失败，2026-09-09）
+
+- **为什么改**：2026-09-08 迁移收尾排查发现，已部署的 `~/Library/LaunchAgents/com.daytrading.monitor-watcher.plist` 与仓库模板 `.claude/hooks/com.daytrading.monitor-watcher.plist` 里 `monitor_watcher.py` 的路径仍指向项目旧址 `/Users/xhq/Documents/Projects/DayTradingAgent/`（实测该路径不存在、手动运行报 No such file or directory，launchd 上次退出码 2）——即自项目迁至 `~/Developer/` 起，盘中外部守护 watcher 一直静默失败，密采样中断通知能力失效。
+- **改了什么**：三份文件路径统一改为现址 `/Users/xhq/Developer/DayTradingAgent/`——① 已部署副本（改后 `launchctl unload` + `load` 重载，watcher 恢复运行、手动触发正常退出 exit 0）；② 本仓库模板（第 25 行）；③ win 分支 worktree（DayTradingAgent-win）模板（运行路径 + 注释示例两处）。绝对路径设计不变（2026-08-04 修 hook 崩溃时确立），仅换路径前缀，无回归。
+
 ### 修复（actions_check 标题正则同源分叉：漏「被动 / 主动」修饰词致停盯收尾误报 closed_unrecorded，2026-09-07 11:51）
 
 - **为什么改**：本会话 11:21 主动平仓 07709 且 actions 已完整记录（155 行含 +1.266R / App 净利 / 三阶段），但 11:50 停盯收尾时 T132 闭环检查误报 🚨 07709 / 01888「已平仓未补记」——`actions_check.py` 的节分割正则仍只匹配 emoji 后**直接**接「开仓 / 平仓」的标题，带「主动 / 被动」修饰词的规范平仓标题整节漏解析 → close 事件漏计 → open 量 > close 量误判未闭环。根因是**同源正则分叉**：09-07 09:48 盘中热修把 `account_status.py` 的正则放宽为允许「被动 / 主动」修饰词（本次事故的同型修复），但只改了一个脚本、漏了同源的 `actions_check.py`——两脚本注释声称「同源」、实际口径已不一致。

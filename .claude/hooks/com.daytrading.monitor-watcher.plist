@@ -22,7 +22,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/opt/homebrew/bin/python3</string>
-        <string>/Users/xhq/Documents/Projects/DayTradingAgent/.claude/hooks/monitor_watcher.py</string>
+        <string>/Users/xhq/Developer/DayTradingAgent/.claude/hooks/monitor_watcher.py</string>
     </array>
 
     <key>StartInterval</key>
