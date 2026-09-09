@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+### 变更（午市停盯实录发现 Stop 守卫判据③「只进不出」缺口，新立 T142；02899 实收费与 classify 判型不符记复盘线索，2026-09-09 14:40）
+
+- **为什么改**：当日午市会话（f6fab9d8）14:31 用户喊停、走完整停盯流程（采样停、keepawake_off --force、monitor_unregister --force 注销、认领释放、总结已发）后，Stop hook 密采样守卫仍连续多轮触发「盘中但密采样未在跑」提醒——排查定位：`monitor_guard.py` 的 `_is_monitoring_session` 三判据中①注册表②认领表已随注销清零，但③「trade_intent.log 当日行含本 sid」（本会话 13:56 开过 02899 仓）**没有任何退出机制**，已合法停盯的开过仓会话每个回合结束都被误唤醒再拉起一轮回复，与 2026-09-02 修掉的「非盯盘会话 160 轮死循环」同款问题的新路径。同时本会话交易发现 02899 老虎实收佣金 121/边（含约 0.1% 印花税类费用），与 classify_hk_security 的 ETF 判定（免税口径）不符，开仓前按免税估的净赔率（2.15R）比实收费口径（约 1.21R）高估约 44%，直接影响 1.2 门槛判断的边缘决策。
+- **改了什么**：TODO.md 新立 🔴 **T142**；02899 费率口径问题已在停盯总结与 actions 平仓记录留痕（「实收按股票口径、待复盘核对」），复盘时核对 classify 白名单为何把 02899（港股上市股票）判成 ETF。
+- **回归风险评估**：见下方同日 T142 修复条（登记与修复合并同批落地）。
+
+### 修复（T142 当日办结：Stop 守卫判据③补停盯标记出口，已停盯会话不再循环误唤醒，2026-09-09 14:50）
+
+- **为什么改**：T142 登记后实测缺口仍在持续唤醒本会话（每回合一条守卫提醒 + 一轮回复），且修法明确、改动小，当日内闭环。根因与登记条同：`_is_monitoring_session` 判据③（当日开过仓）只进不出，合法停盯后仍永久命中。
+- **改了什么**：三处配套——① `monitor_unregister.sh`：注销成功后在两条合法停盯路径（收盘窗口自动放行 / `--force` 用户喊停，均已经过脚本内置停盯边界时间闸）落当日停盯标记 `tmp/stopped_sessions_YYYYMMDD.txt`（幂等写入）；② `monitor_guard.py` `_is_monitoring_session`：判③前先查本 sid 是否在当日停盯标记里，在场直接 False（已停盯、不该再提醒）；③ `preflight.py` `_register_monitor_session`：重新盯盘注册时撤销本会话当日停盯标记（堵「同日停盯后重启盯盘」被标记漏拦的窄缝）；标记文件按日期命名、跨日自然失效。**验证**：模拟端到端——落标记后判定 False（不再误唤醒）✅、撤标记后判定 True（判③仍兜底真盯盘、标记不是万能放行）✅、二次注销幂等（标记仍 1 行）✅、实跑 `monitor_unregister.sh --force` 标记落盘且最终态判定 False ✅。
+- **回归风险评估**：标记写入点在停盯边界时间闸之后（违规停盯到不了注销、更落不了标记，无法借标记绕过守卫）；标记撤销失败不阻断 preflight 注册（宁可多提醒不漏拦）；判③兜底路径未动（无标记时行为与改前完全一致）。风险极低。
+- **遗留**：02899 classify 判型与实收费不符的核对仍在复盘范围（上条留痕）。
+
 ### 修复（monitor-watcher launchd 路径失效：项目迁移后 watcher 静默失败，2026-09-09）
 
 - **为什么改**：2026-09-08 迁移收尾排查发现，已部署的 `~/Library/LaunchAgents/com.daytrading.monitor-watcher.plist` 与仓库模板 `.claude/hooks/com.daytrading.monitor-watcher.plist` 里 `monitor_watcher.py` 的路径仍指向项目旧址 `/Users/xhq/Documents/Projects/DayTradingAgent/`（实测该路径不存在、手动运行报 No such file or directory，launchd 上次退出码 2）——即自项目迁至 `~/Developer/` 起，盘中外部守护 watcher 一直静默失败，密采样中断通知能力失效。

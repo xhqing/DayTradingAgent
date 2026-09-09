@@ -282,6 +282,18 @@ def _register_monitor_session():
         return
     _root = _os.path.abspath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "..", "..", ".."))
     _reg = _os.path.join(_root, "tmp", "monitor_sessions.txt")
+    # T142（2026-09-09）：重新盯盘 = 撤销本会话当日停盯标记（前一交易日段内停盯后同会话重启盯盘，
+    # 标记不撤会让 monitor_guard 判③继续放行「已停盯」、漏拦真断采样）。标记文件按日期命名、
+    # 跨日自然失效，此处只处理「同日停盯后同会话重启」的窄场景。
+    _stopped = _os.path.join(_root, "tmp", f"stopped_sessions_{_now.strftime('%Y%m%d')}.txt")
+    try:
+        if _os.path.isfile(_stopped) and _sid in open(_stopped).read().splitlines():
+            _lines = [l for l in open(_stopped).read().splitlines() if l != _sid]
+            with open(_stopped, "w") as _f:
+                _f.write("".join(l + "\n" for l in _lines))
+            print("🔄 本会话当日停盯标记已撤销（重新盯盘）")
+    except Exception:
+        pass  # 标记撤销失败不阻断注册（守卫侧标记判空 / 缺文件均视为未停盯，宁可多提醒）
     try:
         _os.makedirs(_os.path.dirname(_reg), exist_ok=True)
         _exists = _os.path.isfile(_reg) and _sid in open(_reg).read().splitlines()

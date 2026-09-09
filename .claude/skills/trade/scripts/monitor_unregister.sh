@@ -38,6 +38,17 @@ if [ -f "$REG_FILE" ]; then
 fi
 echo "✅ 盯盘会话已注销（${SESSION_ID}），watcher 不再守护本会话"
 
+# T142（2026-09-09）：落当日停盯标记——monitor_guard.py Stop 分支的判据③「当日开过仓」
+# （trade_intent.log 当日行含本 sid）只进不出，开过仓的会话即便走完本脚本的完整停盯流程，
+# 每个回合结束仍被误唤醒（2026-09-09 14:31 实录）。此处到达 = 已过上方停盯边界时间闸
+# （收盘窗口自动放行或 --force 用户喊停），在两条合法停盯路径上给本 sid 落标记；
+# _is_monitoring_session 判③前查到标记即视为已停盯、不再提醒。标记文件按日期命名，
+# 跨日自然失效；重新盯盘走 preflight 注册时会撤销本会话标记（同日重启场景）。
+STOPPED_FILE="$SCRIPT_DIR/../../../../tmp/stopped_sessions_$(date '+%Y%m%d').txt"
+if ! grep -qxF "${SESSION_ID}" "$STOPPED_FILE" 2>/dev/null; then
+    echo "${SESSION_ID}" >> "$STOPPED_FILE"
+fi
+
 # 标的池认领联动释放（2026-08-19 立，TODO「标的池自动划分」）：停盯注销的同时释放本会话
 # 认领的标的池——其它（或重启的）会话可立即认领，不留死占（忘跑 pool_claim release --all
 # 时由本联动 + 死会话自动清理双兜底）。

@@ -391,6 +391,20 @@ def _is_monitoring_session(sid):
             except Exception:
                 pass
         # ③ 当日开仓 intent
+        # T142（2026-09-09）：判③只进不出——开过仓的会话即便走完停盯流程（注销注册表、
+        # 释放认领），intent 行仍永久命中，已合法喊停的会话每个回合结束都被本提醒再拉起
+        # 一轮（2026-09-09 14:31 实录）。补出口：monitor_unregister.sh 在两条合法停盯路径
+        # （收盘窗口 / --force 用户喊停，均已过其内置停盯边界时间闸）落当日停盯标记
+        # tmp/stopped_sessions_YYYYMMDD.txt；此处判③前先查标记，已停盯直接 False。
+        # 重新盯盘时 preflight 注册会撤销本会话标记（同日重启场景），跨日按文件名自然失效。
+        stopped = os.path.join(TMP_DIR, f"stopped_sessions_{datetime.now().strftime('%Y%m%d')}.txt")
+        if os.path.isfile(stopped):
+            try:
+                with open(stopped) as f:
+                    if sid in f.read().splitlines():
+                        return False
+            except OSError:
+                pass
         intent = os.path.join(TMP_DIR, "trade_intent.log")
         if os.path.isfile(intent):
             try:
