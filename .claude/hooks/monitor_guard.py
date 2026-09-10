@@ -450,12 +450,75 @@ def _emit_reminder(msg, hook_event_name):
     }, ensure_ascii=False))
 
 
+def _prelaunch_bad_patterns(command):
+    """时段门外的跑法检测（2026-09-10 立，盘前启动同样受保护）：
+
+    检测 nohup 后台 / 行尾 & / 段命令内拼 sleep 三种绕过通知驱动的采样跑法，
+    与 main() pretool 分支内的跑法拦截同一套模式（2026-08-18 立），抽出为
+    独立函数供时段门外先行调用。返回 bad_patterns 列表（空 = 无违规）。
+    """
+    import re as _re
+    if not command:
+        return []
+    subcmds = _re.split(r"&&|\|\||;|\n", command)
+    seg_subcmds = [sc for sc in subcmds
+                   if any(s in sc for s in ("monitor_segment.py", "ws_segment.py",
+                                            "futu_ws_segment.py"))]
+
+    def _is_exec_seg(sc):
+        head = sc.split("|", 1)[0]   # 管道首段 = 执行体（2026-08-20 修，同 main 内逻辑）
+        if not _re.search(r"(^|\s|/)python3?\s", head) or "py_compile" in sc:
+            return False
+        return not _re.search(r"\b(cat|head|tail|diff|grep|ls|rm|mv|cp|less|more)\b", head)
+
+    exec_seg = [sc for sc in seg_subcmds if _is_exec_seg(sc)]
+    bad_patterns = []
+    for sc in exec_seg:
+        if "nohup" in sc:
+            bad_patterns.append(f"nohup 后台跑段：{sc.strip()[:80]}")
+        if _re.search(r"futu_ws_segment\.py.*\d\s*&\s*$|monitor_segment\.py.*\d\s*&\s*$|ws_segment\.py.*\d\s*&\s*$", sc.strip()):
+            bad_patterns.append(f"行尾 & 后台挂段：{sc.strip()[:80]}")
+        if _re.search(r"sleep\s+\d+", sc) and any(s in sc for s in ("futu_ws_segment", "monitor_segment", "ws_segment")):
+            bad_patterns.append(f"段命令内拼 sleep：{sc.strip()[:80]}")
+    # 拼 sleep 检测（2026-09-10 抽函数时补跨子命令形态）：`; sleep 60` 被 &&/;/|| 切成
+    # 独立子命令后，sleep 片段自身不含脚本名、上面循环扫不到——原 main 内实现同样漏此
+    # 形态（同源问题，抽出时一并修）。补查：任一执行段 + 命令任意位置出现 sleep N = 拼 sleep。
+    if not bad_patterns and exec_seg:
+        for sc in subcmds:
+            if _re.search(r"^\s*sleep\s+\d+", sc.strip()):
+                bad_patterns.append(f"段命令内拼 sleep：{sc.strip()[:80]}")
+                break
+    return bad_patterns
+
+
 def main():
     hook_type = sys.argv[1] if len(sys.argv) > 1 else ""
     try:
         payload = json.load(sys.stdin) or {}
     except Exception:
         payload = {}
+
+    # 跑法拦截前置到时段门外（2026-09-10 修）：nohup / 行尾 & / 拼 sleep 这三种跑法
+    # 在**任何时刻**都不合法（合法跑法唯一 = run_in_background 参数）——原实现包在
+    # in_trading_session 早退之后，盘前启动采样段（SKILL.md 明文要求「盘前 ≤15 分钟
+    # 提前启动、跨开盘」）完全不受守卫保护，2026-09-10 实录：09:21 盘前用 nohup 启动
+    # 采样段，段结束无 task-notification 唤醒、无人盯盘近 2 小时才被用户发现。
+    if hook_type == "pretool":
+        _cmd = (payload.get("tool_input") or {}).get("command", "") \
+            if isinstance(payload.get("tool_input"), dict) else ""
+        _bad = _prelaunch_bad_patterns(_cmd)
+        if _bad:
+            msg = (
+                f"⚠️ 密采样守卫阻断（跑法拦截，2026-08-18 立；2026-09-10 提到时段门外、"
+                f"盘前启动同样受保护）：检测到绕过通知驱动的采样跑法——{'；'.join(_bad)}。"
+                f"段启动必须用 run_in_background（工具参数）+ 段结束 task-notification "
+                f"唤醒 AI 即刻分析，禁止 nohup/&/sleep 轮询自驱（2026-08-18 实录："
+                f"nohup+sleep 致数据滞后 40-60 秒、错过入场判定；2026-09-10 实录：盘前 "
+                f"nohup 启动后段结束不唤醒、无人盯盘近 2 小时）。切数据源时只换脚本名，"
+                f"不换启动方式。"
+            )
+            print(msg, file=sys.stderr)
+            sys.exit(2)
 
     # 盘外不干预（周末 / 夜间 / 午休）
     if not in_trading_session():
