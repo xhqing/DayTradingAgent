@@ -87,7 +87,7 @@ HKD 单笔预算 B ÷ 当日真实汇率 = USD 单笔预算，再按 USD 选仓�
 
 **按执行模式分叉（2026-08-16 补声明，消除与 signal-mode.md 的口径矛盾）**：
 
-- **auto 模式：equity 必须从实际交易账户 API 取真实总资产**，禁止用 config 占位值或 equity-log 手动累加值（2026-07-31 用户立）。**signal 模式：equity 走 `signals/equity-log.csv` 末行累加值**——signal 不连账户下单是模式定义（见 `signal-mode.md`「signal 模式权益更新」），equity-log 累加是 signal 模式的**正当口径**、不是违规；无记录时回退 `config.risk.initial_equity`。
+- **auto+实盘：equity 必须从实盘账户 API 取真实总资产**，禁止用 config 占位值或 equity-log 手动累加值（2026-07-31 用户立；2026-09-12 起本条仅约束实盘执行——模拟盘执行改走纸面权益，见下条）。**signal 模式：equity 走 `signals/equity-log.csv` 末行累加值**——signal 不连账户下单是模式定义（见 `signal-mode.md`「signal 模式权益更新」），equity-log 累加是 signal 模式的**正当口径**、不是违规；无记录时回退 `config.risk.initial_equity`。
 - **signal 模式的只读查询例外（2026-08-12 立；2026-08-17 随固定平台费简化）**：signal 模式禁止的是**自动下单**等写操作，只读查询（查账户资产看一眼等）是允许的——原为算阶梯平台费查当月订单数的需要已随固定模式取消（费率不再依赖订单数）；equity 取值仍走 equity-log。
 
 **auto 模式的账户选择**：
@@ -96,9 +96,9 @@ HKD 单笔预算 B ÷ 当日真实汇率 = USD 单笔预算，再按 USD 选仓�
 - **指定账户**：用户明确指定账户时，从指定账户取。
 - **`config.risk.initial_equity`（100000 HKD）仅开发期占位、不是真实资产**——auto 模式下不得当 equity 真值用（signal 模式无记录时的回退除外）。preflight 与算仓位前一律**现查账户 API**取最新 net_assets 作 equity。
 - **币种**：账户总资产如实返回（老虎美股账户 USD 计价），按账户返回币种用，换算用当日真实汇率（见上「美股换算」）。
-- **auto 模拟盘恒开对齐实盘（2026-09-03 用户立，无开关）**：下单账户是**模拟盘**（默认 / `--account paper`）时，上面「从账户 API 取真实总资产」的 equity、以及开仓的购买力上限，一律取**实盘**口径——实盘执行 = 实时查实盘自身（2026-08-20「取净值与下单同账户」原样）；模拟盘执行 = 读**实盘当日参考快照** `tmp/live_reference.json`（快照缺失 / 非当日 → 开仓脚本 fail-closed 拒单 `blocked_by:"live_reference_required"`，**绝不退回模拟盘自身资产算仓位**）。一句话：auto 模式任何执行账户下，算仓位的风险基数都是实盘口径；模拟盘账户自身资产 / 购买力**不再作为任何仓位计算输入**（净 R 统计口径要求模拟严格复现实盘仓位档位与费占比）。机制与刷新入口见 `auto-mode.md`「auto 模式算仓位口径」节、`trade_utils_tiger.py`「实盘参考快照」节。
+- **auto 模拟盘与实盘资产解耦（2026-09-12 用户立，取代 2026-09-03「恒开对齐实盘」旧口径）**：下单账户是**模拟盘**（默认 / `--account paper`）时，equity 读 `signals/equity-log.csv` 末行**纸面权益**（与 signal 模式同源同机制，无记录回退 `initial_equity`；auto 模拟盘只读不写）；总购买力 = 纸面权益折 USD × **模拟盘总融资杠杆**（模拟盘自身 `get_assets` 的 buying_power ÷ net_liquidation，2026-09-12 实测 4.0 倍，查询失败回退 `config.risk.paper_margin_leverage_default`）；单标的可买上限 = 总购买力 × `get_contract` 该标的保证金率（模拟盘可查；查不到按 1.0 全额保守兜底）。**全程不碰实盘账户**——实盘资产为 0 / 资金全部取出，模拟盘照常交易；净 R 口径的可比性靠 equity-log 纸面基准（用户维护、量级与实盘相当）维持，不依赖实时实盘数值。实盘执行（`--account live`）照旧实时查实盘自身（2026-08-20「取净值与下单同账户」原样）。旧实盘参考快照机制（`tmp/live_reference.json`、缺失拒单 `live_reference_required`）退役为诊断工具。机制见 `auto-mode.md`「auto 模式算仓位口径」节、`trade_utils_tiger.py` `paper_sizing_reference`。
 
-按实际权益动态算单笔预算 B = `risk_fraction` × equity（权益缩水→B 缩、权益增长→B 放大；auto 模拟盘执行时这里的 equity = 实盘口径，同上一节）。
+按实际权益动态算单笔预算 B = `risk_fraction` × equity（权益缩水→B 缩、权益增长→B 放大；auto 模拟盘执行时这里的 equity = equity-log 纸面权益，同上一节）。
 
 ## 利润 = 赔率 R × max_loss，与标的振幅、价格贵不贵无关（纠正错误认知）
 

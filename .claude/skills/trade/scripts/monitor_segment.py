@@ -231,6 +231,24 @@ def main():
             except Exception:
                 return (now - timedelta(hours=12)).strftime("%Y%m%d")  # zoneinfo 不可用：夏令时估兜底
         return now.strftime("%Y%m%d")  # 港股及其它：北京日期
+
+    def us_regular_session_now() -> bool:
+        """当前是否美东盘中（09:30-16:00，zoneinfo 自动适配夏令时/冬令时）。
+
+        2026-09-10 修数据 bug：富途快照的 pre_price（盘前最新价）在**开盘后仍保留盘前
+        尾值**且与 last_price 不同——下方盘前取值逻辑（pre_price 非空且 != last_price 就
+        优先取 pre_price）在盘中 10:09 ET 被误触发，AMD last 连续 4 点冻结在盘前收盘价
+        508.32（真实 last 506.94 在动）、high 用了盘前高 520（盘中真实高 516.33）。开盘
+        后应无条件用盘中字段，pre_price 语义只在盘前（04:00-09:30）成立。"""
+        try:
+            from zoneinfo import ZoneInfo
+            us = datetime.now().astimezone(ZoneInfo("America/New_York"))
+            if us.weekday() >= 5:
+                return False
+            m = us.hour * 60 + us.minute
+            return 570 <= m < 960  # 09:30-16:00（含 16:00 前最后一秒采样）
+        except Exception:
+            return False  # zoneinfo 不可用：宁可用 pre_price 旧口径（盘前场景更依赖它），不做盘中强制
     # 重估提醒检查（下方 marker 文件命名 + 首点时间拼算）需 date_str 与主标的 log 文件日期一致，
     # 故取主标的市场对应的交易日（港股=北京日期、美股=美东交易日）。
     date_str = trading_date_str(syms[0]) if syms else datetime.now().strftime("%Y%m%d")
@@ -376,7 +394,10 @@ def main():
                 # last_price 恒 940.76 昨收、pre_price 947.87 实时跳）；盘中 pre_* 字段为
                 # nan。取值逻辑：pre_price 非空且与昨收不同 → 用盘前字段，否则用常规字段。
                 pre = row.get("pre_price")
-                pre_ok = pre is not None and str(pre) != "nan" and not (
+                # 2026-09-10 修：盘中（09:30-16:00 ET）强制用 last_price——pre_price 开盘后
+                # 仍保留盘前尾值（stale），旧逻辑「pre_price 非空且 != last_price 就取它」
+                # 在盘中被误触发（AMD last 冻结 508.32 四点、high 误用盘前高 520）。
+                pre_ok = (not us_regular_session_now()) and pre is not None and str(pre) != "nan" and not (
                     str(pre) == str(row.get("last_price")) and row.get("pre_volume") in (None, "nan", 0)
                 )
                 if pre_ok:
@@ -518,7 +539,11 @@ def main():
                 # avg_price（VWAP）在盘前为昨日盘中口径，对盘前价格发现代表性弱——盘前
                 # 同时展示 pre_price 与 VWAP 差值，AI 按「盘前 VWAP 代表性弱于盘中」解读。
                 pre = row.get("pre_price")
-                cur = pre if (pre is not None and str(pre) != "nan") else row.get("last_price")
+                # 2026-09-10 修（同采样主循环）：盘中强制 last_price，不取盘后残留的 pre_price
+                if us_regular_session_now():
+                    cur = row.get("last_price")
+                else:
+                    cur = pre if (pre is not None and str(pre) != "nan") else row.get("last_price")
                 vwap = row.get("avg_price")
                 if cur is None or vwap is None or (isinstance(vwap, float) and vwap != vwap):
                     lines.append(f"  {sym}: VWAP 获取失败")

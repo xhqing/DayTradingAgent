@@ -249,6 +249,13 @@ def main():
     # 无效 → blocked_by:"live_locked" 结构化拒单（详见 scripts/live_unlock.py）。
     import live_unlock
     live_unlock.live_gate_for_order_scripts(account, "open_position_tiger")
+    # 实盘熔断前置闸（2026-09-12 立，第三道开仓闸）：--account live 且熔断状态 tripped
+    # （复盘第二级暂停修整线触发）→ blocked_by:"circuit_breaker" 拒单。只拦实盘开仓——
+    # 平仓/移损/移盈不拦（风控动作任何时候可用），模拟盘不拦（熔断期 = 修整验证场）。
+    # 无 --force 旁路，解除唯一通道 = 复盘重启流程（reset --confirmed-by-user），
+    # 详见 scripts/circuit_breaker.py 与 review-and-evaluation.md「实盘熔断机制」节。
+    import circuit_breaker
+    circuit_breaker.check_gate(account, "open_position_tiger")
 
     if len(args) < 6:
         print(
@@ -352,15 +359,13 @@ def main():
     sizing_source = None   # 2026-09-03：算仓位权益口径来源（实盘实时 / 实盘当日快照），写入结果留痕
     if quantity == 0:
         tc = U.new_trade_client(config)
-        # 2026-09-03：auto 算仓位 equity 一律取实盘口径（实盘执行=实时查实盘自身；模拟盘执行=
-        # 实盘当日参考快照，恒开对齐实盘）。模拟盘且快照缺失/非当日 → equity None，下面拒开
-        # （fail-closed），绝不回退模拟盘自身资产算仓位。
+        # 2026-09-12 解耦：auto 算仓位 equity——实盘执行=实时查实盘自身（零改动）；模拟盘执行
+        # =equity-log 纸面权益基准（config 兜底、永不为 None，不依赖实盘资产状态）。旧
+        # 「模拟盘须实盘当日快照、缺失即 live_reference_required 拒单」口径（2026-09-03 立）废止。
         equity, currency, sizing_source = U.auto_sizing_equity(config, 'HKD', account)
         if equity is None:
             result_stub = {"ok": False,
                            "error": sizing_source or "老虎账户净值取不到，无法自动算仓位"}
-            if account != "live":
-                result_stub["blocked_by"] = "live_reference_required"
             print(json.dumps(result_stub, ensure_ascii=False))
             sys.exit(1)
         lot_size = U.get_lot_size_tiger(tc, symbol)
@@ -585,20 +590,14 @@ def main():
 
     # 显式传量的风控校验（2026-08-16 立）：显式传量此前绕过 f_max / max_leverage 全部
     # 上限（唯一护栏是券商保证金拒单）。现在与自动算仓位同一套约束：超限拒绝下单。
-    # 2026-09-03：算风控用的 equity 同样走实盘口径（auto_sizing_equity）——模拟盘 + 快照
-    # 缺失/非当日时**拒开**（fail-closed），跳过校验 = 放任显式传量超实盘口径风控上限。
+    # 2026-09-12 解耦：算风控用的 equity——实盘执行实时查实盘自身；模拟盘执行用 equity-log
+    # 纸面权益基准（config 兜底、永不为 None）。旧「模拟盘缺实盘快照即拒开」口径废止。
     if not result_base.get("auto_sized"):
         try:
             equity, currency, sizing_source = U.auto_sizing_equity(config, 'HKD', account)
         except Exception:
             equity, currency, sizing_source = None, None, None
         if equity is None:
-            if account != "live":
-                result_base.update({"ok": False, "blocked_by": "live_reference_required",
-                                    "error": (sizing_source or "实盘参考快照取不到，无法校验显式"
-                                              "传量的风控上限（f_max / max_leverage）")})
-                print(json.dumps(result_base, ensure_ascii=False))
-                sys.exit(1)
             result_base["risk_check_note"] = "账户净值取不到，跳过 f_max / max_leverage 校验（仅整手校验）"
             equity = None
         else:
@@ -649,9 +648,10 @@ def main():
     # 小账户直接降档到 0 误拒（实测实盘 bp 折算后远不足 1 手被拒）。
     # 汇率从两币种净值之比推（load_equity_tiger 的 HKD 净值 ÷ get_assets 的 USD 净值
     # = 老虎自身 forex_rate），拿不到时函数内按 7.80 保守兜底。
-    # 2026-09-03：auto 模拟盘算购买力同样走实盘口径——实盘执行：实时查实盘（原逻辑）；
-    # 模拟盘执行：bp 与汇率取实盘当日快照（buying_power_usd / fx_hkd_per_usd），传给
-    # get_buying_power_tiger 的 bp_usd / to_hkd，不再查模拟盘自身的购买力。
+    # 2026-09-12 解耦：auto 模拟盘算购买力 = 纸面权益折 USD × 模拟盘总融资杠杆
+    # （bp/nl，模拟盘自身账户数据），× 标的保证金率——全程不碰实盘，实盘资产为 0 也不影响。
+    # 旧「模拟盘 bp 取实盘当日快照 buying_power_usd」口径（2026-09-03 立）废止。实盘执行
+    # 分支不变（实时查实盘自身净值比折汇率）。
     _fx_hkd = None
     _bp_override_usd = None
     if account == "live":
@@ -663,10 +663,9 @@ def main():
         except Exception:
             pass
     else:
-        _fx_hkd, _fx_err = U.auto_sizing_fx_hkd(config, account)
-        _sref, _serr = U.load_live_reference_checked()
-        if _sref is not None and _sref.get("buying_power_usd"):
-            _bp_override_usd = _sref.get("buying_power_usd")
+        _pref = U.paper_sizing_reference()
+        _fx_hkd = _pref["fx_hkd_per_usd"]
+        _bp_override_usd = _pref["bp_equivalent_usd"]
     _bp_shares, _bp_val, _bp_margin = U.get_buying_power_tiger(
         config, symbol, entry_ref, tc=_tc_tick, to_hkd=_fx_hkd, bp_usd=_bp_override_usd)
     if _bp_shares is not None and quantity > _bp_shares:

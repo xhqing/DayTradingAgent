@@ -184,24 +184,20 @@ def load_equity_us(config=None):
 def auto_sizing_equity_us(config, exec_account):
     """auto 美股开仓的算仓位权益（USD）。返回 (equity, currency, source)。
 
-    - exec_account='live'：实时查实盘账户自身（2026-08-20「取净值与下单同账户」）；
-    - exec_account 非 live（默认模拟盘）：实盘当日快照 equity_usd（2026-09-03 恒开对齐实盘，
-      机制见 trade_utils_tiger.py「实盘参考快照」节）。
-
-    equity 为 None 时 source 为失败原因，调用方**必须拒单**（fail-closed，不得退模拟资产）。
+    - exec_account='live'：实时查实盘账户自身（2026-08-20「取净值与下单同账户」，零改动）；
+    - exec_account 非 live（默认模拟盘）：**纸面权益基准**折 USD（2026-09-12 用户立「模拟盘与
+      实盘资产解耦」）——equity-log 末行（HKD）÷ 模拟盘自身两币种净值比汇率，见
+      trade_utils_tiger.py「模拟盘算仓位参考（解耦）」节 paper_sizing_reference。纸面基准
+      永远取得到（config 兜底），本分支不再返回 None，模拟盘交易不依赖实盘资产状态。
     """
     if exec_account == "live":
         eq, cur = load_equity_us(config)
         if eq is None:
             return None, "USD", "实盘账户净值取不到（未开通交易/资产权限？），无法算仓位"
         return eq, cur, "老虎实盘账户实时（get_assets net_liquidation USD）"
-    ref, err = T.load_live_reference_checked()
-    if ref is None:
-        return None, "USD", err
-    v = ref.get("equity_usd")
-    if v is None:
-        return None, "USD", "实盘参考快照缺 equity_usd 字段，请重新刷新快照"
-    return float(v), "USD", f"实盘参考快照 equity_usd（取数 {ref.get('fetched_at')}）"
+    ref = T.paper_sizing_reference()
+    return (ref["equity_usd"], "USD",
+            f"{ref['equity_source']} 折 USD ÷ 模拟盘汇率 {ref['fx_hkd_per_usd']:.4f}（2026-09-12 解耦）")
 
 
 def get_buying_power_us(config, symbol, ref_price, tc=None, bp_usd=None):

@@ -1853,21 +1853,16 @@ def parse_mode(argv=None):
 def load_equity(mode='signal', project_root=None, base_currency='HKD', account=None):
     """按执行模式取当前 equity，返回 (equity, currency, source_str)。
 
-    - mode='auto'：老虎账户净值（港股 base_currency='HKD'、美股 base_currency='USD'，与
-      标的计价一致，见 load_equity_tiger）；查询失败 fallback signals/equity-log.csv
-      （标记非真实、需修复）。**2026-09-03 例外：auto + 模拟盘账户（account 非 live）一律
-      改取实盘参考快照口径**（auto 模拟盘恒开对齐实盘，见 load_live_reference_checked）——
-      快照缺失 / 非当日直接返回 None（fail-closed，不回退模拟盘资产或 equity-log）。
-    - mode='signal'：读 signals/equity-log.csv 末行 equity_after（signal 模式不连账户、
-      靠累加值；无记录返回 config.risk.initial_equity）。
+    - mode='signal' 或 (mode='auto' 且非实盘账户)：读 signals/equity-log.csv 末行 equity_after
+      （无记录返回 config.risk.initial_equity）。⚠️ 2026-09-12 用户立「模拟盘与实盘资产解耦」：
+      auto + 模拟盘与 signal 完全同机制（同一纸面权益），不再读实盘参考快照——旧的
+      「恒用实盘当日快照、缺失 fail-closed 拒单」口径（2026-09-03 立）废止，见本文件
+      「模拟盘算仓位参考（解耦，2026-09-12）」节。
+    - mode='auto' + account='live'：实时查实盘账户自身（2026-08-20「取净值与下单同账户」，
+      港股 HKD / 美股 USD 与标的计价一致）。
 
-    - account（2026-08-20 立，实盘盯盘配套；2026-09-03 语义收窄）：None/paper=模拟账户、
-      'live'=老虎实盘账户。auto + live → 实时查实盘自身（取净值与下单同账户）；auto +
-      模拟盘 → 实盘参考快照（对齐实盘，2026-09-03 用户裁定，见 SKILL「auto 模式的账户选择」
-      与本文件「实盘参考快照」节）。
-
-    auto 模式 equity 必须是账户真实总资产（2026-07-31 用户立）；signal 模式因不碰账户、用
-    equity-log 累加假设盈亏（2026-08-01 双模式重构立，见 signal-mode.md「signal 模式权益更新」）。
+    auto+实盘 equity 必须是账户真实总资产（2026-07-31 用户立）；signal 与 auto+模拟盘用
+    equity-log 纸面权益（2026-08-01 双模式重构立 signal 机制，2026-09-12 模拟盘并入）。
     2026-08-05 起港美股默认账户均为老虎，本函数随老虎脚本迁移至此（原在已删除的
     trade_utils.py）。
     """
@@ -1898,31 +1893,25 @@ def load_equity(mode='signal', project_root=None, base_currency='HKD', account=N
             return None
         return float(rows[-1]["equity_after"])
 
-    if mode == "signal":
+    if mode == "signal" or (mode == "auto" and account != "live"):
+        # 2026-09-12 用户立（模拟盘与实盘资产解耦）：signal 与 auto+模拟盘共用同一纸面权益
+        # 机制——读 signals/equity-log.csv 末行（signal 模式平仓时更新、auto 模拟盘只读不写），
+        # 无记录回退 config initial_equity。纸面权益量级与实盘相当（用户维护的基准），
+        # 净 R 口径的可比性靠这个基准维持、不依赖实时实盘数值——实盘资产为 0 / 资金全部
+        # 取出，模拟盘照常交易。旧「auto 模拟盘恒用实盘当日快照」口径（2026-09-03 立）废止，
+        # 见本文件「模拟盘算仓位参考（解耦，2026-09-12）」节。
         eq = _read_equity_log()
         if eq is None:
-            return initial_equity, currency, f"config initial_equity={initial_equity:.0f}（signal 模式、equity-log 无记录）"
-        return eq, currency, "signals/equity-log.csv 末行（signal 模式累加值）"
+            return initial_equity, currency, f"config initial_equity={initial_equity:.0f}（equity-log 无记录，纸面基准兜底）"
+        if mode == "signal" or base_currency == "HKD":
+            return eq, currency, "signals/equity-log.csv 末行（纸面权益；signal 与 auto 模拟盘同源，2026-09-12 解耦）"
+        # 美股模拟盘要 USD 口径：按模拟盘自身两币种净值比折算（老虎 forex_rate，不碰实盘）
+        ref = paper_sizing_reference()
+        return (eq / ref["fx_hkd_per_usd"], "USD",
+                f"signals/equity-log.csv 末行 ÷ 模拟盘汇率 {ref['fx_hkd_per_usd']:.4f}（纸面权益折 USD，2026-09-12 解耦）")
 
-    # mode == 'auto'：老虎账户（港股 HKD / 美股 USD，与标的计价一致）
-    if account != 'live':
-        # auto + 模拟盘：算仓位口径恒用实盘（2026-09-03 立，无开关）。这里返回给
-        # preflight / resume 展示用的 equity 也必须是实盘口径，否则 AI 看到的 B 与下单脚本
-        # 实际按实盘快照算出的仓位对不上。快照缺失/非当日 → 返回 (None, ...) fail-closed
-        # （展示方打印警示、下单脚本拒开），绝不回退模拟盘自身资产或 equity-log——
-        # 回退 = 回到「模拟口径算 B」的旧错位，等于规则没执行。
-        _ref, _err = load_live_reference_checked()
-        if _ref is None:
-            return None, currency, f"🚨 {_err}"
-        _field = "equity_hkd" if base_currency == "HKD" else "equity_usd"
-        _v = _ref.get(_field)
-        if _v is None:
-            return None, base_currency, (f"🚨 实盘参考快照缺 {_field} 字段（快照损坏？），"
-                                         f"请重新刷新快照（python3 scripts/trade_utils_tiger.py "
-                                         f"--refresh-live-reference）")
-        return (float(_v), base_currency,
-                f"实盘参考快照 {_field}（auto 模拟盘对齐实盘 2026-09-03；取数 "
-                f"{_ref.get('fetched_at', '未知')}）")
+    # mode == 'auto' + account == 'live'：实时查实盘账户自身（港股 HKD / 美股 USD，与标的
+    # 计价一致；2026-08-20「取净值与下单同账户」——实盘执行的风险基数必须查实盘自身）
     eq, cur = load_equity_tiger(base_currency=base_currency, account=account)
     if eq is None:
         eq = _read_equity_log()
@@ -1942,6 +1931,10 @@ def load_equity(mode='signal', project_root=None, base_currency='HKD', account=N
 # 实盘相差过大会让每笔成交额差异巨大，而按笔固定费 / 整手离散在净 R 口径里随仓位大小
 # 摊薄程度不同，净 R 统计的盈亏能力会失真；模拟盘必须严格模拟实盘交易，模拟样本才能
 # 代表实盘能力（2026-09-03 用户立，恒开、无开关）。
+#
+# ⚠️【以下整节已退役（2026-09-12 模拟盘解耦）】开仓 / preflight / resume 链路不再读快照，
+# 模拟盘算仓位改走 paper_sizing_reference（见上方「模拟盘算仓位参考（解耦）」节）。函数与
+# --refresh-live-reference CLI 保留仅作诊断工具。以下为 2026-09-03 旧口径的历史说明：
 #
 # 实盘数据进模拟会话的通道 = **当日快照**（用户选定的落地机制，2026-09-03）：
 #   - fetch_live_reference()：查实盘账户总资产（HKD/USD 两口径）与购买力（USD），写入
@@ -2123,32 +2116,138 @@ def load_live_reference_checked():
     return data, None
 
 
+# ---------------------------------------------------------------------------
+# 模拟盘算仓位参考（解耦，2026-09-12 用户立：模拟盘与实盘资产解耦）
+# ---------------------------------------------------------------------------
+# 规则：auto 模式下单账户是模拟盘（None/'paper'）时，算仓位的全部风险基数一律取
+# **纸面权益基准**，不碰实盘账户：
+#   - equity：signals/equity-log.csv 末行（与 signal 模式同源同机制；无记录回退
+#     config risk.initial_equity）；
+#   - 总融资杠杆：模拟盘自身 get_assets 的 buying_power ÷ net_liquidation（实测 4.0 倍，
+#     账户属性、不随资金量变；查询失败回退 config risk.paper_margin_leverage_default）；
+#   - 汇率（USD↔HKD 折算）：模拟盘自身 get_prime_assets 两币种净值比（老虎 forex_rate，
+#     不依赖实盘；查询失败回退 7.80 保守常量）；
+#   - 总购买力 = 纸面权益折 USD × 总融资杠杆；单标的可买上限 = 总购买力 ×
+#     get_contract().long/short_initial_margin（模拟盘可查；查不到按 1.0 全额保守兜底，
+#     见 _buying_power_impl）。
+#
+# 为什么：旧口径（2026-09-03 立）模拟盘算仓位须先用实盘当日快照（tmp/live_reference.json），
+# 快照缺失/非当日即拒单——模拟盘与实盘资产耦合：实盘资产为 0 / 资金全部取出时快照刷不出
+# 购买力，模拟盘无法交易。解耦后净 R 口径的可比性靠 equity-log 纸面基准（用户维护、量级
+# 与实盘相当）维持，不依赖实时实盘数值；实盘路径（account='live'）行为零改动。
+#
+# 旧实盘参考快照函数群（fetch/read/is_fresh/load_checked）退役为诊断工具：开仓 / preflight /
+# resume 链路不再调用，--refresh-live-reference CLI 保留（诊断实盘取数能力用）。
+
+
+def paper_sizing_reference(config=None):
+    """模拟盘算仓位的解耦参考数据（2026-09-12 立）。返回 dict，永不抛异常、永不返回 None。
+
+    输出字段：
+      equity_hkd          纸面权益（HKD，equity-log 末行；无记录回退 config initial_equity）
+      equity_source       权益来源描述（留痕用）
+      fx_hkd_per_usd      汇率（模拟盘两币种净值比；查询失败回退 7.80）
+      margin_leverage     总融资杠杆（模拟盘 bp/nl；查询失败回退 config 默认 4.0）
+      equity_usd          纸面权益折 USD（equity_hkd ÷ fx）
+      bp_equivalent_usd   等效总购买力（USD）= equity_usd × margin_leverage
+      degraded            降级说明列表（fx / 杠杆查不到时记录，方向保守、不阻断）
+    """
+    import json as _json
+    degraded = []
+    # 1) 纸面权益：equity-log 末行 / config 兑底（与 load_equity 同机制）
+    project_root = Path(__file__).resolve().parent.parent.parent.parent.parent
+    config_path = Path(__file__).resolve().parent.parent / "config.json"
+    initial_equity = 100000.0
+    _risk_cfg = {}
+    try:
+        with open(config_path) as f:
+            _risk_cfg = _json.load(f).get("risk", {})
+        initial_equity = float(_risk_cfg.get("initial_equity", 100000))
+    except Exception:
+        pass
+    equity_hkd = initial_equity
+    equity_source = f"config initial_equity={initial_equity:.0f}（equity-log 无记录，纸面基准兑底）"
+    try:
+        import csv as _csv
+        log_path = Path(project_root) / "signals" / "equity-log.csv"
+        if log_path.exists():
+            with open(log_path) as f:
+                rows = [r for r in _csv.DictReader(f) if not (r.get("date") or "").startswith("#")]
+            if rows:
+                equity_hkd = float(rows[-1]["equity_after"])
+                equity_source = "signals/equity-log.csv 末行（纸面权益，2026-09-12 解耦）"
+    except Exception:
+        pass
+    # 2) 模拟盘自身数据：总融资杠杆 + 汇率（都不碰实盘）
+    fx_hkd_per_usd = 7.80
+    margin_leverage = float(_risk_cfg.get("paper_margin_leverage_default", 4.0))
+    try:
+        if config is None:
+            config = load_config()
+        tc = new_trade_client(config)
+        assets = tc.get_assets()
+        s = assets[0].summary if assets else None
+        nl_usd = float(getattr(s, "net_liquidation", 0) or 0)
+        bp_usd = float(getattr(s, "buying_power", 0) or 0)
+        if nl_usd > 0 and bp_usd > 0:
+            margin_leverage = bp_usd / nl_usd
+        else:
+            degraded.append("模拟盘 bp/nl 取不到，总融资杠杆回退默认 "
+                            f"{margin_leverage:.2f}（config paper_margin_leverage_default）")
+        try:
+            pa_h = tc.get_prime_assets(base_currency='HKD')
+            pa_u = tc.get_prime_assets(base_currency='USD')
+            nl_h = nl_u = None
+            for seg in (getattr(pa_h, "segments", None) or {}).values():
+                v = getattr(seg, "net_liquidation", None)
+                if v:
+                    nl_h = float(v)
+            for seg in (getattr(pa_u, "segments", None) or {}).values():
+                v = getattr(seg, "net_liquidation", None)
+                if v:
+                    nl_u = float(v)
+            if nl_h and nl_u:
+                fx_hkd_per_usd = nl_h / nl_u
+            else:
+                degraded.append("模拟盘两币种净值取不到，汇率回退保守值 7.80")
+        except Exception:
+            degraded.append("模拟盘两币种净值取不到，汇率回退保守值 7.80")
+    except Exception:
+        degraded.append("模拟盘账户数据全取不到（杠杆与汇率均用保守默认值，不阻断模拟盘交易）")
+    equity_usd = equity_hkd / fx_hkd_per_usd
+    bp_equivalent_usd = equity_usd * margin_leverage
+    return {
+        "equity_hkd": equity_hkd, "equity_source": equity_source,
+        "fx_hkd_per_usd": fx_hkd_per_usd, "margin_leverage": margin_leverage,
+        "equity_usd": equity_usd, "bp_equivalent_usd": bp_equivalent_usd,
+        "degraded": degraded,
+    }
+
+
 def auto_sizing_equity(config, base_currency, exec_account):
     """auto 开仓脚本的算仓位权益（单币种口径）。返回 (equity, currency, source)。
 
-    - exec_account='live'：实时查实盘账户自身（2026-08-20「取净值与下单同账户」）；
-    - exec_account 非 live（默认模拟盘）：实盘当日快照 equity（2026-09-03 恒开对齐实盘）。
-
-    equity 为 None 时 source 为失败原因，调用方**必须拒单**（fail-closed，不得退模拟盘资产）。
+    - exec_account='live'：实时查实盘账户自身（2026-08-20「取净值与下单同账户」，零改动）；
+    - exec_account 非 live（默认模拟盘）：**纸面权益基准**（equity-log 末行，2026-09-12 解耦
+      立，见 paper_sizing_reference）——不再读实盘参考快照。纸面基准永远取得到（config
+      兜底），本分支不再返回 None，模拟盘交易不依赖实盘资产状态。
     """
     if exec_account == "live":
         eq, cur = load_equity_tiger(config, base_currency=base_currency)
         if eq is None:
             return None, base_currency, "实盘账户净值取不到（未开通交易/资产权限？），无法算仓位"
         return eq, cur, f"老虎实盘账户实时 get_prime_assets({cur})"
-    ref, err = load_live_reference_checked()
-    if ref is None:
-        return None, base_currency, err
-    field = "equity_hkd" if base_currency == "HKD" else "equity_usd"
-    v = ref.get(field)
-    if v is None:
-        return None, base_currency, f"实盘参考快照缺 {field} 字段，请重新刷新快照"
-    return float(v), base_currency, f"实盘参考快照 {field}（取数 {ref.get('fetched_at')}）"
+    ref = paper_sizing_reference()
+    if base_currency == "HKD":
+        return ref["equity_hkd"], "HKD", ref["equity_source"]
+    return (ref["equity_usd"], "USD",
+            f"{ref['equity_source']} 折 USD ÷ 模拟盘汇率 {ref['fx_hkd_per_usd']:.4f}（2026-09-12 解耦）")
 
 
 def auto_sizing_fx_hkd(config, exec_account):
-    """港股购买力折算汇率 HKD/USD。实盘执行 → 实盘自身净值比（与现有口径一致）；
-    模拟盘执行 → 实盘当日快照 fx。返回 (fx, err)，fx 为 None 时 err 为原因。
+    """港股购买力折算汇率 HKD/USD。实盘执行 → 实盘自身净值比（口径不变）；
+    模拟盘执行 → 模拟盘自身两币种净值比（2026-09-12 解耦，不再读实盘快照）。
+    返回 (fx, err)，fx 为 None 时 err 为原因。
     """
     if exec_account == "live":
         try:
@@ -2159,13 +2258,7 @@ def auto_sizing_fx_hkd(config, exec_account):
         except Exception:
             pass
         return None, "实盘净值取不到，无法折算 HKD/USD 汇率（函数内按 7.80 保守兜底）"
-    ref, err = load_live_reference_checked()
-    if ref is None:
-        return None, err
-    fx = ref.get("fx_hkd_per_usd")
-    if not fx:
-        return None, "实盘参考快照缺 fx_hkd_per_usd，请重新刷新快照（函数内按 7.80 保守兜底）"
-    return float(fx), None
+    return paper_sizing_reference()["fx_hkd_per_usd"], None
 
 
 if __name__ == '__main__':

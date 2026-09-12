@@ -531,6 +531,87 @@ def main():
     print(f"  确认 EV>0(80%把握): 真实 EV=0.10R→{f80 * s ** 2 / 0.10 ** 2:.0f} 笔   0.20R→{f80 * s ** 2 / 0.20 ** 2:.0f} 笔")
     print("  (鸡生蛋：基于当前 N 估的 s，初步规划、非定论；每次复盘用当下样本重算 s 重填)")
 
+    # 7. 实盘熔断核对（2026-09-12 立：两级判据机械判读 + 熔断状态三态建议）——
+    #    复盘结尾必含项的工具在场打印（「实盘熔断机制」见 review-and-evaluation.md）。
+    #    固定基于全体真实样本（第二级判据口径），不受 --mode/--shadow-only 显示过滤影响。
+    try:
+        _circuit_breaker_check(args.csv)
+    except Exception as _e:
+        print(f"\n⚠️ 实盘熔断核对异常（{_e}）——手动跑 python3 scripts/circuit_breaker.py status 确认状态")
+
+def _circuit_breaker_check(csv_path):
+    """实盘熔断核对段（2026-09-12 立）：两级判据机械判读 + 熔断状态三态建议。
+
+    第二级暂停修整线（2026-08-17 蒙特卡洛标定）：P(g>0)@f 跌破 80%（config
+    risk.circuit_breaker.pg_pos_floor）且最近连续 5 笔（recent_winless_required）无盈利，
+    两条件同时满足 → 复盘触发实盘熔断（AI 直接跑 circuit_breaker.py trip，保护方向
+    无需确认）。解除（reset）走复盘重启流程、须用户 AskUserQuestion 确认。
+    """
+    import json
+    from datetime import datetime
+    import circuit_breaker as CB
+    cfg = CB.load_config_section()
+    f = 0.02
+    try:
+        _c = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'config.json')))
+        f = float((_c.get('risk') or {}).get('risk_fraction', 0.02))
+    except Exception:
+        pass
+    all_trades = [t for t in load_trades(csv_path) if not t['shadow']]
+    st = CB.read_state()
+    print("\n【实盘熔断核对 · 两级判据机械判读 + 实盘熔断状态（2026-09-12 立机制；固定用全体真实样本，不受 --mode 过滤影响）】")
+    if cfg.get("_warning"):
+        print(f"  ⚠️ {cfg['_warning']}")
+    if not cfg.get("enabled", True):
+        print("  ⚠️ 熔断机制已关（config risk.circuit_breaker.enabled=false）——仅报告判据数值，不下熔断建议")
+    # 第一级 · 降频线：当前连败数（losing_streak.json，T131 闸已工具强制，这里只报告）
+    try:
+        _ls = json.load(open(CB.state_path().parent / "losing_streak.json"))
+        _streak = int(_ls.get("streak", 0) or 0)
+        _ls_txt = (f"当前连败 {_streak} 笔（最近序列 {_ls.get('recent_r', [])}）→ "
+                   + ("触发（当日新开仓已被 T131 闸拦截）" if _streak >= 3 else "不触发"))
+    except Exception:
+        _streak, _ls_txt = 0, "losing_streak.json 不存在（尚无平仓记录）→ 不触发"
+    print(f"  第一级 · 降频线：{_ls_txt}")
+    # 第二级 · 暂停修整线：P(g>0)@f + 最近 N 笔有无盈利
+    floor = float(cfg.get("pg_pos_floor", 0.80))
+    n_winless = int(cfg.get("recent_winless_required", 5))
+    R_all = [t['R'] for t in all_trades]
+    pg = p_g_pos(R_all, f)
+    _seq = sorted(all_trades, key=lambda t: t['exit_time'] or (t['date'] + ' ' + t['symbol']))
+    recent = [t['R'] for t in _seq[-n_winless:]] if n_winless <= len(_seq) else [t['R'] for t in _seq]
+    cond_pg = pg['P_pos'] < floor
+    cond_winless = len(recent) >= n_winless and all(r <= 0 for r in recent)
+    _rr = [f"{r:+.2f}" for r in recent]
+    print(f"  第二级 · 暂停修整线：P(g>0)@f={f*100:.1f}% = {pg['P_pos']*100:.1f}%"
+          + (f"（跌破 {floor*100:.0f}% 线 ✅）" if cond_pg else f"（未跌破 {floor*100:.0f}% 线 ✗）")
+          + f"；最近 {len(recent)} 笔 R=[{', '.join(_rr)}]"
+          + (f"（连续 {n_winless} 笔无盈利 ✅）" if cond_winless else "（有盈利笔 ✗）")
+          + " → 复合条件" + ("满足 ⚠️" if (cond_pg and cond_winless) else "不满足"))
+    level2 = cond_pg and cond_winless
+    # 三态建议
+    if st.get("status") == "tripped":
+        _ev = st.get("evidence") or {}
+        print(f"  熔断状态：⛔ tripped（{st.get('tripped_at')} 触发：{st.get('reason')}）")
+        print(f"  ▶ 建议：维持熔断——重启前核对重启判据（review-and-evaluation.md「实盘熔断机制」节）：")
+        print(f"     ① 修整结论已出（触发后的复盘已定位失效原因 + 修整动作已落地）；")
+        print(f"     ② 模拟验证段达标：修整后模拟盘/信号新样本 ≥ {cfg.get('resume_min_trades', 10)} 笔，")
+        print(f"        段内 EV>0（合计净 R>0）且无 3 连败（可用 review.py --mode auto_paper / signal 单独跑该段核对）；")
+        print(f"     ③ 两项都达标 → AI 发 AskUserQuestion（选项含「确认重启实盘 / 维持熔断」），")
+        print(f"        用户点确认后跑 reset --confirmed-by-user。当前①②状态由本次复盘人工判定填写。")
+    elif level2:
+        print("  熔断状态：ok（未熔断）")
+        print("  ▶ 建议：⚠️ 第二级暂停修整线已触发——熔断实盘！AI 复盘时直接执行（保护动作、无需确认）：")
+        print(f"     python3 scripts/circuit_breaker.py trip --reason \"P(g>0)@f={f*100:.1f}%={pg['P_pos']*100:.1f}%<{floor*100:.0f}% 且近{n_winless}笔无盈利（复盘{datetime.now().strftime('%Y-%m-%d')}）\"")
+        print(f"       --evidence-json '{{\"pg_pos\": {pg['P_pos']:.3f}, \"f\": {f}, \"n_trades\": {len(R_all)}, \"review\": \"本次复盘文件\"}}'")
+        print("     熔断后实盘开仓被脚本拒单；模拟盘/信号照常（修整验证场）；解除走复盘重启流程。")
+    else:
+        _margin = ("已破线、只差「连续无盈利」条件" if cond_pg and not cond_winless
+                   else (f"距 {floor*100:.0f}% 线还有 {(pg['P_pos']-floor)*100:.1f}pp" if pg['P_pos'] >= floor else ""))
+        print(f"  熔断状态：ok（未熔断）")
+        print(f"  ▶ 建议：继续实盘（不触发熔断）。安全边际：P(g>0) {_margin}；近 {len(recent)} 笔中盈利 "
+              f"{sum(1 for r in recent if r > 0)} 笔（触发需连续 {n_winless} 笔全无盈利）。")
+
     print("\n⚠️ 盈亏按信号参考价与 max_loss 实算、扣双边手续费（真实费率：港股佣金 max(15,×0.029%) + 印花税(个股0.1%/ETF免) + 征费 + 固定平台费15/笔；美股佣金0.0039/股 + 平台费0.004/股(最低1/笔) + 代收0.00396/股，见 fee_schedule.py），不涉及真实账户资金（信号模式）。R 分母 = 净 max_loss（毛 M + 开仓费 + 止损价平仓费，2026-08-28 净口径）——止损价精确成交的笔净 R 恰好 −1.000。")
 
 

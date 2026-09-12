@@ -300,8 +300,9 @@ def main():
                             "main_status": fill_status, "rounds": close_rounds})
         _cancel_residual_stops(config, symbol, result_base, exclude=fill_order_id)
         _cancel_residual_profits(config, symbol, result_base, exclude=fill_order_id)
-        U.attach_net_pnl_app(result_base, config, target_sym, direction, quantity,
-                             fill_price, close_order_id=fill_order_id, entry_price=entry_price)
+        # attach_net_pnl_app 定义在 trade_utils_tiger（港股版），美股工具库未 re-export（2026-09-11 修：U.T 前缀调用）
+        U.T.attach_net_pnl_app(result_base, config, target_sym, direction, quantity,
+                               fill_price, close_order_id=fill_order_id, entry_price=entry_price)
         _attach_process_metrics(result_base, config, symbol, direction, entry_price, stop_dist,
                                 quantity=quantity)
         # 连败计数更新（2026-08-31 T131，同港股版）：写 tmp/losing_streak.json 供

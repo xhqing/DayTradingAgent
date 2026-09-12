@@ -160,6 +160,14 @@ def main():
     # 无效 → blocked_by:"live_locked" 结构化拒单（详见 scripts/live_unlock.py）。
     import live_unlock
     live_unlock.live_gate_for_order_scripts(account, "open_position_tiger_us")
+    # 实盘熔断前置闸（2026-09-12 立，第三道开仓闸，同港股版）：--account live 且熔断
+    # 状态 tripped（复盘第二级暂停修整线触发）→ blocked_by:"circuit_breaker" 拒单。
+    # 只拦实盘开仓——平仓/移损/移盈不拦（风控动作任何时候可用），模拟盘不拦（熔断期
+    # = 修整验证场）。无 --force 旁路，解除唯一通道 = 复盘重启流程
+    # （reset --confirmed-by-user），详见 scripts/circuit_breaker.py 与
+    # review-and-evaluation.md「实盘熔断机制」节。
+    import circuit_breaker
+    circuit_breaker.check_gate(account, "open_position_tiger_us")
 
     if not symbol.startswith("US."):
         print(json.dumps({"ok": False, "error": f"本脚本只处理美股（US.xxx），收到 {symbol}"}))
@@ -233,15 +241,13 @@ def main():
     sizing_source = None   # 2026-09-03：算仓位权益口径来源（实盘实时 / 实盘当日快照），写入结果留痕
     if quantity == 0:
         tc = U.new_trade_client(config)
-        # 2026-09-03：auto 算仓位 equity 一律取实盘口径（实盘执行=实时查实盘自身；模拟盘执行=
-        # 实盘当日参考快照，恒开对齐实盘）。模拟盘且快照缺失/非当日 → equity None，下面拒开
-        # （fail-closed），绝不回退模拟盘自身资产算仓位。
+        # 2026-09-12 解耦：auto 算仓位 equity——实盘执行=实时查实盘自身（零改动）；模拟盘执行
+        # =equity-log 纸面权益基准折 USD（config 兜底、永不为 None，不依赖实盘资产状态）。旧
+        # 「模拟盘须实盘当日快照、缺失即 live_reference_required 拒单」口径（2026-09-03 立）废止。
         equity, currency, sizing_source = U.auto_sizing_equity_us(config, account)
         if equity is None:
             result_stub = {"ok": False,
                            "error": sizing_source or "老虎账户净值取不到，无法自动算仓位"}
-            if account != "live":
-                result_stub["blocked_by"] = "live_reference_required"
             print(json.dumps(result_stub, ensure_ascii=False))
             sys.exit(1)
         lot_size = U.get_lot_size_us(tc, symbol)
@@ -387,20 +393,14 @@ def main():
         result_base["stop_loss_adjusted"] = f"{_stop_raw} → {stop_loss}（取整到美股 tick 0.01）"
 
     # 显式传量的风控校验（2026-08-16 立，同港股版：显式传量不再绕过 f_max / max_leverage）
-    # 2026-09-03：算风控用的 equity 同样走实盘口径（auto_sizing_equity_us）——模拟盘 + 快照
-    # 缺失/非当日时**拒开**（fail-closed），跳过校验 = 放任显式传量超实盘口径风控上限。
+    # 2026-09-12 解耦：算风控用的 equity——实盘执行实时查实盘自身；模拟盘执行用 equity-log
+    # 纸面权益基准折 USD（config 兜底、永不为 None）。旧「模拟盘缺实盘快照即拒开」口径废止。
     if not result_base.get("auto_sized"):
         try:
             equity, currency, sizing_source = U.auto_sizing_equity_us(config, account)
         except Exception:
             equity, currency, sizing_source = None, None, None
         if equity is None:
-            if account != "live":
-                result_base.update({"ok": False, "blocked_by": "live_reference_required",
-                                    "error": (sizing_source or "实盘参考快照取不到，无法校验显式"
-                                              "传量的风控上限（f_max / max_leverage）")})
-                print(json.dumps(result_base, ensure_ascii=False))
-                sys.exit(1)
             result_base["risk_check_note"] = "账户净值取不到，跳过 f_max / max_leverage 校验"
         else:
             result_base["sizing_source"] = sizing_source
@@ -417,13 +417,13 @@ def main():
     # T.get_buying_power_tiger——其 to_tiger_symbol 只认 HK.xxx、美股代码报「老虎脚本
     # 只支持港股」、主动降档恒失效。改调本市场版 U.get_buying_power_us，口径同构、
     # USD 同币种无汇率换算：可买股数上限 = buying_power × long_initial_margin ÷ 参考价）。
-    # 2026-09-03：auto 模拟盘算购买力同样走实盘口径——模拟盘执行时 bp 取实盘当日快照
-    # buying_power_usd（经 bp_usd 传入），不再查模拟盘自身的购买力。
+    # 2026-09-03 旧口径（模拟盘 bp 取实盘当日快照）已废止，现行口径见下方 2026-09-12 注释。
     _bp_override_usd = None
     if account != "live":
-        _sref, _serr = T.load_live_reference_checked()
-        if _sref is not None and _sref.get("buying_power_usd"):
-            _bp_override_usd = _sref.get("buying_power_usd")
+        # 2026-09-12 解耦：模拟盘 bp = 纸面权益折 USD × 模拟盘总融资杠杆（bp/nl），
+        # 不再读实盘快照——实盘资产为 0 也不影响模拟盘交易。
+        _pref = T.paper_sizing_reference()
+        _bp_override_usd = _pref["bp_equivalent_usd"]
     _bp_shares, _bp_val, _bp_margin = U.get_buying_power_us(config, symbol, entry_ref,
                                                              bp_usd=_bp_override_usd)
     if _bp_shares is not None and quantity > _bp_shares:
