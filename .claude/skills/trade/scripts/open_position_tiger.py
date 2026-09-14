@@ -284,12 +284,13 @@ def main():
     if not symbol.startswith("HK."):
         print(json.dumps({"ok": False, "error": f"本脚本只处理港股（HK.xxx），收到 {symbol}"}))
         sys.exit(1)
-    # 一级降频线开仓前置闸（2026-08-31 T131）：连败 ≥3 笔（跨日累计）或 ≥2 笔且最近
-    # 两笔亏满型（净 R ≤ -0.95）、且最近一笔亏损平仓发生在今日 → 当日停止开新仓
-    # （review-and-evaluation.md「一级·降频线」；2026-08-28 三连败后仍开第 4 笔的首次
-    # 盘中漏执行、机械堵漏）。次日自动放行（次日再战）；--force = 用户决策覆盖。
+    # 一级降频线开仓前置闸（2026-08-31 T131；2026-09-14 作用域改实盘）：连败 ≥3 笔
+    # （跨日累计）或 ≥2 笔且最近两笔亏满型（净 R ≤ -0.95）、且最近一笔亏损平仓发生在
+    # 今日 → 实盘当日停止开新仓（review-and-evaluation.md「一级·降频线」；2026-08-28
+    # 三连败后仍开第 4 笔的首次盘中漏执行、机械堵漏）。模拟盘不拦（2026-09-14 用户
+    # 裁定：模拟盘是修整验证场，与熔断闸同作用域）。次日自动放行；--force = 用户决策覆盖。
     _ls_forced = False
-    _ls_ok, _ls_detail = U.check_losing_streak_gate()
+    _ls_ok, _ls_detail = U.check_losing_streak_gate(account=account)
     if not _ls_ok:
         if force:
             print("⚠️ 一级降频线已触发，--force 用户决策覆盖——放行开仓")

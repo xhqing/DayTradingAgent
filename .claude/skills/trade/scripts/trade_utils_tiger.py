@@ -1800,16 +1800,30 @@ def _losing_streak_triggered(state):
     return False
 
 
-def check_losing_streak_gate(now=None):
-    """开仓前置闸（2026-08-31 T131）：读连败文件判一级降频线是否当日触发。
+def check_losing_streak_gate(account=None, now=None):
+    """开仓前置闸（2026-08-31 T131；2026-09-14 用户裁定作用域改实盘）：读连败文件判一级
+    降频线是否当日触发。
 
-    返回 (allowed: bool, detail: str_or_None)。拦 = 连败达标（≥3 或 ≥2 且最近两笔亏满型）
-    **且**最近一笔亏损平仓发生在今日（date == 今日；「次日再战」= 次日自动放行）。
-    文件不存在 / 损坏 / 连败未达标 / 最近亏损非今日 → 放行（detail=None 静默）。
-    港美共用一把闸（规则不分市场——账户口径的连败序列）。
+    返回 (allowed: bool, detail: str_or_None)。拦 = 账户为实盘（account=='live'）**且**
+    连败达标（≥3 或 ≥2 且最近两笔亏满型）**且**最近一笔亏损平仓发生在今日（date == 今日；
+    「次日再战」= 次日自动放行）。模拟盘不拦（2026-09-14 用户裁定：模拟盘是修整验证场、
+    不受降频线约束——与实盘熔断闸同作用域哲学）。文件不存在 / 损坏 / 连败未达标 /
+    最近亏损非今日 / 非实盘账户 → 放行（detail=None 静默，非实盘触发时 detail 给提示性
+    说明但 allowed=True）。港美共用一把闸（规则不分市场——账户口径的连败序列）。
     """
     from datetime import datetime
     import json
+    if account != "live":
+        # 模拟盘 / 默认（未显式传账户 = 模拟盘口径）不受一级降频线约束。触发态仍返回
+        # 提示信息（在场打印、供 AI 转录留痕），但不拦单。
+        try:
+            state = json.load(open(_losing_streak_path()))
+            if _losing_streak_triggered(state) and state.get("date") == (now or datetime.now()).strftime("%Y-%m-%d"):
+                return True, (f"一级降频线今日已触发（连败 {state.get('streak')} 笔）——"
+                              f"2026-09-14 用户裁定模拟盘不受约束、照常开仓；实盘开仓仍被拦（次日自动放行）。")
+        except Exception:
+            pass
+        return True, None
     try:
         state = json.load(open(_losing_streak_path()))
     except Exception:
@@ -1824,8 +1838,9 @@ def check_losing_streak_gate(now=None):
     reason = (f"连败 {streak} 笔" if streak >= 3
               else f"连败 {streak} 笔且最近两笔都亏满型（净 R {recent_r[-2:]}，均 ≤ {FULL_LOSS_R}）")
     detail = (f"一级降频线触发（{reason}，最近序列 {recent_r}）——按 review-and-evaluation.md"
-              f"「一级·降频线」当日停止开新仓、次日再战。此为 2026-08-28 三连败后仍开第 4 笔"
-              f"漏执行的机械堵漏；确需强开须用户决策（--force 覆盖）。")
+              f"「一级·降频线」当日停止开新仓、次日再战（2026-09-14 用户裁定：作用域 = 实盘开仓，"
+              f"模拟盘照常）。此为 2026-08-28 三连败后仍开第 4 笔漏执行的机械堵漏；确需强开须"
+              f"用户决策（--force 覆盖）。")
     return False, detail
 
 
