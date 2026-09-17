@@ -185,6 +185,50 @@ try:
 except Exception:
     pass
 
+# 美股收尾截止检查（2026-09-15 用户立，工具强制·决策时刻在场打印层）：美股收尾硬截止 =
+# 美东 24:00（12 midnight ET；夏令时北京次日 12:00 / 冬令时次日 13:00）——美股交易日全部收尾
+# 工作（停盯总结 / 漏写补记 / 注销清理）最迟在此前完成、不漏进下一个美东日历日。美股交易日跨
+# 北京午夜、会话易中断（模型切换 / 断链），停盯当场没收上尾的，恢复会话 / 次日首个会话第一件事
+# 补办——preflight 启动时检测并提醒。启发式口径（已知盲区、宁可少报不误报）：已完结的美股
+# 交易日（今日 ET 之前，或今日 ET 且已过 16:00 收盘）的 -ET- 记录文件含动作记录（⏰）但无
+# 「停盯总结」字样 → 提醒 / 过线 🚨 催补；多会话日只要任一会话写过总结即不报（单会话粒度
+# 无凭据、不可检测）；零记录日不产生文件、天然不报。港股 12:00 / 16:00 边界当场闭环、不查。
+def _us_wrapup_check():
+    try:
+        from zoneinfo import ZoneInfo
+        _us_now = datetime.datetime.now().astimezone(ZoneInfo("America/New_York"))
+    except Exception as _e:
+        print(f"⏹️ 美股收尾截止检查跳过（时区库不可用：{_e}）——手动核对上一美股交易日停盯总结是否已写")
+        return
+    _root = _os.path.abspath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                                            "..", "..", "..", ".."))
+    _days = []
+    # 回看最近 7 个自然日内的 ET 交易日（截止线已全部过线 → 🚨）
+    for _back in range(1, 8):
+        _d = _us_now.date() - datetime.timedelta(days=_back)
+        if _d.weekday() < 5:
+            _days.append((_d, True))
+    # 今日 ET：已过 16:00 收盘则当日也已完结（截止线今晚美东 24:00 → 未过线提醒）
+    if _us_now.weekday() < 5 and _us_now.hour >= 16:
+        _days.append((_us_now.date(), False))
+    for _d, _passed in _days:
+        for _dir, _name in (("signals", f"{_d.isoformat()}-ET-signals.md"),
+                            ("actions", f"{_d.isoformat()}-ET-actions.md")):
+            _fp = _os.path.join(_root, _dir, _name)
+            try:
+                _txt = open(_fp, encoding="utf-8").read()
+            except Exception:
+                continue
+            if "⏰" in _txt and "停盯总结" not in _txt:
+                if _passed:
+                    print(f"🚨 美股收尾已过截止线：{_d.isoformat()} ET 的 {_dir}/{_name} 有动作记录但无"
+                          f"停盯总结——按硬规（美东 24:00 收尾截止）立即补写总结，不等")
+                else:
+                    print(f"⏹️ 美股收尾提醒：{_d.isoformat()} ET 的 {_dir}/{_name} 尚无停盯总结——当日收尾"
+                          f"最迟美东 24:00（夏令时北京次日 12:00 / 冬令时次日 13:00）前完成")
+
+_us_wrapup_check()
+
 # 标的池划分状态（2026-08-19 立，TODO「标的池自动划分」）：多会话并行时启动序列内
 # 方向研判定出候选池后跑 `python3 scripts/pool_claim.py claim <候选>` 认领（互斥划分，
 # 同一标的不落两会话）；此处打印当前全局划分让 AI / 用户启动即见「谁盯哪些」。
