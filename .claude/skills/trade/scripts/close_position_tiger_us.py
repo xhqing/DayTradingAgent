@@ -204,21 +204,41 @@ def main():
     stp = stps[0] if stps else None
     profit_o = profits[0] if profits else None
 
-    # 平仓过程指标素材（2026-08-05 立）：开仓价 = 持仓 cost_price、止损距 = |开仓价 − 活动
-    # 止损触发价|（M = 仓位 × 止损距、毛值，与复盘口径一致）。平仓成交后由
-    # _attach_process_metrics 原生补记 mfe_R / mae_R（复盘过程指标直接读、不必回拉历史 K）。
+    # 平仓过程指标素材（2026-08-05 立；2026-09-18 修 T152，同港股版）：开仓价优先取
+    # 【当日开仓订单的 avg_fill_price】（开仓成交价，与 SKILL.md「修正 max_loss = 仓位 ×
+    # |开仓成交价 − 止损价|」定义一致），取不到再回退持仓 cost_price（含开仓费摊薄、
+    # R 分母偏大——旧口径实测偏大约一次开仓费）；止损距 = |开仓价 − 活动止损触发价|。
     entry_price = None
+    entry_src = None
     stop_dist = None
+    open_side = "BUY" if direction == "long" else "SELL"   # 开仓方向 = 平仓反向
     try:
-        pos = U.get_open_position_us(config, symbol)
-        if pos and pos.get("cost_price"):
-            entry_price = float(pos["cost_price"])
-            if stp is not None:
-                aux = float(getattr(stp, "aux_price", 0) or 0)
-                if aux > 0:
-                    stop_dist = abs(entry_price - aux)
+        for o in reversed(tc.get_orders() or []):
+            osym = str(getattr(getattr(o, "contract", None), "symbol", ""))
+            if osym != target_sym or _status_str(o) != "Filled":
+                continue
+            if str(getattr(o, "side", "")).upper() != open_side:
+                continue
+            avg = getattr(o, "avg_fill_price", None)
+            if avg and float(avg) > 0:
+                entry_price = float(avg)
+                entry_src = "open_order_avg_fill_price（开仓成交价，SKILL.md 定义口径）"
+                break
     except Exception:
         pass
+    try:
+        pos = U.get_open_position_us(config, symbol)
+        if entry_price is None and pos and pos.get("cost_price"):
+            entry_price = float(pos["cost_price"])
+            entry_src = "position_cost_price（开仓订单成交价缺失兜底，含费摊薄、R 分母略偏大）"
+    except Exception:
+        pass
+    if entry_price is not None and stp is not None:
+        aux = float(getattr(stp, "aux_price", 0) or 0)
+        if aux > 0:
+            stop_dist = abs(entry_price - aux)
+    if entry_src:
+        result_base["entry_price_source"] = entry_src
 
     # ===== 唯一平仓机制：「止损/止盈触发价交替逼近现价」循环（2026-08-23 用户立，同港股版）=====
     # 平仓不下普通订单（用户当日修订口径）：一律靠止损/止盈条件单触发后的市价成交离场。
@@ -310,7 +330,7 @@ def main():
         import trade_utils_tiger as T
         result_base["losing_streak"] = T.update_losing_streak(
             "US", symbol, direction, entry_price, stop_dist, quantity, fill_price,
-            net_pnl=result_base.get("net_pnl_app"))
+            net_pnl=result_base.get("net_pnl_app"), close_order_id=fill_order_id)
         print(json.dumps(result_base, ensure_ascii=False))
         sys.exit(0)
     else:

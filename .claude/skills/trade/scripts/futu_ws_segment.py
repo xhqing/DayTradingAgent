@@ -96,6 +96,7 @@ seg = {}
 targets = []
 logs = {}
 ctx = None
+written = {}   # sym -> [(time, last, high, low)] 本段写进 log 的行（T153 坏点校正重写尾行用）
 
 
 STRIP_FLAGS = ('--mode', '--account')
@@ -242,6 +243,7 @@ def main():
                 # 下游 monitor_summary 的日高/日低/量比数据全错（08-14 当天复盘数据已被污染）。
                 with open(logs[sym], 'a') as f:
                     f.write(f'{cur_sec},{sym},{d["last"]},,,,,{d["high"]},{d["low"]},,\n')
+                    written.setdefault(sym, []).append((cur_sec, d['last'], d['high'], d['low']))
         time.sleep(0.2)
 
     try:
@@ -253,8 +255,108 @@ def main():
     return
 
 
+def _snapshot_bounds(symbols):
+    """段结束时取快照日高/日低（2026-09-18 立，T153 富途推送脏数据过滤的权威校正源）。
+
+    为什么用快照日高低做权威口径：逐笔推送里偶尔夹带远离盘口的坏点（09-16 实录：00700
+    推送 low 钉在 429.80、当时真实成交 434.0-434.4、快照日低 433.8 与之矛盾；同日 432.0
+    孤立跳变），坏点与真实插针（同日 00981 真实插针 60.65）在价格序列上【无法区分】
+    （坏点偏离邻点 0.92-0.97%、真实插针偏离 1.14%，单阈值拦坏点必误杀真插针）——而
+    交易所侧日高/日低只含真实成交：坏点越界必被裁掉，真实插针在日低里、不受影响。
+    返回 {sym: (day_high, day_low)}；收不到快照返回空 dict（fail-open：保留原值、只提示）。"""
+    try:
+        from futu import RET_OK as _ROK2
+        c = OpenQuoteContext('127.0.0.1', 11111)
+        try:
+            ret, data = c.get_market_snapshot(list(symbols))
+        finally:
+            c.close()
+        if ret != _ROK2:
+            return {}
+        out = {}
+        for _, row in data.iterrows():
+            try:
+                out[row['code']] = (float(row['high_price']), float(row['low_price']))
+            except Exception:
+                pass
+        return out
+    except Exception:
+        return {}
+
+
+def _correct_segment_extremes():
+    """T153：段结束统计前的坏点校正（原地改 seg 的 high/low + 重写本段 CSV 尾行）。
+
+    口径：段高/段低越出快照日高/日低 ±0.2% 容差 → 判为推送坏点，用「干净的每秒点
+    （同样按日高低过滤）」重算段高低；无干净点时落到日高/日低本身。本段写进 log 的
+    high/low 列同步重写（running 口径重算），下游 VWAP 检查 / monitor_summary 箱体
+    统计不再被污染。快照本身可能滞后数秒：刚发生的真实新极端若还没进快照会被误裁
+    ——客忍（快速行情下的军见事件，代价 = 本段少报一个真实极值，下一段自动找回）。"""
+    live = [s for s in seg.keys() if seg[s].get('sec')]
+    bounds = _snapshot_bounds(live) if live else {}
+    corrected = []
+    for sym, d in seg.items():
+        if not d.get('sec') or sym not in bounds:
+            continue
+        dh, dl = bounds[sym]
+        if not dh or not dl or dh <= 0 or dl <= 0:
+            continue
+        tol = 0.002
+        clean = {t: v for t, v in d['sec'].items() if dl * (1 - tol) <= v <= dh * (1 + tol)}
+        old_h, old_l = d.get('high'), d.get('low')
+        if old_h is not None and old_h > dh * (1 + tol):
+            d['high'] = max(clean.values()) if clean else dh
+        if old_l is not None and old_l < dl * (1 - tol):
+            d['low'] = min(clean.values()) if clean else dl
+        if d.get('high') != old_h or d.get('low') != old_l:
+            parts = []
+            if d.get('high') != old_h:
+                parts.append(f'段高 {old_h}→{d["high"]}')
+            if d.get('low') != old_l:
+                parts.append(f'段低 {old_l}→{d["low"]}')
+            corrected.append(f'{sym} ' + ' / '.join(parts) + f'（快照日高 {dh} 日低 {dl}）')
+            # 重写本段 CSV 尾行（high/low 列按干净秒点 running 口径重算）
+            rows = written.get(sym) or []
+            if rows:
+                try:
+                    with open(logs[sym]) as f:
+                        lines = f.readlines()
+                    n = len(rows)
+                    if n <= len(lines) and lines[-n].startswith(rows[0][0] + ','):
+                        run_h = run_l = None
+                        out_lines = []
+                        for (t, _last, _h, _l), line in zip(rows, lines[-n:]):
+                            v = clean.get(t)
+                            if v is not None:
+                                run_h = v if run_h is None else max(run_h, v)
+                                run_l = v if run_l is None else min(run_l, v)
+                            parts = line.rstrip('\n').split(',')
+                            if len(parts) >= 9:
+                                if run_h is not None:
+                                    parts[7] = str(run_h)
+                                if run_l is not None:
+                                    parts[8] = str(run_l)
+                            out_lines.append(','.join(parts) + '\n')
+                        lines[-n:] = out_lines
+                        with open(logs[sym], 'w') as f:
+                            f.writelines(lines)
+                except Exception as _e:
+                    print(f'⚠️ {sym} 坏点校正后 CSV 尾行重写失败（{_e}）——log 里 high/low 列仍含坏点，复盘时注意')
+    if corrected:
+        print('⚠️ 采样坏点校正（T153，快照日高/日低权威口径）：' + '；'.join(corrected), flush=True)
+    elif bounds:
+        print('ℹ️ 快照日高/日低校验通过（无坏点）：'
+              + '；'.join(f'{s} 日高 {b[0]} 日低 {b[1]}' for s, b in bounds.items()), flush=True)
+
+
 def finish():
     """段结束统计输出（由 main 的 timeout 或正常流程调用）。"""
+    _correct_segment_extremes()   # T153：先按快照日高低裁坏点，再出统计/破位告警
+    # 🕐 段结束墙钟（2026-09-18 T158 立，工具强制）：判断行的时间标签与「距边界
+    # N 分钟」一律照抄脚本实测输出（本行 + 停盯边界提醒行）、禁止 AI 心算推算——
+    # 长会话中 AI 自推时间累计漂移可达 25 分钟（09-18 实录），直接污染压缩止盈窗口
+    # 的净赔率实算与停盯收尾时机判断。
+    print(f'🕐 段结束墙钟 {time.strftime("%H:%M:%S")}（判断行时间标签照抄本行，禁止推算）', flush=True)
     print('\n📊 富途逐笔每秒采样段结束统计（按秒点列 + 段高低 + 破位）:')
     for sym, d in seg.items():
         secs = sorted(d['sec'].items())
@@ -323,7 +425,8 @@ def finish():
     # ⏰ 临近停盯边界的开仓资格提醒（2026-08-18 立，对齐 monitor_segment）：距停盯 ≤60 分钟
     # 每段打印剩余分钟 + 「>5 分钟开仓资格仍在、禁止自设截止线」；≤5 分钟打印绝对不开仓窗口。
     try:
-        from trade_utils_tiger import minutes_to_session_end, OPEN_WINDOW_MIN
+        from trade_utils_tiger import (minutes_to_session_end, OPEN_WINDOW_MIN,
+                                       min_net_odds_from_config)
         _syms = [t[0] for t in targets]
         for _mkt in ('HK', 'US'):
             if any(s.startswith(f'{_mkt}.') for s in _syms):
@@ -332,7 +435,7 @@ def finish():
                     if _mins > OPEN_WINDOW_MIN:
                         print(
                             f'⏰ 距{_mkt}停盯边界 {_mins:.0f} 分钟（>5）：开仓资格仍在——按压缩止盈'
-                            f'实算净赔率 ≥1.8 照常评估，禁止自设「临近收盘/午休不开仓」截止线'
+                            f'实算净赔率 ≥{min_net_odds_from_config():g} 照常评估（config 权威值），禁止自设「临近收盘/午休不开仓」截止线'
                             f'（2026-08-18 用户立；下单脚本另有 ≤5 分钟时间闸硬拦）。'
                             f'⛔ 同时：空仓 / 无信号 ≠ 停盯理由——盯到用户喊停或收盘（取先到），'
                             f'停盯收尾脚本已受 stop_gate 时间闸硬拦（2026-08-24 立，T118）。',

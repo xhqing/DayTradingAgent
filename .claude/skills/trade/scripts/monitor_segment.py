@@ -491,11 +491,12 @@ def main():
 
     # 临近停盯边界的开仓资格提醒（2026-08-18 立，工具强制防「自设截止线」）：
     # 距该市场停盯边界 ≤60 分钟窗口内每段打印剩余分钟 + 规则原文要点——距停盯 >5 分钟
-    # 开仓资格就在，按压缩止盈实算净赔率 ≥1.8 照常评估；AI 无权自设「临近收盘/午休
+    # 开仓资格就在，按压缩止盈实算净赔率 ≥config 权威门槛照常评估；AI 无权自设「临近收盘/午休
     # 不开仓」截止线（2026-08-17、2026-08-18 两次同类违规后用户立工具强制）。
     # ≤5 分钟段改为打印「绝对不开仓窗口、只盯到停盯」。
     try:
-        from trade_utils_tiger import minutes_to_session_end, OPEN_WINDOW_MIN
+        from trade_utils_tiger import (minutes_to_session_end, OPEN_WINDOW_MIN,
+                                       min_net_odds_from_config)
         for _mkt in ("HK", "US"):
             if any(s.startswith(f"{_mkt}.") for s in syms):
                 _mins = minutes_to_session_end(_mkt)
@@ -503,7 +504,7 @@ def main():
                     if _mins > OPEN_WINDOW_MIN:
                         print(
                             f"⏰ 距{_mkt}停盯边界 {_mins:.0f} 分钟（>5）：开仓资格仍在——按压缩止盈"
-                            f"实算净赔率 ≥1.8 照常评估，禁止自设「临近收盘/午休不开仓」截止线"
+                            f"实算净赔率 ≥{min_net_odds_from_config():g} 照常评估（config 权威值），禁止自设「临近收盘/午休不开仓」截止线"
                             f"（2026-08-18 用户立；下单脚本另有 ≤5 分钟时间闸硬拦）。"
                             f"⛔ 同时：空仓 / 无信号 ≠ 停盯理由——盯到用户喊停或收盘（取先到），"
                             f"停盯收尾脚本已受 stop_gate 时间闸硬拦（2026-08-24 立，T118）。",
@@ -580,6 +581,11 @@ def main():
     except Exception as _e:
         print(f"[赶顶检测 err:{_e}]", flush=True)
 
+    # 🕐 段结束墙钟（2026-09-18 T158 立，工具强制）：判断行的时间标签与「距边界
+    # N 分钟」一律照抄脚本实测输出（本行 + 停盯边界提醒行）、禁止 AI 心算推算——
+    # 长会话中 AI 自推时间累计漂移可达 25 分钟（09-18 实录），直接污染压缩止盈窗口
+    # 的净赔率实算与停盯收尾时机判断。
+    print(f'🕐 段结束墙钟 {time.strftime("%H:%M:%S")}（判断行时间标签照抄本行，禁止推算）', flush=True)
     # 段结束完整采样统计（2026-08-03 立）：段结束自带「从开盘到当前的完整统计」，
     # AI 看段结束即见整体（点数/开/末/high/low/买卖比均/量比均/近5点），不只看本段 4-5 点。
     # 为什么：曾只看段结束当前段、漏整体趋势（2026-08-03 用户三次纠正：降频/没拉全貌/没看完整log）。

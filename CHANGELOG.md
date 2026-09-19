@@ -2,6 +2,25 @@
 
 本文件记录 DayTradingAgent 每个版本的主要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased]
+
+### 变更（批量办结待办 11 条：美股跨午夜持仓失明 / 连败漏记 / R 分母口径 / 富途脏点 / log 拒写坏数据 / 门槛文案脱节 / 影子 sec-type / 认领开关 / 墙钟时刻 + T146 四假设验证报告，2026-09-18 23:15）
+
+- **为什么改**：用户指令「把待办全部完成」。当晚盘外批量处理：红色 T156、橙色 T151/T152/T153/T144/T154/T150/T158、黄色 T155/T141、绿色 T146 共 11 条办结归档；T119 / T125 中间进展就地更新（N=36 中间对账 + 首次先到 vs 被拦对照）；剩 T157/T145（修复方向待用户取舍）与 T140/T136/T123/T119/T120/T125/T147-T149（外部依赖 / 样本积累 / 需 git 推送验收）无法当晚办结。
+- **改了什么**（11 条详情见 `TODO-archive.md`「2026-09-18 批量处理」节，此处只列文件面）：
+  1. `account_status.py`：`_today_action_files()` 改 ET 跨午夜回看（最新 ET 文件 + 前一天配对）；`_parse_actions` 补美股代码格式（原正则只认 HK、美股持仓推导从未生效——T156 排查副发现）、止损/成交价正则补货币前缀（HK$/US$/$）、新增 `fill` 字段；`position_status` 被动平仓告警处新增 `_passive_close_backfill`（T151：找近 2 日已成交条件单取平仓价/订单 id，从 actions 开仓记录取入场/止损，自动补记连败）。
+  2. `trade_utils_tiger.py`：新增 `min_net_odds_from_config()`（T155，4 处打印改读 config 权威值）；`update_losing_streak` 增 `close_order_id` 去重键（state.`recorded_close_ids` 保留最近 30 个，主动/自动/手动三路同源去重，T151）。
+  3. `close_position_tiger.py` / `close_position_tiger_us.py`：entry_price 改优先取当日开仓订单 avg_fill_price（T152，SKILL.md 定义口径、消除成本价含费摊薄 + 开仓费重复计入）；连败调用传 close_order_id。
+  4. `futu_ws_segment.py`：段结束新增 `_correct_segment_extremes`（T153，快照日高/日低权威校正坏点 + 本段 CSV 尾行重写；选型理由：坏点偏离 0.92-0.97% 与真实插针 1.14% 无法用单阈值区分，只能靠交易所侧日高低裁决）。
+  5. `log_action.sh` / `log_signal.sh`（T144+T154）：标题行判定剥离 `^#+\s*` 前缀（`## 🟢…` 与裸标题都认）、已含 ⏰ 行不重复插入、预检不到标题行拒写 + 非零退出（废弃「兜底追加末尾」危险默认）。
+  6. `pool_claim.py`（T141）：claim/release 共用 `_claimable_tokens`（跳 `-` 开头开关 token + 非标的格式警告丢弃）。
+  7. `open_position_tiger(_us).py`（T150）：shadow_hint 自动带 `--sec-type etf`（白名单判定）。
+  8. `monitor_segment.py` / `ws_segment.py` / `futu_ws_segment.py`（T158）：段结束补打 `🕐 段结束墙钟` 实测行；`monitoring.md` 每段最小输出模板新增「时间标签照抄脚本实测、禁止推算」约束。
+  9. `actions_check.py`：文件口径同步复用 `_today_action_files()`（T156 同源，闭环检查不再对美股跨午夜失明）。
+  10. `update_losing_streak.py` CLI 增可选 close_order_id 第 9 参。
+  11. 新增 `reviews/2026-09-18-t146-t119-analysis.md`（T146 四假设验证 + T119 N=36 中间对账 + T125 首次对照；结论：四假设均不到改规则的统计强度、维持现状）+ 构建脚本 `tmp/t146_build.py` / `t146_stats.py` / `t146_atr.py`（tmp/ 不入库）；`TODO.md` / `TODO-archive.md` 对应归档与更新。
+- **回归风险评估**：① T156 的多文件扫描只影响持仓推导输入面（多看到昨夜 ET 仓位是修复目标本身；更早会话未闭环记录不混入——只取最新 ET 文件 + 前一天）；② T151 补记带 order_id 去重 + 全链 try/except 不阻断告警，但**估算口径无 App 实测净利**（r_basis 标 estimate），连败闸调判据的输入与复盘可能有小口径差（同 T152 修复方向一致）；③ T153 快照滞后数秒时刚发生的真实新极端可能被误裁（罕见，代价 = 本段少报一个极值、下一段自动找回，注释已明示）；④ T144/T154 拒写是**行为变更**——旧格式依赖「兜底写末尾」的调用方现在会拿到非零退出，但这正是待办要求的修复（坏数据宁可拒写）；⑤ T155 文案变更无行为面（下单硬校验本就读 config）；⑥ T152 改 entry 口径便 R 分母偏小（修复后更准），与 09-16 实录的人工复算一致；⑦ 全部脚本编译通过 + 离线验证（SPCX 场景 / mock 老虎订单 / 09-16 实录数据回放 / log 四用例），未动真实账户与行情链路。⚠️ 上述改动均在盘外（22:48-23:15，港股已收 / 无美股会话在场）落地，下个交易日首个盯盘会话应留意段输出新墙钟行与坏点校正行是否正常。
+
 ## [0.2.0] - 2026-09-18
 
 第二个版本，涵盖 2026-07-30（0.1.0）之后的全部迭代。本条目由原「Unreleased」三个分节合并归档而成（原两个内部 Unreleased 分节头转为本条目内的分节标记）。主要内容：

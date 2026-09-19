@@ -139,12 +139,20 @@ def main():
         print(json.dumps({"ok": False, "error": f"--account 必须是 live/paper，收到 '{account}'"}))
         sys.exit(1)
 
+    # 文件口径（2026-09-18 修，T156 同源）：复用 account_status._today_action_files 的
+    # 回看逻辑——HKT 当日 + ET 最新文件及其前一天（美股会话跨北京午夜，只扫「今天」
+    # 会让昨夜开仓的记录整个缺席、闭环检查对美股跨午夜仓位失明）；market 标签仍按
+    # 文件名后缀判定，不受影响。
     today = date.today().strftime("%Y-%m-%d")
-    files = [os.path.join(ACTIONS_DIR, f"{today}-{tag}-actions.md")
-             for tag in ("HKT", "ET")]
-    files = [f for f in files if os.path.exists(f)]
+    try:
+        import account_status as _AS
+        files = _AS._today_action_files()
+    except Exception:
+        files = [os.path.join(ACTIONS_DIR, f"{today}-{tag}-actions.md")
+                 for tag in ("HKT", "ET")]
+        files = [f for f in files if os.path.exists(f)]
     if not files:
-        print(f"✅ 当日（{today}）无 actions 文件——无 auto 交易记录，闭环检查通过。")
+        print("✅ 当日（含美股跨午夜回看）无 actions 文件——无 auto 交易记录，闭环检查通过。")
         sys.exit(0)
 
     events = _parse_events(files)

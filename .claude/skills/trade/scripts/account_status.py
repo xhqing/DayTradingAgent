@@ -25,7 +25,7 @@
 import os
 import re
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', '..'))
@@ -38,13 +38,42 @@ _LIVE_MARK = re.compile(r'\|\s*账户\s*\|\s*实盘')
 
 
 def _today_action_files():
-    """当日全部交易动作文件（HKT / ET 都可能）。返回存在的文件列表。"""
-    today = date.today().strftime('%Y-%m-%d')
+    """当日（含美股跨午夜回看）交易动作文件（HKT / ET）。返回存在的文件列表。
+
+    2026-09-18 修（T156，09-16 夜盘实录）：美股时段跨北京午夜——ET 动作文件按发起
+    时刻的本地（北京）日期命名，北京次日凌晨起 date.today() 已进次日，昨夜开仓的
+    持仓会从「当日文件」扫描范围里消失：① 「自己开仓后每次调用都查账户」退化为
+    「空仓不查」零 API 调用；② 「账户已无持仓但 actions 无平仓记录」告警（被动平仓
+    唯一检测器）对美股跨午夜仓位彻底失明（09-17 实录：SPCX 22:52 止损被动成交、
+    account_status 仍报「空仓不查」）。
+    修法：HKT 文件维持当日单日（港股时段与北京日期同日、无跨午夜问题）；ET 文件
+    回看最近 7 个自然日找【最新一个】存在的 ET 动作文件，并带上它「前一天」的
+    ET 文件（若存在）——一个美股会话的记录最多落两个文件（会话日 D 与跨午夜后续
+    写的 D+1），「最新 + 前一天」两种情况都覆盖（回看 7 天只为跨周末找到最新文件，
+    不是把 7 天全扫——更早会话的未闭环记录由 preflight _us_wrapup_check 收尾检查
+    负责，不混进持仓推导）。
+    """
+    today = date.today()
     out = []
-    for name in ('HKT', 'ET'):
-        p = os.path.join(_ACTIONS_DIR, f'{today}-{name}-actions.md')
+    hkt = os.path.join(_ACTIONS_DIR, f'{today.strftime("%Y-%m-%d")}-HKT-actions.md')
+    if os.path.exists(hkt):
+        out.append(hkt)
+    et_files = []
+    for back in range(7):
+        d = today - timedelta(days=back)
+        p = os.path.join(_ACTIONS_DIR, f'{d.strftime("%Y-%m-%d")}-ET-actions.md')
         if os.path.exists(p):
-            out.append(p)
+            et_files.append(p)
+            # 配对文件 = 最新文件日期「前一天」的 ET 文件（若存在）：一个美股会话的记录
+            # 最多落两个文件（会话日 D 与跨午夜后续写的 D+1）——最新文件可能是会话首段
+            # （D，续写文件还没写）也可能是续写段（D+1，首段在 D），取「最新 + 前一天」
+            # 两种情况都覆盖（同日无新会话时前一天文件就是同一会话首段）。
+            d_prev = d - timedelta(days=1)
+            pp = os.path.join(_ACTIONS_DIR, f'{d_prev.strftime("%Y-%m-%d")}-ET-actions.md')
+            if os.path.exists(pp):
+                et_files.append(pp)
+            break
+    out.extend(et_files)
     return out
 
 
@@ -78,23 +107,39 @@ def _parse_actions(files):
                 etype = 'move'
             else:
                 continue
-            m = re.search(r'([A-Z]{2}\.\d{5}|\d{5})', title)
+            m = re.search(r'([A-Z]{2}\.[A-Z]+(?:\.[A-Z]+)?|[A-Z]{2}\.\d{5}|\d{5})', title)
             sym = m.group(1) if m else ''
+            # 2026-09-18 修（T156 排查副发现）：原正则只认 HK 格式（两个字母+5位数字），
+            # 美股代码（US.SPCX / US.BRK.B）永远匹配不上 → sym='' 被空标的过滤排除、
+            # 持仓推导对美股全部失明——「账户已无持仓但 actions 无平仓记录」告警
+            # （被动平仓唯一检测器）对美股从未生效过（09-16 SPCX 止损被动成交无告警
+            # 的另一半根因）。现补美股字母代码格式。
             mtime = re.search(r'⏰\s*动作时间：(\S+)', sec)
             ts = mtime.group(1) if mtime else ''
             mdir = re.search(r'\|\s*方向\s*\|\s*(\S+)', sec)
             direction = mdir.group(1) if mdir else ''
             mqty = re.search(r'\|\s*量\s*\|\s*(\d+)', sec)
             qty = int(mqty.group(1)) if mqty else 0
-            # 止损价：开仓「| 止损 | **330.0**…」/ 移损「| 新止损 | 443.0…」（表格行首个数字）
+            # 止损价：开仓「| 止损 | **HK$61.90**…」/ 移损「| 新止损 | **443.0…」（表格行首个
+            # 数字；2026-09-18 修：原正则 `\*{0,2}(\d+` 遇货币前缀（HK$/US$/$）即失配 →
+            # stop 恒为 None，「止损单铁律」恢复指引的失效前止损价一直取不到）
+            _pp = r'(?:HK\$|US\$|\$)?\s*'
             stop = None
-            mstop = (re.search(r'\|\s*止损\s*\|\s*\*{0,2}(\d+(?:\.\d+)?)', sec)
+            mstop = (re.search(r'\|\s*止损\s*\|\s*\*{0,2}' + _pp + r'(\d+(?:\.\d+)?)', sec)
                      if etype == 'open'
-                     else re.search(r'\|\s*新止损\s*\|\s*\*{0,2}(\d+(?:\.\d+)?)', sec))
+                     else re.search(r'\|\s*新止损\s*\|\s*\*{0,2}' + _pp + r'(\d+(?:\.\d+)?)', sec))
             if mstop:
                 stop = float(mstop.group(1))
+            # 开仓成交价（2026-09-18 立，T151 被动平仓自动补记连败的数据源）：
+            # 「| **成交价** | **HK$62.50** |」——修正 max_loss / R 分母的入场价口径
+            # （SKILL.md 定义 = 开仓成交价，非持仓成本价）
+            fill = None
+            if etype == 'open':
+                mfill = re.search(r'\|\s*\*{0,2}成交价\*{0,2}\s*\|\s*\*{0,2}' + _pp + r'(\d+(?:\.\d+)?)', sec)
+                if mfill:
+                    fill = float(mfill.group(1))
             events.append({'ts': ts, 'type': etype, 'sym': sym, 'dir': direction,
-                           'qty': qty, 'stop': stop})
+                           'qty': qty, 'stop': stop, 'fill': fill})
     # 按时间排序（无时间戳的按记录顺序兜底）
     events.sort(key=lambda e: e['ts'] if e['ts'] else '')
     return events
@@ -456,6 +501,96 @@ def _query_account(account):
     return positions, {k: v[0] for k, v in stops.items()}, account_tag, query_err
 
 
+def _passive_close_backfill(sym, info, account):
+    """被动平仓自动补记连败（2026-09-18 立，T151）。
+
+    背景：update_losing_streak 只在 close_position 脚本（AI 主动平仓）里调，止损/
+    止盈条件单被动成交不经过它——连败计数文件漏记这类笔（09-16 实录：00981 第二笔
+    STP 被动触发 −0.810R 未进 losing_streak.json，一级降频线 / 熔断判据被系统性低估）。
+    本函数在 position_status 检出「账户已无持仓但 actions 无平仓记录」时自动补：
+      ① 从当日订单里找该标的最新一笔【已成交的条件单】（STP/带 parent_id 的附加腿
+         ——主动平仓的循环逼近机制也靠条件单触发，开仓主单是 LMT/MKT 不会被误抓），
+         取 avg_fill_price 作平仓价、订单 id 作去重键；
+      ② 入场价 / 止损价从当日 actions 开仓记录解析（_parse_actions 的 fill / stop
+         字段，SKILL.md 定义口径）；
+      ③ 调 U.update_losing_streak（close_order_id 去重：主动路径 / 本补记 / 手动 CLI
+         同一笔只计一次）。
+    返回给段输出的一行状态文案（成功 / 跳过原因），失败不抛异常（不阻断告警本身）。
+    """
+    try:
+        from trade_utils_tiger import load_config, update_losing_streak
+    except Exception as e:
+        return f'    → [连败自动补记] 跳过（模块导入失败: {e}）'
+    code = sym.split('.')[-1]
+    market = 'US' if sym.upper().startswith('US.') else 'HK'
+    direction = 'long' if '多' in (info.get('dir') or '') else 'short'
+    try:
+        config = load_config(account=account) if account == 'live' else load_config()
+        # 订单窗口取近 2 个自然日（不用 get_today_orders_tiger 的「当日」口径——它按
+        # order_time 下单时刻过滤，美股跨午夜场景下单在昨天、被动成交在今天的订单会
+        # 被排除；本补记关心的只是「最新一笔已成交条件单」）
+        from tigeropen.trade.trade_client import TradeClient
+        import time as _t
+        orders = (TradeClient(config).get_orders() or [])
+        cutoff = _t.time() - 2 * 86400
+        recent = []
+        for o in orders:
+            tm = getattr(o, 'order_time', None)
+            if tm is None:
+                recent.append(o)
+                continue
+            try:
+                if int(tm) / 1000 >= cutoff:
+                    recent.append(o)
+            except (TypeError, ValueError, OSError):
+                recent.append(o)
+        orders = recent
+        close_fill = None
+        close_oid = None
+        for o in reversed(orders):
+            csym = str(getattr(getattr(o, 'contract', None), 'symbol', ''))
+            if csym != code:
+                continue
+            st = getattr(o, 'status', None)
+            st_s = st.value if hasattr(st, 'value') else str(st)
+            if st_s != 'Filled':
+                continue
+            ot = str(getattr(o, 'order_type', '') or '').upper()
+            legs = getattr(o, 'order_legs', None) or []
+            conditional = ('STP' in ot or 'STOP' in ot or 'TRAIL' in ot
+                           or getattr(o, 'parent_id', None) is not None
+                           or any(str(getattr(l, 'leg_type', '')).upper() in ('LOSS', 'PROFIT')
+                                  for l in legs))
+            if not conditional:
+                continue
+            avg = getattr(o, 'avg_fill_price', None)
+            oid = getattr(o, 'id', None) or getattr(o, 'order_id', None)
+            if avg and float(avg) > 0:
+                close_fill, close_oid = float(avg), oid
+                break
+        if close_fill is None:
+            return ('    → [连败自动补记] 跳过：当日订单里找不到该标的已成交的条件单'
+                    '（可能用户 App 手动市价平仓）——按停盯总结闭环流程手动补记')
+        # 入场价 / 止损价：当日 actions 开仓记录（倒序取最新一笔有成交价+止损价的）
+        events = [e for e in _parse_actions(_today_action_files())
+                  if e['type'] == 'open' and e['sym'] in (sym, code)
+                  and e.get('fill') and e.get('stop')]
+        if not events:
+            return '    → [连败自动补记] 跳过：actions 开仓记录解析不到成交价/止损价——手动补记（update_losing_streak.py）'
+        ev = events[-1]
+        stop_dist = abs(ev['fill'] - ev['stop'])
+        res = update_losing_streak(market, sym, direction, ev['fill'], stop_dist,
+                                   info.get('qty') or ev['qty'], close_fill,
+                                   close_order_id=close_oid)
+        if 'skipped' in res:
+            return f"    → [连败自动补记] {res['skipped']}"
+        return (f"    → [连败自动补记] ✅ 已按被动成交口径结算：R={res.get('r_multiple')}"
+                f"（basis={res.get('r_basis')}，平仓订单 id {close_oid}），"
+                f"连败 streak={res.get('streak')}——仍需按流程补写平仓动作记录（log_action）")
+    except Exception as e:
+        return f'    → [连败自动补记] 跳过（{str(e)[:120]}）'
+
+
 def position_status(account=None):
     """持仓状态段输出（工具强制）。无持仓返回 None（不查账户，遵循「空仓不查」）；有持仓返回多行字符串。
 
@@ -526,6 +661,10 @@ def position_status(account=None):
             continue
         if acct_qty == 0:
             lines.append(f'🚨 {base} —— 账户已无持仓但 actions 无平仓记录：止损可能已触发/已被平，AI 立即核对账户！')
+            # T151（2026-09-18）：被动平仓场景自动补记连败（止损/止盈条件单被动成交
+            # 不走 close 脚本、连败计数此前漏记）；order_id 去重防双计，结果打进段输出
+            # 让 AI / 用户看到补记动作与口径。
+            lines.append(_passive_close_backfill(sym, info, sym_acct[sym]))
         elif acct_qty != info['qty']:
             lines.append(f'⚠️ {base} —— 数量与 actions 记录不一致（部分成交/降档/手动改单），以账户为准')
         else:

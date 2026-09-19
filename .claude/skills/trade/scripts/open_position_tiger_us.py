@@ -497,11 +497,14 @@ def main():
             # 口径时，AI 应把这笔机会按影子交易落纸面记录（shadow_trade.py open），不丢弃样本。
             _shadow_hint = None
             if _gate["blocked_by"] in ("open_exposure_today", "active_open_order"):
+                # 2026-09-18（T150）：ETF 标的自动带 --sec-type etf（对齐港股版；美股费率
+                # 虽不随类型变，保持影子记录类型字段与真实样本同源可比）
+                _sec_flag = " --sec-type etf" if U._sec_type_of(symbol) == "etf" else ""
                 _shadow_hint = (
                     f"别人先到了——按【影子交易】记录这笔机会再继续盯："
                     f"python3 shadow_trade.py open ET {symbol} {direction} "
                     f"{entry_ref} {stop_loss} {target} {quantity} "
-                    f"--blocked-by {_gate['blocked_by']}"
+                    f"--blocked-by {_gate['blocked_by']}{_sec_flag}"
                     f"（影子=纸面假设成交、不碰账户、同时至多一笔【未平】——平仓结算后额度即释放、"
                     f"可再开新仓；不要凭记忆预判额度、跳过落仓，直接照本行执行、由脚本校验兜底；"
                     f"真实仓优先，详见 auto-mode.md「影子交易」节）")

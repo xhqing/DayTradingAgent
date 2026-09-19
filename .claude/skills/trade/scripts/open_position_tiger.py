@@ -739,11 +739,15 @@ def main():
             # pending_intent 等状态不明口径不给影子提示、先人工排查）。
             _shadow_hint = None
             if _gate["blocked_by"] in ("open_exposure_today", "active_open_order"):
+                # 2026-09-18 修（T150）：ETF 标的自动带 --sec-type etf（09-14 实录：07709
+                # 影子仓未传、按股票口径计印花税、结算 R 偏保守 ≈0.39 HKD/R——影子样本与
+                # 真实样本要求同源可比）；类型取 _sec_type_of 白名单，AI 无需记着传参。
+                _sec_flag = " --sec-type etf" if U._sec_type_of(symbol) == "etf" else ""
                 _shadow_hint = (
                     f"别人先到了——按【影子交易】记录这笔机会再继续盯："
                     f"python3 shadow_trade.py open HKT {symbol} {direction} "
                     f"{entry_ref} {stop_loss} {target} {quantity} "
-                    f"--blocked-by {_gate['blocked_by']}"
+                    f"--blocked-by {_gate['blocked_by']}{_sec_flag}"
                     f"（影子=纸面假设成交、不碰账户、同时至多一笔【未平】——平仓结算后额度即释放、"
                     f"可再开新仓；不要凭记忆预判额度、跳过落仓，直接照本行执行、由脚本校验兜底；"
                     f"真实仓优先，详见 auto-mode.md「影子交易」节）")

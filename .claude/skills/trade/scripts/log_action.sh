@@ -84,24 +84,40 @@ else
   ACTION_TS="${ACTION_TS:-$(date "+%Y-%m-%d %H:%M:%S")}"
 fi
 
-# 与前一条动作之间空一行分隔（文件已非空时先补一个空行）
+# 与前一条动作之间空一行分隔（文件已非空时先补一个空行）——只在预检通过后才写（见下）。
+# 标题行插入时间戳（与 log_signal.sh 同样逻辑）；2026-09-18 重写（T144 + T154，两次盘中实录）：
+#   ① 标题行判定剥离 Markdown 标题前缀（^#+\s*）后再看 emoji 是否在行首——此前只认
+#      「emoji 在第 1 字符」，SKILL.md 示例格式（## 🟢🟢🟢 开仓 …）全部落空，时间戳被
+#      兜底追加到条目末尾 → account_status._parse_actions 按标题行分节后平仓节内无时间行
+#      → ts='' 排最前 → close 先于 open → 持仓推导残留 open 仓位 → 采样段持续误报
+#      「账户已无持仓但 actions 无平仓记录」（误报淹没真警报，09-11 / 09-16 两次实录）；
+#   ② 内容里已手写「⏰ 动作时间」行时不再插入（避免双时间戳）；
+#   ③ 预检不到标题行 → 拒写 + 非零退出（田「兜底追加末尾」在时间戳顺序敏感的 actions
+#      文件里是危险默认值——宁可让 AI 看到报错重发，也不把坏数据写进文件）。
+if ! printf '%s\n' "$CONTENT" | awk '
+  { line = $0; sub(/^#+[ \t]*/, "", line)
+    if (index(line,"🟢")==1 || index(line,"🔴")==1 || index(line,"🟡")==1 || index(line,"🔵")==1) found=1 }
+  END { exit(found ? 0 : 1) }'; then
+  echo "Error: 未检测到动作标题行（行首或 Markdown 标题（## ）后以 🟢🔴🟡🔵 开头，如「## 🟢🟢🟢 开仓 · …」）——拒写；时间戳位置对解析很关键，宁可不写也不写错位数据，请补标题行后重发" >&2
+  exit 1
+fi
 [ -s "$ACTION_FILE" ] && echo "" >> "$ACTION_FILE"
-# 标题行后带时间戳（与 log_signal.sh 同样逻辑）。
-# 2026-08-31 修（T129）：原 awk NR==2 固定行号插入对空行脆弱——动作内容首两行为
-# 「框线 + 空行」时（2026-08-31 实录），时间行插在标题行【前】而非【后】，
-# account_status._parse_actions 按标题行分节后平仓节内无时间行 → ts='' 排到最前 →
-# close 先于 open → 持仓推导残留 open 仓位 → 采样段「账户已无持仓但 actions 无平仓
-# 记录」误告警持续多段。改为「首个以 🟢🔴🟡🔵 开头的行（动作标题行，标准格式 =
-# 框线/标题/⏰时间/框线）后插入」；整个内容都没有 emoji 标题行时兜底追加末尾 + 警示
-# （宁可位置错在末尾、不再错在标题前——标题前会破坏 _parse_actions 分节）。
 printf '%s\n' "$CONTENT" | awk -v ts="$ACTION_TS" '
-  !done && (index($0,"🟢")==1 || index($0,"🔴")==1 || index($0,"🟡")==1 || index($0,"🔵")==1) {
-    print; print "> ⏰ 动作时间：" ts; done=1; next
-  }
-  {print}
+  BEGIN { has_ts = 0 }
+  /⏰[ \t]*动作时间/ { has_ts = 1 }
+  { lines[NR] = $0; keep[NR] = 1 }
   END {
-    if (!done) {
-      print "> ⏰ 动作时间：" ts
-      print "log_action.sh ⚠️：未找到以 🟢🔴🟡🔵 开头的动作标题行，时间戳已追加在末尾——请检查动作内容格式（标准 = 框线/标题/⏰时间/框线）" > "/dev/stderr"
+    for (i = 1; i <= NR; i++) {
+      print lines[i]
+      if (!has_ts) {
+        line = lines[i]; sub(/^#+[ \t]*/, "", line)
+        if (!inserted && (index(line,"🟢")==1 || index(line,"🔴")==1 || index(line,"🟡")==1 || index(line,"🔵")==1)) {
+          print "> ⏰ 动作时间：" ts; inserted = 1
+        }
+      }
     }
+    if (has_ts)
+      print "log_action.sh ℹ️：内容已含 ⏰ 动作时间行，未重复插入时间戳" > "/dev/stderr"
+    else if (!inserted)
+      print "log_action.sh ⚠️：未找到动作标题行（预检已过，理论到不了这里）" > "/dev/stderr"
   }' >> "$ACTION_FILE"

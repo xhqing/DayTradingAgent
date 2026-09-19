@@ -262,6 +262,11 @@ def finish():
                 seg[sym]['agg_row'] = None
         except Exception:
             pass
+    # 🕐 段结束墙钟（2026-09-18 T158 立，工具强制）：判断行的时间标签与「距边界
+    # N 分钟」一律照抄脚本实测输出（本行 + 停盯边界提醒行）、禁止 AI 心算推算——
+    # 长会话中 AI 自推时间累计漂移可达 25 分钟（09-18 实录），直接污染压缩止盈窗口
+    # 的净赔率实算与停盯收尾时机判断。
+    print(f'🕐 段结束墙钟 {time.strftime("%H:%M:%S")}（判断行时间标签照抄本行，禁止推算）', flush=True)
     print('\n📊 WebSocket 每秒采样段结束统计（最近 N 个点 + 段高低 + 破位）:')
     for sym, d in seg.items():
         pts = d['points']
@@ -329,7 +334,8 @@ def finish():
     # ⏰ 临近停盯边界的开仓资格提醒（2026-08-18 立，对齐 monitor_segment / futu_ws_segment）：
     # 距停盯 ≤60 分钟每段打印剩余分钟 + 「>5 分钟开仓资格仍在、禁止自设截止线」。
     try:
-        from trade_utils_tiger import minutes_to_session_end, OPEN_WINDOW_MIN
+        from trade_utils_tiger import (minutes_to_session_end, OPEN_WINDOW_MIN,
+                                       min_net_odds_from_config)
         _syms = [t[0] for t in targets]
         for _mkt in ('HK', 'US'):
             if any(s.startswith(f'{_mkt}.') for s in _syms):
@@ -338,7 +344,7 @@ def finish():
                     if _mins > OPEN_WINDOW_MIN:
                         print(
                             f'⏰ 距{_mkt}停盯边界 {_mins:.0f} 分钟（>5）：开仓资格仍在——按压缩止盈'
-                            f'实算净赔率 ≥1.8 照常评估，禁止自设「临近收盘/午休不开仓」截止线'
+                            f'实算净赔率 ≥{min_net_odds_from_config():g} 照常评估（config 权威值），禁止自设「临近收盘/午休不开仓」截止线'
                             f'（2026-08-18 用户立；下单脚本另有 ≤5 分钟时间闸硬拦）。'
                             f'⛔ 同时：空仓 / 无信号 ≠ 停盯理由——盯到用户喊停或收盘（取先到），'
                             f'停盯收尾脚本已受 stop_gate 时间闸硬拦（2026-08-24 立，T118）。',

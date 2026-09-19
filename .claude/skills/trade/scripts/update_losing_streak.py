@@ -9,7 +9,7 @@
 AI 按 K 线推定成交价后跑本脚本。不补则连败漏记、降频闸漏拦。
 
 用法（平仓侧参数从 actions 开仓记录 + 推定/实测平仓价取）：
-  python3 update_losing_streak.py <market> <symbol> <direction> <entry> <stop> <quantity> <fill_price> [net_pnl]
+  python3 update_losing_streak.py <market> <symbol> <direction> <entry> <stop> <quantity> <fill_price> [net_pnl] [close_order_id]
     market      HK / US
     symbol      富途格式代码（HK.09988 / US.MU）
     direction   long / short
@@ -18,6 +18,8 @@ AI 按 K 线推定成交价后跑本脚本。不补则连败漏记、降频闸�
     quantity    平仓股数
     fill_price  平仓成交价（自动触发单有回查价；推定口径按当日 K 线、结果里会标 basis）
     net_pnl     可选：实测净利（App 口径）；缺省按 fee_schedule 估
+    close_order_id 可选（2026-09-18 T151）：平仓成交单订单 id——与自动补记 / 主动平仓路径
+                共用去重键，同一订单只计一次连败
 
 输出 JSON：{r_multiple, r_basis, streak, recent_r, gate_triggered_today}。
 """
@@ -40,12 +42,14 @@ def main():
     quantity = int(float(sys.argv[6]))
     fill_price = float(sys.argv[7])
     net_pnl = float(sys.argv[8]) if len(sys.argv) > 8 else None
+    close_order_id = sys.argv[9] if len(sys.argv) > 9 else None
     if market not in ("HK", "US"):
         print(json.dumps({"ok": False, "error": f"market 必须是 HK/US，收到 '{market}'"}))
         sys.exit(1)
     stop_dist = abs(entry - stop)
     result = U.update_losing_streak(market, symbol, direction, entry, stop_dist,
-                                    quantity, fill_price, net_pnl=net_pnl)
+                                    quantity, fill_price, net_pnl=net_pnl,
+                                    close_order_id=close_order_id)
     result.setdefault("ok", "skipped" not in result)
     print(json.dumps(result, ensure_ascii=False))
 

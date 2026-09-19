@@ -1684,6 +1684,23 @@ def minutes_to_session_end(market, now=None):
 OPEN_WINDOW_MIN = 5.0  # 距停盯 ≤5 分钟绝对不开仓（trading-strategy.md 2026-08-17 用户立）
 
 
+def min_net_odds_from_config():
+    """开仓净赔率门槛（config.risk.min_net_odds 唯一权威源，缺失回退 1.2）。
+
+    2026-09-18 立（T155）：三处密采样脚本的停盯边界提醒、本模块 check_open_time_gate
+    的合格文案里硬编码过「≥1.8」——config 已于 2026-08-25 下调为 1.2，打印口径与权威值
+    脱节 0.6（09-16/09-18 盘中两次实录复现，属「决策时刻工具在场打印」型护栏打错门槛）。
+    统一改读本函数，杜绝后续调参再次脱节（与 open_position 脚本同一权威源）。"""
+    try:
+        import json as _json
+        _cfg_fp = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'config.json')
+        with open(_cfg_fp, encoding='utf-8') as _f:
+            _cfg = _json.load(_f)
+        return float(_cfg.get('risk', {}).get('min_net_odds', 1.2))
+    except Exception:
+        return 1.2
+
+
 def check_open_time_gate(market, now=None):
     """开仓时间闸（2026-08-18 立）：返回 (allowed: bool, msg: str)。
 
@@ -1700,7 +1717,8 @@ def check_open_time_gate(market, now=None):
             f"距{market}停盯边界仅 {mins:.1f} 分钟（≤{OPEN_WINDOW_MIN:.0f} 分钟绝对不开仓，"
             f"trading-strategy.md「开仓的剩余时间边界」）——时间闸拒单"
         )
-    return True, f"距{market}停盯 {mins:.1f} 分钟（>5 分钟，开仓资格在——按压缩止盈实算净赔率 ≥1.8 照常评估）"
+    return True, (f"距{market}停盯 {mins:.1f} 分钟（>5 分钟，开仓资格在——按压缩止盈实算净赔率 "
+                  f"≥{min_net_odds_from_config():g} 照常评估）")
 
 
 # ---------------------------------------------------------------------------
@@ -1725,7 +1743,7 @@ def _losing_streak_path():
 
 
 def update_losing_streak(market, symbol, direction, entry_price, stop_dist,
-                         quantity, fill_price, net_pnl=None):
+                         quantity, fill_price, net_pnl=None, close_order_id=None):
     """平仓成交后更新连败计数文件（2026-08-31 T131）。返回更新结果 dict 供调用方转录。
 
     R 结算口径（与复盘净口径同构）：R = 净盈亏 ÷ 净 max_loss（止损距×量 + 开仓边费 +
@@ -1735,6 +1753,11 @@ def update_losing_streak(market, symbol, direction, entry_price, stop_dist,
     entry_price / stop_dist / quantity 任一缺失 → 无法算 R：文件不动、返回 skipped 原因
     （连败计数宁可漏记不可误记——漏记由补记流程 / 复盘对账兜底，误记会错拦开仓）。
     任何内部异常不抛出（不阻断平仓结果输出，与 attach_net_pnl_app 同哲学）。
+
+    close_order_id（2026-09-18 立，T151 被动平仓自动补记的去重键）：平仓成交单的订单
+    id。同一笔平仓可能被多个路径各记一次（① 主动平仓脚本；② account_status 被动平仓
+    检测自动补记；③ AI 手动 CLI 补记）——已记过的 order_id 存 state.recorded_close_ids
+    （保留最近 30 个），重复调用直接 skipped，进免同一笔算两次、连败虚高。
     """
     from datetime import datetime
     import json
@@ -1765,6 +1788,13 @@ def update_losing_streak(market, symbol, direction, entry_price, stop_dist,
             state = json.load(open(_losing_streak_path()))
         except Exception:
             state = {}
+        # T151 去重：同一平仓订单已记过 → 跳过（被动补记 / 主动路径 / 手动 CLI 多路同源）
+        recorded_ids = [str(x) for x in (state.get("recorded_close_ids") or [])]
+        if close_order_id is not None and str(close_order_id) in recorded_ids:
+            return {"skipped": f"该平仓订单（id {close_order_id}）已记过连败，去重跳过"}
+        if close_order_id is not None:
+            recorded_ids.append(str(close_order_id))
+            recorded_ids = recorded_ids[-30:]
         streak = int(state.get("streak", 0) or 0)
         recent_r = list(state.get("recent_r", []) or [])
         if r > 0:
@@ -1778,6 +1808,7 @@ def update_losing_streak(market, symbol, direction, entry_price, stop_dist,
             "date": today,
             "market": market, "symbol": symbol,
             "streak": streak, "recent_r": recent_r,
+            "recorded_close_ids": recorded_ids,
         }
         triggered = _losing_streak_triggered(new_state)
         new_state["gate_triggered_today"] = triggered

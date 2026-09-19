@@ -314,17 +314,34 @@ def _direction_similar(cand, ref):
     return a[:2] == b[:2] and len(a) >= 2 and len(b) >= 2
 
 
+def _claimable_tokens(args):
+    """从位置参数里提取候选标的 token（2026-09-18 立，T141）：跳过 `-` 开头的
+    命令行开关（09-04 实录：`claim --mode auto` 把 `--MODE`/`AUTO` 当标的认领进表）
+    + 对不像标的代码的 token 打一行警告并丢弃（防幻影标的占用认领表）。"""
+    import re as _re
+    out = []
+    for a in args:
+        if a.startswith("-"):
+            continue
+        for s in a.split(","):
+            s = s.strip()
+            if not s:
+                continue
+            n = _norm_sym(s)
+            # 合法格式：HK.五位数 / US.字母代码（可带一级类 BRK.B）；其它（AUTO、MODE 等）丢弃并警告
+            if not _re.fullmatch(r"(HK\.\d{5}|US\.[A-Z]+(?:\.[A-Z]+)?)", n):
+                print(f"⚠️ '{s}' 不是标的代码格式（应为 HK.01234 / US.MU，已忽略——命令行开关请用 argparse 风格单独传、不要混进标的列表）", file=sys.stderr)
+                continue
+            out.append(n)
+    return out
+
+
 def cmd_claim(args):
     """认领：候选标的逐个检查，未占用则登记给本会话；返回分到的池。"""
     if not args:
         print("用法：python3 pool_claim.py claim HK.00700,HK.00981,...", file=sys.stderr)
         return 1
-    want = []
-    for a in args:
-        for s in a.split(","):
-            if s.strip():
-                want.append(_norm_sym(s))
-    want = list(dict.fromkeys(want))   # 去重保序
+    want = list(dict.fromkeys(_claimable_tokens(args)))   # 去重保序（开关/非标的 token 已滤）
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
     if not sid:
         print("⚠️ 未拿到 CLAUDE_CODE_SESSION_ID（非会话内跑？）——认领会记到 unknown，"
@@ -459,7 +476,7 @@ def cmd_release(args):
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
     today = datetime.now().strftime("%Y-%m-%d")
     release_all = "--all" in args
-    syms = [_norm_sym(s) for a in args if a != "--all" for s in a.split(",") if s.strip()]
+    syms = list(dict.fromkeys(_claimable_tokens(a for a in args if a != "--all")))
     with open(LOCK_FILE, "a") as lf:
         fcntl.flock(lf, fcntl.LOCK_EX)
         claims, _ = _prune_dead(_load_claims(today))

@@ -63,8 +63,37 @@ SIGNAL_FILE="$SIGNALS_DIR/$(date "+%Y-%m-%d")-${MARKET}-signals.md"
 # ring-log 尚无本次响铃记录、不能读它——详见头部注释）
 RING_TS="${RING_TS:-$(date "+%Y-%m-%d %H:%M:%S")}"
 
-# 与前一条信号之间空一行分隔（文件已非空时先补一个空行）
+# 与前一条信号之间空一行分隔（文件已非空时先补一个空行）——只在预检通过后才写（见下）。
+# 信号标题框线内带发信号时间戳（标题行后、第二条框线前；= 响铃时刻，2026-07-29 用户立）。
+# 2026-09-18 重写（T154，与 log_action.sh 同款修复）：原「NR==2 固定行号插入」对
+# 标题不在第 2 行的格式（AI 惯用 Markdown ## 标题、无框线）会把时间戳插错位——改为
+# 「标题行判定」：行首可带 Markdown 标题前缀（^#+\s*），剥离后以 🟢🔴🟡🔵 开头即标题行，
+# 在其后插入；① 内容已含「⏰ 发信号时间」行时不重复插入；② 预检不到标题行 → 拒写 +
+# 非零退出（坏数据宁可拒写、让 AI 看到报错重发）。
+if ! printf '%s\n' "$CONTENT" | awk '
+  { line = $0; sub(/^#+[ \t]*/, "", line)
+    if (index(line,"🟢")==1 || index(line,"🔴")==1 || index(line,"🟡")==1 || index(line,"🔵")==1) found=1 }
+  END { exit(found ? 0 : 1) }'; then
+  echo "Error: 未检测到信号标题行（行首或 Markdown 标题（## ）后以 🟢🔴🟡🔵 开头，如「## 🟢🟢🟢 开仓 · …」）——拒写；请补标题行后重发" >&2
+  exit 1
+fi
 [ -s "$SIGNAL_FILE" ] && echo "" >> "$SIGNAL_FILE"
-# 信号标题框线内带发信号时间戳（标题行后、第二条框线前；= 响铃时刻，2026-07-29 用户立）
-# CONTENT 前 3 行 = ═══(上框线)、标题、═══(下框线)；awk 在第 2 行(标题)后插入时间戳行
-printf '%s\n' "$CONTENT" | awk -v ts="$RING_TS" 'NR==2{print; print "> ⏰ 发信号时间：" ts; next} 1' >> "$SIGNAL_FILE"
+printf '%s\n' "$CONTENT" | awk -v ts="$RING_TS" '
+  BEGIN { has_ts = 0 }
+  /⏰[ \t]*发信号时间/ { has_ts = 1 }
+  { lines[NR] = $0 }
+  END {
+    for (i = 1; i <= NR; i++) {
+      print lines[i]
+      if (!has_ts) {
+        line = lines[i]; sub(/^#+[ \t]*/, "", line)
+        if (!inserted && (index(line,"🟢")==1 || index(line,"🔴")==1 || index(line,"🟡")==1 || index(line,"🔵")==1)) {
+          print "> ⏰ 发信号时间：" ts; inserted = 1
+        }
+      }
+    }
+    if (has_ts)
+      print "log_signal.sh ℹ️：内容已含 ⏰ 发信号时间行，未重复插入时间戳" > "/dev/stderr"
+    else if (!inserted)
+      print "log_signal.sh ⚠️：未找到信号标题行（预检已过，理论到不了这里）" > "/dev/stderr"
+  }' >> "$SIGNAL_FILE"
