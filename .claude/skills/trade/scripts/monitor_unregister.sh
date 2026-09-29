@@ -10,8 +10,9 @@
 # 确属用户喊停：加 --force 显式放行（用户指令优先于机械闸）。
 #
 # 用法：bash .claude/skills/trade/scripts/monitor_unregister.sh [--force]
+# 会话 ID 按宿主双读：Claude Code / ZCode / CodeBuddy 为 CLAUDE_CODE_SESSION_ID，pi 为 PI_SESSION_ID。
 set -e
-SESSION_ID="${CLAUDE_CODE_SESSION_ID:-}"
+SESSION_ID="${CLAUDE_CODE_SESSION_ID:-${PI_SESSION_ID:-}}"
 
 # —— 停盯边界时间闸：盘中拒绝注销（用户喊停 --force 放行）——
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -27,7 +28,7 @@ if [ -f "$SCRIPT_DIR/stop_gate.py" ]; then
 fi
 
 if [ -z "${SESSION_ID}" ]; then
-    echo "⚠️ 未拿到 CLAUDE_CODE_SESSION_ID（非 Claude Code 会话内？），跳过注销" >&2
+    echo "⚠️ 未拿到会话 ID（CLAUDE_CODE_SESSION_ID / PI_SESSION_ID；非 agent 会话内？），跳过注销" >&2
     exit 1
 fi
 # scripts/ 向上 4 级 = 项目根（scripts -> trade -> skills -> .claude -> 项目根）

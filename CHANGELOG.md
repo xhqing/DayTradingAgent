@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### 新增（pi 宿主完整接入：trade skill 可在 pi 运行，2026-09-29）
+
+- **为什么改**：用户指令「把本项目完全改造成可以在 pi 中运行的项目」。此前项目已支持 CC / ZCode / CodeBuddy 三宿主（trade skill 还能通过 `.pi/skills → .claude/skills` 符号链接被 pi 发现），但 pi 宿主缺三块关键机制——① pi 官方无内建后台 bash（README 明说用 tmux），盯盘密采样的「后台段 → 段结束唤醒 AI → 读数据 + 分析 + 重启」循环转不起来；② pi 无内建 `AskUserQuestion`，实盘授权点击见证链断裂（`live_auth_witness` 收不到事件 = 实盘解锁不了）；③ 项目 hooks（monitor_guard / secret_guard / changelog_guard / live_auth_witness）没有 pi 挂载点。本次把三块补齐并做端到端验证（盘外三项 e2e + 20/20 冒烟；盘中实战验收留 TODO T159）。
+- **改了什么**：
+  1. 新增 `.pi/extensions/`（pi 宿主扩展，只被 pi 加载）——`trade-guards.ts`（把 pi 事件合成 CC hook payload、spawn `.claude/hooks/*.py` 同一批脚本：bash / background_run 命令走 secret_guard + monitor_guard，`read` 工具读 accounts.json / `~/.tigeropen` / 私钥直接拦（补 pi 没有的 `permissions.deny`），edit / write 后走 changelog_guard，agent_settled 走 monitor_guard stop）；`background-tasks.ts`（`background_run` / `background_list` / `background_stop` 三工具，任务结束以 `[后台任务完成]` 消息唤醒 AI，日志按会话命名放 `tmp/pi-bg/<sid8>-<id>.log`，会话关闭时统一回收）；`ask-question.ts`（pi 版 `AskUserQuestion`，用户点选后合成 PostToolUse payload 触发 `live_auth_witness.py` 见证）；`lib/hooks.ts`（桥接公共库：项目根探测 + hook 运行器 + additionalContext 提取，非扩展入口）。
+  2. 脚本会话 ID 双读（`CLAUDE_CODE_SESSION_ID` 优先、新增 `PI_SESSION_ID` 兜底，批 10 处）：`pool_claim.py` / `live_unlock.py` / `trade_mutex.py` / `shadow_trade.py` / `account_status.py` / `preflight.py` / `monitor_register.sh` / `monitor_unregister.sh` / `keepawake_off.sh` / `monitor_guard.py`；相关注释与提示文案同步改中性（不再写「非 Claude Code 会话内？」）。另补 **pi 会话 transcript 探测**：`pool_claim._jsonl_age` 与 `monitor_guard._claim_holder_alive` 的死会话判定原只查 CC（`~/.claude/projects/...`）与 ZCode（`sess_` 前缀）路径，pi 会话（同为裸 UUID）会被误判为死会话而释放认领——现增查 pi 会话目录 `<agent_dir>/sessions/--<slug>--/*_<sid>.jsonl`（文件名带 ISO 前缀，glob 后缀匹配）+ `PI_SESSION_FILE` 当前会话权威路径，多会话互斥（认领 / 池冲突闸）在 pi 宿主不失真。
+  3. `monitor_guard.py` 跑法拦截文案改宿主自适应（pi：`background_run`；CC / ZCode / CodeBuddy：`Bash(run_in_background=true)`），并补 pi 桥接用法说明。
+  4. 文档：新增 `references/host-integration.md`（四宿主映射表 + pi 宿主细节 + 验证状态）；`SKILL.md` 加「宿主适配」节；`monitoring.md` 分段采样命令处标注 pi 用 `background_run`；项目 `CLAUDE.md` 的 hooks 章节由「三宿主」升为「四宿主」并加 pi 桥接段；`TODO.md` 增 T159（pi 盘中实战验收）。
+- **验证**：① pi 扩展桥冒烟 20/20（jiti 加载 + stub 事件：凭证 read / bash 读取拦，nohup / 拼 sleep 采样段拦，trade 脚本与干净采样命令放行，CHANGELOG 提醒注入，stop 桥执行，提问见证写 `live-auth` 凭证，非确认答案不写凭证，后台任务启动→完成通知→清单→停止）；② 真实 pi 会话端到端三项——`read accounts.json` 被拦（拦截文案原文回传）、`background_run` 完成通知唤醒（输出尾部干净、日志按会话命名）、`write` 后 📌 CHANGELOG 提醒注入；③ 脚本编译 + 会话 ID 双读实测（`PI_SESSION_ID` 生效、`CLAUDE_CODE_SESSION_ID` 仍优先）+ pi transcript 死会话探测实测（本会话 True、不存在会话 False）。
+- **回归风险评估**：① 脚本改动只在原读值后追加 `or PI_SESSION_ID`——CC / ZCode / CodeBuddy 环境变量仍优先命中，行为不变；② hook 消息文案改动无判定逻辑变更；③ `.pi/extensions/` 只被 pi 加载，不进入 CC / ZCode / CodeBuddy 链路；④ pi 后台任务改用 `bash -c`（非登录 shell）不 source `~/.bash_profile`（pi 进程已继承环境），若未来有仅靠 profile 设置的环境变量需改回 `-lc`；⑤ 多会话并行时 `background_run` 日志按会话 id 分名，不会互相覆盖 / 混入他会话段输出；⑥ 后台任务在 pi 会话关闭时统一终止，避免孤儿采样进程（与 CC 会话级后台任务口径一致）。
+
 ### 变更（批量办结待办 11 条：美股跨午夜持仓失明 / 连败漏记 / R 分母口径 / 富途脏点 / log 拒写坏数据 / 门槛文案脱节 / 影子 sec-type / 认领开关 / 墙钟时刻 + T146 四假设验证报告，2026-09-18 23:15）
 
 - **为什么改**：用户指令「把待办全部完成」。当晚盘外批量处理：红色 T156、橙色 T151/T152/T153/T144/T154/T150/T158、黄色 T155/T141、绿色 T146 共 11 条办结归档；T119 / T125 中间进展就地更新（N=36 中间对账 + 首次先到 vs 被拦对照）；剩 T157/T145（修复方向待用户取舍）与 T140/T136/T123/T119/T120/T125/T147-T149（外部依赖 / 样本积累 / 需 git 推送验收）无法当晚办结。

@@ -293,7 +293,7 @@ class TradeMutex:
         self.symbol = symbol
         self.side = side
         self.qty = qty
-        self.session_id = session_id or os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+        self.session_id = session_id or os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("PI_SESSION_ID", "")
         self.account = account   # 'live' / None（默认模拟账户）——写入 intent 供查询方按账户查（T136）
         self.line_no = None
         self._fd = None

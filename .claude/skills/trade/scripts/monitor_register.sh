@@ -14,13 +14,14 @@
 # 本脚本是备用 / 手动注册路径，调用前请确认当前是港股盯盘。
 #
 # 停盯时调用 scripts/monitor_unregister.sh 注销（从注册文件删除本会话）。
+# 会话 ID 按宿主双读：Claude Code / ZCode / CodeBuddy 为 CLAUDE_CODE_SESSION_ID，pi 为 PI_SESSION_ID。
 # 注册文件在 tmp/（已被 .gitignore 忽略，不进仓库）。
 #
 # 用法：bash .claude/skills/trade/scripts/monitor_register.sh
 set -e
-SESSION_ID="${CLAUDE_CODE_SESSION_ID:-}"
+SESSION_ID="${CLAUDE_CODE_SESSION_ID:-${PI_SESSION_ID:-}}"
 if [ -z "${SESSION_ID}" ]; then
-    echo "⚠️ 未拿到 CLAUDE_CODE_SESSION_ID（非 Claude Code 会话内？），跳过注册" >&2
+    echo "⚠️ 未拿到会话 ID（CLAUDE_CODE_SESSION_ID / PI_SESSION_ID；非 agent 会话内？），跳过注册" >&2
     exit 1
 fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

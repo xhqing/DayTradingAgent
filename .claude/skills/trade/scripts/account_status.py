@@ -175,12 +175,13 @@ def _last_recorded_stop(sym, only_session=None):
 
 
 def _session_id():
-    """本进程所属的 Claude Code 会话 id（环境变量注入；无则 ''）。
+    """本进程所属的 agent 会话 id（环境变量注入；无则 ''）。
 
     段输出脚本（futu_ws_segment / monitor_segment / ws_segment）由 AI 在盯盘会话内
-    调起、继承会话环境变量，CLAUDE_CODE_SESSION_ID 即本会话标识（与 trade_mutex 的
-    intent 日志、monitor_sessions.txt 注册表同源）。"""
-    return os.environ.get('CLAUDE_CODE_SESSION_ID', '')
+    调起、继承会话环境变量，会话 id 即本会话标识（与 trade_mutex 的 intent 日志、
+    monitor_sessions.txt 注册表同源）。宿主双读：Claude Code / ZCode / CodeBuddy 用
+    CLAUDE_CODE_SESSION_ID、pi 用 PI_SESSION_ID（2026-09-29 增补 pi 宿主）。"""
+    return os.environ.get('CLAUDE_CODE_SESSION_ID') or os.environ.get('PI_SESSION_ID') or ''
 
 
 def _owner_of(owner_map, sym):
@@ -204,7 +205,7 @@ def _session_of_symbol():
     """当日「标的 → 开仓会话 id」映射（2026-08-19 立，跨会话告警串台修复）。
 
     数据源 = tmp/trade_intent.log 的当日 filled intent（开仓脚本在 TradeMutex 内写、
-    带本会话 CLAUDE_CODE_SESSION_ID 与标的）。多会话并行盯盘时（当日实录：实盘会话盯
+    带本会话会话 ID 与标的）。多会话并行盯盘时（当日实录：实盘会话盯
     09888/01347、模拟会话开 01810），A 会话的段输出只核对**自己会话**开的仓——别的
     会话的仓由别的会话核对，告警不再串台（假告警稀释真实告警的「狼来了」效应消除）。
     返回 {sym: sid}（sym 为 intent 的富途格式 HK.01810）。
@@ -364,7 +365,7 @@ _BLAST_VWAP_DIST = 0.8       # ③ 距 VWAP 阈值（%）
 def blast_check(vwap_by_sym, prices_by_sym=None):
     """加速赶极端检测（段结束调用）。持仓时检测、空仓跳过（与「空仓不查」同规则）。
 
-    会话视角（2026-08-19 立）：带 CLAUDE_CODE_SESSION_ID 时只检测本会话的仓（同
+    会话视角（2026-08-19 立）：带会话 ID 时只检测本会话的仓（同
     position_status——别的会话的仓由别的会话检测，警报不串台）。
 
     参数 vwap_by_sym: {futu_sym: vwap}（VWAP 检查段已查过的快照数据复用，不重复查询）。
@@ -594,7 +595,7 @@ def _passive_close_backfill(sym, info, account):
 def position_status(account=None):
     """持仓状态段输出（工具强制）。无持仓返回 None（不查账户，遵循「空仓不查」）；有持仓返回多行字符串。
 
-    会话视角（2026-08-19 立，跨会话串台修复）：进程带 CLAUDE_CODE_SESSION_ID 时只核对
+    会话视角（2026-08-19 立，跨会话串台修复）：进程带会话 ID 时只核对
     **本会话**开的仓（intent 日志归属）——并行盯盘时 A 会话不再把 B 会话的仓当自己的核对、
     告警不串台；无会话 id（手动跑脚本）退回旧行为（全核对）。
 

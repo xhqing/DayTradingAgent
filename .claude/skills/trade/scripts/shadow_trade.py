@@ -91,7 +91,7 @@ def open_shadow(market, symbol, direction, ref_price, stop, target, qty,
         pending_intent 等其它 blocked_by 不落影子仓（决策点 3：状态不明先人工排查）。
       - 本会话已有未平影子仓时拒开（决策点 2：每会话同时至多一笔影子仓）。
     """
-    session_id = session_id or os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    session_id = session_id or os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("PI_SESSION_ID", "")
     if blocked_by not in ("open_exposure_today", "active_open_order"):
         return False, (f"blocked_by={blocked_by} 不落影子仓——只落「别人在场」口径"
                        f"（open_exposure_today / active_open_order）；pending_intent 等"

@@ -18,7 +18,8 @@
 # 都不是停盯理由（2026-08-24 11:48 违规提前停盯教训）。确属用户喊停：加 --force。
 # 注意：本闸只拦「解除防睡眠」动作；手动全局启用防睡眠后想单独关闭（非停盯场景）
 # 同样加 --force 即可。
-SESSION_ID="${CLAUDE_CODE_SESSION_ID:-}"
+# 会话 ID 按宿主双读：Claude Code / ZCode / CodeBuddy 为 CLAUDE_CODE_SESSION_ID，pi 为 PI_SESSION_ID。
+SESSION_ID="${CLAUDE_CODE_SESSION_ID:-${PI_SESSION_ID:-}}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # trade/scripts -> trade -> skills -> .claude -> 项目根
 REG_FILE="$SCRIPT_DIR/../../../../tmp/monitor_sessions.txt"

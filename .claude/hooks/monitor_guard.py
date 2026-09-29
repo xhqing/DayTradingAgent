@@ -34,11 +34,14 @@
 局限（诚实）：AI 仍能 kill 进程或换别的方式绕过——本 hook 只提高绕过成本 + 暴露，
 不是 100% 银弹（详见 monitoring.md「2026-08-04 教训」多层防护说明）。
 
-用法（hooks 注册，2026-09-02 起双宿主：CC settings.json + ZCode .zcode/config.json 同挂）：
+用法（hooks 注册，2026-09-02 起双宿主：CC settings.json + ZCode .zcode/config.json 同挂；
+2026-09-29 起再增 pi 宿主：由 .pi/extensions/trade-guards.ts 桥接调用，把 pi 事件合成同构 payload）：
   PreToolUse matcher Bash → python3 .claude/hooks/monitor_guard.py pretool
   PreToolUse matcher TaskStop → python3 .claude/hooks/monitor_guard.py taskstop
   Stop                    → python3 .claude/hooks/monitor_guard.py stop
-hook 接收 stdin JSON（tool_name/tool_input 等，两宿主字段同名），exit 0 放行 / exit 2 阻断（PreToolUse）；
+hook 接收 stdin JSON（tool_name/tool_input 等，各宿主字段同名），exit 0 放行 / exit 2 阻断（PreToolUse）；
+session 语义：payload.session_id 优先，缺时环境变量 CLAUDE_CODE_SESSION_ID / PI_SESSION_ID 双读
+（CC / ZCode / CodeBuddy 用前者，pi 用后者）。
 提醒类输出走 _emit_reminder 双通道（CC stderr / ZCode stdout JSON，见其 docstring）。
 """
 import sys
@@ -319,10 +322,13 @@ def _pool_conflict(exec_seg_cmds, sid=""):
 def _claim_holder_alive(sid):
     """认领持有会话是否活着（同 pool_claim._session_alive 口径，hook 侧只读版）。
 
-    会话 transcript 路径按宿主区分（2026-09-02 双宿主适配，hooks 同时挂 CC 与 ZCode）：
+    会话 transcript 路径按宿主区分（2026-09-02 双宿主适配；2026-09-29 增补 pi）：
     - CC 会话（sid 为裸 UUID）→ ~/.claude/projects/<slug>/<sid>.jsonl（slug 生成同 pool_claim）；
     - ZCode 会话（sid 带 sess_ 前缀）→ ~/.zcode/cli/rollout/model-io-<sid>.jsonl（ZCode 的
-      会话持久化 jsonl，活跃会话持续追加，与 CC jsonl 同构）。
+      会话持久化 jsonl，活跃会话持续追加，与 CC jsonl 同构）；
+    - pi 会话（sid 也是裸 UUID）→ <agent_dir>/sessions/--<slug>--/*_<sid>.jsonl（文件名带
+       ISO 时间前缀，glob 后缀匹配；另接 PI_SESSION_FILE 应对自定义 session-dir）。
+    CC 与 pi 的 sid 格式相同、无法按前缀区分，故裸 UUID 时两套路径都查、任一新鲜即算活着。
     两套会话可并行认领互认活死；停更 ≤30 分钟 = 活着；文件不存在 / 停更超阈 = 已结束
     （其认领视为已释放，不占坑）。
     """
@@ -335,6 +341,17 @@ def _claim_holder_alive(sid):
         slug = "-" + _PROJECT_ROOT.strip(os.sep).replace(os.sep, "-")
         candidates = [os.path.expanduser(os.path.join(
             "~/.claude/projects", slug, sid + ".jsonl"))]
+        # pi 会话候选（pi 源码 sessionDirectoryName 规则，2026-09-29 增补）
+        import glob as _glob
+        agent_dir = os.path.expanduser(os.environ.get("PI_CODING_AGENT_DIR", "~/.pi/agent"))
+        pi_slug = "--" + _PROJECT_ROOT.replace(":", "-").strip(os.sep).replace(os.sep, "-") + "--"
+        try:
+            candidates += _glob.glob(os.path.join(agent_dir, "sessions", pi_slug, f"*_{sid}.jsonl"))
+        except Exception:
+            pass
+        env_file = os.environ.get("PI_SESSION_FILE", "")
+        if env_file and env_file.endswith(f"_{sid}.jsonl"):
+            candidates.append(env_file)
     try:
         return any(os.path.isfile(p) and (time.time() - os.path.getmtime(p)) <= 30 * 60
                    for p in candidates)
@@ -511,7 +528,8 @@ def main():
             msg = (
                 f"⚠️ 密采样守卫阻断（跑法拦截，2026-08-18 立；2026-09-10 提到时段门外、"
                 f"盘前启动同样受保护）：检测到绕过通知驱动的采样跑法——{'；'.join(_bad)}。"
-                f"段启动必须用 run_in_background（工具参数）+ 段结束 task-notification "
+                f"段启动必须用宿主的后台任务机制（pi 宿主：`background_run` 工具；"
+                f"Claude Code / ZCode / CodeBuddy：`Bash(run_in_background=true)`）+ 段结束 task-notification "
                 f"唤醒 AI 即刻分析，禁止 nohup/&/sleep 轮询自驱（2026-08-18 实录："
                 f"nohup+sleep 致数据滞后 40-60 秒、错过入场判定；2026-09-10 实录：盘前 "
                 f"nohup 启动后段结束不唤醒、无人盯盘近 2 小时）。切数据源时只换脚本名，"
@@ -531,7 +549,7 @@ def main():
         command = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
         # 会话标识优先取 payload（hook stdin JSON 的 session_id，实测与环境变量一致且更稳），
         # 拿不到再退环境变量——避免个别环境变量未注入时互斥检查整个静默失效（2026-08-20）。
-        sid = payload.get("session_id") or os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+        sid = payload.get("session_id") or os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("PI_SESSION_ID", "")
         # A4（2026-08-05 立；2026-08-16 扩检测面 + 修反向误伤）：单条 Bash 命令连跑多个
         # 密采样段（&& / ; / || 串联）= 等效降频——段间 AI 不醒来分析、段结束通知只在全部段
         # 跑完后触发一次。原实现只数 monitor_segment.py 子串次数：① 2026-08-07 起港股主力
@@ -576,8 +594,9 @@ def main():
         if bad_patterns:
             msg = (
                 f"⚠️ 密采样守卫阻断（跑法拦截，2026-08-18 立）：检测到绕过通知驱动的采样跑法——"
-                f"{'；'.join(bad_patterns)}。段启动必须用 run_in_background（工具参数）+ 段结束"
-                f"task-notification 唤醒 AI 即刻分析，禁止 nohup/&/sleep 轮询自驱"
+                f"{'；'.join(bad_patterns)}。段启动必须用宿主的后台任务机制（pi 宿主："
+                f"`background_run` 工具；Claude Code / ZCode / CodeBuddy：`Bash(run_in_background=true)`）"
+                f"+ 段结束 task-notification 唤醒 AI 即刻分析，禁止 nohup/&/sleep 轮询自驱"
                 f"（2026-08-18 实录：nohup+sleep 致数据滞后 40-60 秒、错过入场判定；"
                 f"run_in_background 滞后实测 ≤11 秒）。切数据源时只换脚本名，不换启动方式。"
             )
@@ -661,7 +680,7 @@ def main():
         #    = 跑过密采样 = 盯盘会话。
         # 都不命中 = 非盯盘会话，静默退出（AI 不自主启动盯盘，盘中开盯的会话必然先走
         # preflight 注册 / claim 认领 / 写采样日志之一，不会漏拦真盯盘会话的断采样）。
-        sid = payload.get("session_id") or os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+        sid = payload.get("session_id") or os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("PI_SESSION_ID", "")
         if not running and _is_monitoring_session(sid):
             msg = (
                 f"⚠️ 密采样守卫提醒：回合结束，盘中但密采样未在跑（{why}）。"

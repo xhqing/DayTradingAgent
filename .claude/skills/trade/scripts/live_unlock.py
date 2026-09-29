@@ -47,9 +47,9 @@ trade_utils_tiger.apply_proxy 才给实盘挂代理（恢复可达）。
   hook 把点击变成机器可验证凭证。实测（2026-08-21）：PostToolUse 对 AskUserQuestion
   触发，payload 含 tool_response.answers 与 session_id。
 
-人工场景（用户自己在终端手动跑 live 脚本）：环境无 CLAUDE_CODE_SESSION_ID——读写
-live-unlock.manual.local（人工终端之间共享该文件，用户自己操作自己电脑，无 AI 越权面）；
-「有 session_id（AI 调用）」按会话分文件严格隔离。
+人工场景（用户自己在终端手动跑 live 脚本）：环境无会话 ID（CLAUDE_CODE_SESSION_ID /
+PI_SESSION_ID 都未注入）——读写 live-unlock.manual.local（人工终端之间共享该文件，用户自己
+操作自己电脑，无 AI 越权面）；「有 session_id（AI 调用）」按会话分文件严格隔离。
 
 用法：
   python3 live_unlock.py --init-salt          # 初始化 salt 写 accounts.json（一次性）
@@ -116,8 +116,11 @@ def _compute_token(salt, live_account, expires_at, session_id):
 
 
 def _session_id():
-    """当前会话 id（AI 调用时在场；人工终端为 None → 放宽校验，见 docstring）。"""
-    return os.environ.get("CLAUDE_CODE_SESSION_ID")
+    """当前会话 id（AI 调用时在场；人工终端为 None → 放宽校验，见 docstring）。
+
+    会话环境变量按宿主双读：Claude Code / ZCode / CodeBuddy 为 CLAUDE_CODE_SESSION_ID、
+    pi 为 PI_SESSION_ID（2026-09-29 增补 pi 宿主，见 references/host-integration.md）。"""
+    return os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("PI_SESSION_ID")
 
 
 def live_unlock_valid(verbose=False):
@@ -129,7 +132,7 @@ def live_unlock_valid(verbose=False):
     - expired          已过 24h 有效期
     - bad_token        token 与期望不匹配（伪造 / salt 变过 / resume 换 sid）
     - bad_json         文件损坏
-    人工终端（无 CLAUDE_CODE_SESSION_ID）读 live-unlock.manual.local——人工终端与人工
+    人工终端（无 CLAUDE_CODE_SESSION_ID / PI_SESSION_ID）读 live-unlock.manual.local——人工终端与人工
     终端之间共享 manual 文件（用户自己操作自己电脑，无 AI 越权面）。
     """
     path = unlock_path()

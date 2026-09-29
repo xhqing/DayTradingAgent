@@ -18,7 +18,9 @@
 锁内原子完成，两会话同时启动也不出双占。锁内同时做死会话清理（认领者顺手当清道夫）。
 
 死会话判定（同 monitor_watcher.py 口径）：会话 jsonl 停更 > 30 分钟 = 已结束，其认领
-  自动释放（jsonl 路径 ~/.claude/projects/<slug>/<sid>.jsonl，slug 生成规则同 watcher）。
+  自动释放。jsonl 路径按宿主探测（2026-09-29 增补 pi）：CC
+  `~/.claude/projects/<slug>/<sid>.jsonl`；pi `<agent_dir>/sessions/--<slug>--/*_<sid>.jsonl`
+  （文件名带 ISO 时间前缀，用 glob 按后缀匹配；另接 PI_SESSION_FILE 应对自定义 session-dir）。
 
 用法（盯盘启动序列内，方向研判定候选池之后、启动采样之前）：
   python3 pool_claim.py claim HK.00700,HK.00981,HK.01810    # 认领（返回分到的池 + 全局状态）
@@ -43,6 +45,7 @@ release，互斥语义持续成立。
 """
 
 import fcntl
+import glob
 import json
 import os
 import sys
@@ -161,17 +164,39 @@ def _stamp_gate_check(symbols):
 # ~/.claude/projects/<slug>/ 的 slug 生成规则（同 monitor_watcher）：路径去斜杠、段间 - 连接、前加 -
 _SLUG = "-" + PROJECT_ROOT.strip(os.sep).replace(os.sep, "-")
 TRANSCRIPT_DIR = os.path.expanduser(os.path.join("~/.claude/projects", _SLUG))
+# pi 会话目录（2026-09-29 增补，规则取自 pi 源码 sessionDirectoryName）：
+# <agent_dir>/sessions/--<cwd 去前导斜杠、/ 与 : 换 ->--，文件名 <ISO 时间>_<sid>.jsonl。
+# agent_dir 默认 ~/.pi/agent（PI_CODING_AGENT_DIR 可覆盖）。
+_PI_AGENT_DIR = os.path.expanduser(os.environ.get("PI_CODING_AGENT_DIR", "~/.pi/agent"))
+_PI_SLUG = "--" + PROJECT_ROOT.replace(":", "-").strip(os.sep).replace(os.sep, "-") + "--"
+PI_SESSIONS_DIR = os.path.join(_PI_AGENT_DIR, "sessions", _PI_SLUG)
 
 
 def _jsonl_age(sid):
-    """会话 jsonl 停更秒数；文件不存在返回 None（同 monitor_watcher.jsonl_age 口径）。"""
-    p = os.path.join(TRANSCRIPT_DIR, sid + ".jsonl")
-    if not os.path.isfile(p):
-        return None
+    """会话 jsonl 停更秒数；找不到文件返回 None（同 monitor_watcher.jsonl_age 口径）。
+
+    候选路径按宿主探测（2026-09-29 增补 pi）：CC 为固定文件名路径；pi 文件名带 ISO 时间
+    前缀，按后缀 glob；两者都查、任一存在取最新（会话可能跨宿主同名？实际不会，纯防御）。
+    另:本进程若在 pi 会话内,PI_SESSION_FILE 是当前会话的权威路径（应对 --session-dir）。
+    """
+    candidates = [os.path.join(TRANSCRIPT_DIR, sid + ".jsonl")]
     try:
-        return time.time() - os.path.getmtime(p)
-    except OSError:
+        candidates += glob.glob(os.path.join(PI_SESSIONS_DIR, "*_" + sid + ".jsonl"))
+    except Exception:
+        pass
+    env_file = os.environ.get("PI_SESSION_FILE", "")
+    if env_file and env_file.endswith("_" + sid + ".jsonl"):
+        candidates.append(env_file)
+    ages = []
+    for p in candidates:
+        if os.path.isfile(p):
+            try:
+                ages.append(time.time() - os.path.getmtime(p))
+            except OSError:
+                pass
+    if not ages:
         return None
+    return min(ages)
 
 
 def _session_alive(sid):
@@ -342,10 +367,10 @@ def cmd_claim(args):
         print("用法：python3 pool_claim.py claim HK.00700,HK.00981,...", file=sys.stderr)
         return 1
     want = list(dict.fromkeys(_claimable_tokens(args)))   # 去重保序（开关/非标的 token 已滤）
-    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("PI_SESSION_ID", "")
     if not sid:
-        print("⚠️ 未拿到 CLAUDE_CODE_SESSION_ID（非会话内跑？）——认领会记到 unknown，"
-              "死会话判定失效；建议在盯盘会话内跑本命令", file=sys.stderr)
+        print("⚠️ 未拿到会话 ID（CLAUDE_CODE_SESSION_ID / PI_SESSION_ID；非会话内跑？）——"
+              "认领会记到 unknown，死会话判定失效；建议在盯盘会话内跑本命令", file=sys.stderr)
 
     today = datetime.now().strftime("%Y-%m-%d")
     now_t = datetime.now().strftime("%H:%M:%S")
@@ -461,7 +486,7 @@ def cmd_status(_args):
         for r_sid, r_syms in released:
             print(f"🧹 已释放死会话认领：[{r_sid[:8]}…] 的 {', '.join(r_syms)}")
     print(f"📌 当前全局划分（{today}）：\n{_fmt_claims(claims)}")
-    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("PI_SESSION_ID", "")
     if sid:
         mine = [c for c in claims if c["session"] == sid]
         if mine:
@@ -473,7 +498,7 @@ def cmd_status(_args):
 
 def cmd_release(args):
     """释放：release --all 释放本会话全部；release SYM[,SYM…] 释放指定标的（仅限本会话持有的）。"""
-    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("PI_SESSION_ID", "")
     today = datetime.now().strftime("%Y-%m-%d")
     release_all = "--all" in args
     syms = list(dict.fromkeys(_claimable_tokens(a for a in args if a != "--all")))

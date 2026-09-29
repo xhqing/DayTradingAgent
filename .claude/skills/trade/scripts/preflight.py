@@ -285,7 +285,8 @@ def _ensure_watcher():
 
 _ensure_watcher()
 
-# 盯盘会话注册（2026-08-11 立；2026-08-12 收窄为仅港股注册）：把本会话 CLAUDE_CODE_SESSION_ID
+# 盯盘会话注册（2026-08-11 立；2026-08-12 收窄为仅港股注册）：把本会话会话 ID
+# （CLAUDE_CODE_SESSION_ID / PI_SESSION_ID，宿主机双读）
 # 写入 tmp/monitor_sessions.txt，纳入密采样守护 watcher（launchd 每 10 秒）的守护范围。
 # ⚠️ **仅港股盯盘注册、美股不注册**（2026-08-12 用户立）：watcher 的 in_trading_session()
 # 只在港股盘中检查（美股时段用户休息不打扰），若美股会话也注册、第二天港股开盘 watcher 仍会
@@ -296,9 +297,9 @@ _ensure_watcher()
 def _register_monitor_session():
     import os as _os
     import datetime as _dt
-    _sid = _os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    _sid = _os.environ.get("CLAUDE_CODE_SESSION_ID") or _os.environ.get("PI_SESSION_ID", "")
     if not _sid:
-        return  # 非 Claude Code 会话内（如手动跑脚本）→ 跳过
+        return  # 非 agent 会话内（如手动跑脚本）→ 跳过
     # 港股盘中判断（与 preflight 主流程的 hk 变量口径一致：周一至周五 09:30-12:00 / 13:00-16:00）。
     # 额外允许 09:00 起注册（盘前 30 分钟，覆盖盘前预热启动 monitor_segment 的场景）。
     _now = _dt.datetime.now()
