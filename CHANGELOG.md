@@ -2,7 +2,11 @@
 
 本文件记录 DayTradingAgent 每个版本的主要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [Unreleased]
+## [0.4.1] - 2026-10-11
+
+第五个版本，涵盖 2026-10-11（0.4.0）之后的改动。主要内容：
+
+- **pi 后台任务扩展上移全局**：后台任务三工具（`background_run` / `background_list` / `background_stop`）改由全局扩展提供（全队 pi 会话可用），本项目删除原项目级扩展；`background_stop` 的密采样停盯提醒迁由项目守卫桥在 `tool_result` 阶段注入（提醒追加进结果、不阻断）；相关文档与注释同步。
 
 ### 变更（pi 后台任务扩展上移全局：通用能力归全局、项目联动迁回项目守卫，2026-10-11）
 
