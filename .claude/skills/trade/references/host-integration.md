@@ -9,7 +9,7 @@
 
 | 能力 | Claude Code / ZCode / CodeBuddy | pi |
 |---|---|---|
-| 后台跑密采样段 | `Bash(run_in_background=true)`，段结束 task-notification 唤醒 AI | `background_run` 工具（pi 扩展提供），段结束以 `[后台任务完成]` 消息唤醒 AI（附输出尾部） |
+| 后台跑密采样段 | `Bash(run_in_background=true)`，段结束 task-notification 唤醒 AI | `background_run` 工具（**全局** pi 扩展提供，2026-10-11 自项目扩展上移），段结束以 `[后台任务完成]` 消息唤醒 AI（附输出尾部） |
 | 查看后台任务 | 任务列表 / TaskOutput | `background_list` |
 | 停止后台任务 | `TaskStop` | `background_stop` |
 | 结构化提问（实盘授权 / 熔断重启确认） | `AskUserQuestion` | `AskUserQuestion`（扩展同名提供，交互与答案口径对齐） |

@@ -2,8 +2,8 @@
  * pi 宿主守卫桥公共库（2026-09-29 立）。
  *
  * 本文件不在 `.pi/extensions/` 直下一级，也不是 `某目录/index.ts`，故不会被 pi
- * 当作扩展自动加载——它只是给同目录上层的三个扩展（trade-guards / background-tasks /
- * ask-question）复用的内部工具库。
+ * 当作扩展自动加载——它只是给同目录上层的两个扩展（trade-guards / ask-question）
+ * 复用的内部工具库（原三个之一 background-tasks 已于 2026-10-11 上移全局，不再走本库）。
  *
  * 核心思路（为什么这么设计）：本项目所有护栏逻辑都写在 `.claude/hooks/*.py`
  * （唯一源，CC / ZCode / CodeBuddy 三宿主共用）。pi 端**不重写一套 TS 判定**，

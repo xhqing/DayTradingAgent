@@ -132,7 +132,30 @@ export default function tradeGuards(pi: ExtensionAPI) {
 		}
 	});
 
-	// —— ③ Stop 桥：回合静止时检查盯盘密采样是否断链（对应 CC 的 Stop hook）——
+	// —— ③ TaskStop 桥：background_stop 后的密采样停盯提醒（对应 CC 的 PreToolUse/TaskStop）——
+	// 本项目规则「密采样停盯前确认边界」的原实现挂在 background-tasks 扩展内部；
+	// 2026-10-11 该扩展上移全局（通用能力）后，项目联动迁回本项目守卫桥这里，
+	// 语义不变：不阻断、只把 monitor_guard 的提醒带回给 AI（随下一次模型请求进入上下文）。
+	pi.on("tool_result", async (event, ctx) => {
+		try {
+			if (event.toolName !== "background_stop") return;
+			const payload = {
+				hook_event_name: "PreToolUse",
+				session_id: ctx.sessionManager.getSessionId(),
+				tool_name: "TaskStop", // 对齐 CC 的 TaskStop 语义（monitor_guard taskstop 按此分支）
+				tool_input: {},
+			};
+			const r = await runHook("monitor_guard.py", ["taskstop"], payload);
+			const note = additionalContext(r.stdout) || r.stderr.trim();
+			if (note) {
+				return { content: [...event.content, { type: "text", text: note }] };
+			}
+		} catch {
+			// 忽略
+		}
+	});
+
+	// —— ④ Stop 桥：回合静止时检查盯盘密采样是否断链（对应 CC 的 Stop hook）——
 	pi.on("agent_settled", async (_event, ctx) => {
 		try {
 			const payload = {

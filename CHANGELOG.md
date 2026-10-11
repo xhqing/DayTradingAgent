@@ -2,6 +2,18 @@
 
 本文件记录 DayTradingAgent 每个版本的主要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased]
+
+### 变更（pi 后台任务扩展上移全局：通用能力归全局、项目联动迁回项目守卫，2026-10-11）
+
+- **为什么改**：2026-10-11 用户指出「后台跑命令」是通用能力、应放全局（原 `.pi/extensions/background-tasks.ts` 是项目级扩展）——上移后全队 pi 会话可用，且与全局 footer 提醒联动天然打通（不必逐项目接入）。原版带三处项目耦合（文案盯盘语义、`background_stop` 直调项目 `monitor_guard.py`、依赖 `lib/hooks.ts` / `PROJECT_ROOT`），上移时一并解耦。
+- **改了什么**：
+  1. 通用能力上移全局 `~/.pi/agent/extensions/background-tasks.ts`：三工具（`background_run` / `background_list` / `background_stop`）、完成通知唤醒、会话退出清理、活动上报（`{ source: "background-tasks" }` → 全局 `agent-wait-banner` 显示「还有后台进程在运行中」）；日志改落「会话工作目录 `tmp/pi-bg/`」；文案去项目化。本项目删除原项目级扩展。
+  2. 项目联动迁回 `.pi/extensions/trade-guards.ts`：`background_stop` 的密采样停盯提醒（`monitor_guard.py taskstop`）改由本桥在 `tool_result` 阶段注入（提醒追加进工具结果、不阻断）；`lib/hooks.ts` 注释同步（三个扩展 → 两个）。
+  3. 文档同步：`.claude/CLAUDE.md` pi 桥接段、`trade/SKILL.md` 宿主适配行、`trade/references/host-integration.md` 映射表（均注明后台工具由全局扩展提供）。
+- **验证**：桥冒烟 21/21（含全局路径加载、通知 / 清单 / 停止、活动上报 true→false）；pi -p 双环境加载；tmux 实测（在 ExecutiveAssistantAgent 目录、非本项目）——`background_run` 启动 `sleep 40` → footer 显示提醒、任务结束通知处理完自动撤销。
+- **回归风险评估**：① 工具名与用法不变——守卫拦截按工具名匹配、与注册位置无关；② 密采样跑法拦截 / 干净跑法放行冒烟已证不受影响；③ **时序变化**：停盯提醒原在 stop 执行中触发、现随 `tool_result`（任务已杀）——`monitor_guard` 的「在跑」判定含「log <120 秒」兜底，刚停的采样通常仍判在跑、提醒照出；仅「停最后一个且 log 停更超 120 秒」的极端边界可能少一次提醒（可接受）；④ 日志路径对无项目根的会话就地建 `tmp/pi-bg`（设计使然）。
+
 ## [0.4.0] - 2026-10-11
 
 第四个版本，涵盖 2026-10-11（0.3.0）之后的改动。主要内容：

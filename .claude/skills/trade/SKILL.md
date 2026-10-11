@@ -21,7 +21,7 @@ AI 用富途 OpenD / 老虎 SDK（盯盘行情数据主力，Level2 盘口 / 经
 本 skill 支持四个 agent 宿主：**Claude Code / ZCode / CodeBuddy / pi**。交易策略、脚本调用、护栏判定四宿主完全通用，**只有宿主接口不同**——开工前先按当前宿主把后续文本里的工具名映射过来：
 
 - **Claude Code / ZCode / CodeBuddy**：后台段用 `Bash(run_in_background=true)`（段结束 task-notification 唤醒）；提问用 `AskUserQuestion`；停后台任务用 `TaskStop`；会话 id = 环境变量 `CLAUDE_CODE_SESSION_ID`；hooks 走 `.claude/settings.json` / ZCode 用户级配置。
-- **pi**：后台段用 **`background_run`**（段结束以 `[后台任务完成]` 消息唤醒，pi 无内建后台 bash）；提问用 **`AskUserQuestion`**（由 `.pi/extensions/ask-question.ts` 同名提供）；停后台任务用 **`background_stop`**、查看用 `background_list`；会话 id = 环境变量 `PI_SESSION_ID`；hooks 由 `.pi/extensions/trade-guards.ts` 桥接同一批 `.claude/hooks/*.py`（规则单一源）。
+- **pi**：后台段用 **`background_run`**（全局 pi 扩展提供；段结束以 `[后台任务完成]` 消息唤醒，pi 无内建后台 bash）；提问用 **`AskUserQuestion`**（由 `.pi/extensions/ask-question.ts` 同名提供）；停后台任务用 **`background_stop`**、查看用 `background_list`；会话 id = 环境变量 `PI_SESSION_ID`；hooks 由 `.pi/extensions/trade-guards.ts` 桥接同一批 `.claude/hooks/*.py`（规则单一源）。
 
 完整映射表、pi 宿主细节与验证状态见 **`references/host-integration.md`**（首次在当前宿主开工时读一遍）。
 
