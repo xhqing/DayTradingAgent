@@ -2,6 +2,15 @@
 
 本文件记录 DayTradingAgent 每个版本的主要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased]
+
+### 变更（pi 后台任务运行期接入「还有后台进程在运行中」会话提醒联动，2026-10-11）
+
+- **为什么改**：2026-10-11 用户反馈 pi 会话等待提醒的问题（输出中多余 / 结束后残留 / 文案不严谨 / 位置可换）并建议文案改为「还有后台进程在运行中，请稍等」——后台任务运行期正需要该提醒（任务还在跑、完成时会唤醒会话，用户若误以为空闲关掉窗口，完成通知将无处送达）。全局侧 `agent-wait-banner` 扩展已重做为 footer 状态行提醒（详见 CapabilityManagerAgent CHANGELOG 2026-10-11 分节），本项目扩展接入其活动上报通道。
+- **改了什么**：`.pi/extensions/background-tasks.ts` 新增联动上报——任务登记成功后 `runningCount += 1` 并发出 pi.events 事件 `agent-wait-banner:activity`（`{ source: "daytrading-bg-tasks", active: true }`）；任务 exit / error 经 `releaseCount`（`counted` 标志防重复扣减）递减，归零时发 `active: false`；`session_start` / `session_shutdown` 重置计数并发布 inactive。UI 呈现（位置、文案、显示时机）由全局扩展统一负责，本扩展只上报「有没有后台任务在跑」。
+- **验证**：pi tmux 实测会话——`background_run` 启动 `sleep 45` 后 footer 显示「🟥🟥🟥 还有后台进程在运行中，请稍等 🟥🟥🟥」，任务结束通知处理完提醒自动撤销；pi -p 加载验证通过。
+- **回归风险评估**：① 上报逻辑挂在既有任务生命周期事件（登记 / exit / error / 会话切换）上，只增不改原通知与回收路径；② `pi.events` 不可用（全局扩展缺失）时 try/catch 忽略，任务本身不受影响；③ 计数仅用于界面提醒、不参与任何交易 / 采样判定。
+
 ## [0.3.0] - 2026-10-11
 
 第三个版本，涵盖 2026-09-18（0.2.0）之后的全部迭代。主要内容：

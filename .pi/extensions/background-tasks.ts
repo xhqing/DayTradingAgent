@@ -34,6 +34,8 @@ interface BgTask {
 	status: "running" | "exited" | "killed" | "failed";
 	exitCode: number | null;
 	signal?: string | null;
+	/** 是否已计入「运行中」联动计数（防 error / exit 重复扣减）。 */
+	counted?: boolean;
 }
 
 /** 输出尾部（通知里只带尾部，完整输出在日志文件）。 */
@@ -63,6 +65,27 @@ export default function backgroundTasks(pi: ExtensionAPI) {
 	let shuttingDown = false;
 
 	const logDir = path.join(PROJECT_ROOT, "tmp", "pi-bg");
+
+	// ---- 与全局 agent-wait-banner 扩展联动 ----
+	// 后台任务运行期间，会话界面（footer 状态行）显示
+	// 「🟥🟥🟥 还有后台进程在运行中，请稍等 🟥🟥🟥」，避免用户误以为会话已空闲而关掉窗口。
+	// 协议：pi.events 事件 `agent-wait-banner:activity`，载荷 { source, active }。
+	const ACTIVITY_EVENT = "agent-wait-banner:activity";
+	const ACTIVITY_SOURCE = "daytrading-bg-tasks";
+	let runningCount = 0;
+	const publishActivity = (active: boolean): void => {
+		try {
+			pi.events.emit(ACTIVITY_EVENT, { source: ACTIVITY_SOURCE, active });
+		} catch {
+			// 事件总线不可用时忽略（提醒是增强项，不影响任务本身）
+		}
+	};
+	const releaseCount = (task: BgTask): void => {
+		if (!task.counted) return;
+		task.counted = false;
+		runningCount = Math.max(0, runningCount - 1);
+		if (runningCount === 0) publishActivity(false);
+	};
 
 	function killGroup(pid: number, signal: NodeJS.Signals): void {
 		try {
@@ -157,9 +180,13 @@ export default function backgroundTasks(pi: ExtensionAPI) {
 					exitCode: null,
 				};
 				tasks.set(id, task);
+				task.counted = true;
+				runningCount += 1;
+				publishActivity(true);
 				child.on("error", (err) => {
 					task.status = "failed";
 					task.endedAt = Date.now();
+					releaseCount(task);
 					const note = `[后台任务失败] ${id} 启动失败：${String(err)}`;
 					try {
 						pi.sendMessage(
@@ -175,6 +202,7 @@ export default function backgroundTasks(pi: ExtensionAPI) {
 					task.exitCode = code;
 					task.signal = signal;
 					if (task.status === "running") task.status = "exited";
+					releaseCount(task);
 					if (!shuttingDown) notifyCompletion(task, signal);
 				});
 				return {
@@ -288,6 +316,8 @@ export default function backgroundTasks(pi: ExtensionAPI) {
 				killGroup(t.pid, "SIGTERM");
 			}
 		}
+		runningCount = 0;
+		publishActivity(false);
 	});
 
 	// 新会话（含 /new、/resume、/fork 换会话）：重置状态——退出标记不重置的话，
@@ -296,5 +326,7 @@ export default function backgroundTasks(pi: ExtensionAPI) {
 		shuttingDown = false;
 		tasks.clear();
 		counter = 0;
+		runningCount = 0;
+		publishActivity(false);
 	});
 }
