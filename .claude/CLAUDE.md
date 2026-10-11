@@ -104,6 +104,13 @@
 - **工具强制评估**：本条规定无法加脚本硬拦（属认知判断类：建议是否「有统计基础」依赖对建议内容的评估，无机械化判据），按「文档规定必须尽可能配工具强制」第③层「决策时刻工具在场打印」落地——trading-strategy.md「护栏的统计依据与撤销」节已固化该原则，复盘 / 决策时读该节即触发提醒。
 - **边界**：本条管「交易逻辑建议」的提出；数据获取、行情分析、执行类操作（是否在盘中执行某个既定信号）不受此限——后者按既有护栏判断。单笔事故复盘仍有价值（触发规则假设），只是不构成规则长期成立的依据。
 
+## 子项目清单（`.claude/` 超集关系）
+
+本项目（Victor）负责维护的子项目如下（与全局 `~/.claude/docs/agents-registry.md`「超集关系映射」表保持一致）：
+
+- **TradingProofs**（`/Users/xhq/Developer/TradingProofs`）：交易数学的 Lean 4 + Mathlib 机器可验证证明——从 `notes/cumulative-return-derivation.md` 的固定比例下注推导开始，逐步覆盖累计收益率公式、强数定律下的指数增长率、凯利最优 `f*` 与「两倍凯利」边界；与实盘执行完全隔离（不产出信号、不接证券账户）。2026-10-11 立项，负责人 Victor。
+- **超集落地方式（说明）**：按团队 2026-10-09 新式脚手架约定，TradingProofs **不建 `.claude/` 目录**（通用能力经 CapabilityManagerAgent 镜像统一开源）；本项目特有的交易执行机制（`.claude/hooks`、`.claude/skills/trade`，含实盘授权本机文件）不适合复制进数学证明仓库，故超集内容以**本文件全文随附**形式落在 TradingProofs 项目根 `CLAUDE.md` 末尾（新增而不覆盖其自身内容）；本文件更新时同步更新该随附段。
+
 ## commit skill 检测缓存
 
 <!-- commit-skill: readme-standard = ok -->

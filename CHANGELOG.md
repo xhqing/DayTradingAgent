@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### 新增（子项目 TradingProofs 立项：交易数学的 Lean 形式化 + 源文档两处口径修正，2026-10-11）
+
+- **为什么改**：用户指令「把这件事单独立项，新建一个 git 项目，这个项目作为你的子项目由你负责，在新项目目录里面做这件事」——把「固定比例下注下累计收益率指数增长」这条推导做成 Lean 4 + Mathlib 的机器可验证证明。立项前的可行性核对实测发现源文档两处按字面不成立的表述，本次一并修正（回馈闭环）。
+- **改了什么**：
+  1. 新建子项目 **TradingProofs**（`~/Developer/TradingProofs`，本地 git 仓库、与实盘执行完全隔离）：仓库脚手架（README 中英双语 + LOGO + 徽章、MIT LICENSE、CHANGELOG / VERSION / TODO）+ Lean 项目骨架（`lakefile.lean` / `lean-toolchain` / `lake-manifest.json` 锁定 Mathlib `2da3ab0a`）+ CI（`lean-action` + Mathlib 缓存）+ 反例扫描脚本（`scripts/twice-kelly-scan.py`）。详见该仓库 CHANGELOG。
+  2. 本文件（`.claude/CLAUDE.md`）新增「子项目清单（`.claude/` 超集关系）」节：登记 TradingProofs 与超集落地方式（按 2026-10-09 新式脚手架不建 `.claude/`；本项目交易执行机制（hooks / trade skill，含实盘授权本机文件）不复制进数学仓库，超集以本文件全文随附形式落到 TradingProofs 项目根 `CLAUDE.md`）。
+  3. `notes/cumulative-return-derivation.md` 修正两处口径（形式化核对实测发现，文内标「2026-10-11 修订」）：① §3 的 `∏(1+fRᵢ) ≤ (1+f·EV)ⁿ` 改为渐近形式——逐 n 并不成立（反例：EV=0 的 ±1 等概率赌局抽到全赢样本时左边更大），逐 n 精确版只能比到样本算术均值；② §7.3「超过两倍凯利必然缩水」补边界与实算反例——`f_crit = 2f*` 只是抛物线近似，离散两结果模型下随机扫描 50 万组有效参数（25 万组）约 20% 出现 `f_c > 2f*`，最极端 `f_c ≈ 2.19×(2f*)` 且 `g(2f*) ≈ +0.242 > 0`；③ 附录二补核对脚本与实跑输出（已在 TradingProofs `scripts/twice-kelly-scan.py` 镜像一份）。
+  4. 全局注册表 `~/.claude/docs/agents-registry.md` 超集映射表加 DayTradingAgent → TradingProofs 行（镜像同步与 CHANGELOG 记 CapabilityManagerAgent 侧，提交委派 Prometheus）。
+- **验证**：反例扫描脚本复跑输出与文档修订引用数字逐位一致（9.6 秒跑完，`scripts/twice-kelly-scan.py`）；TradingProofs 项目根 `CLAUDE.md` 随附段与父文件逐行还原 diff 一致；注册表全局 ↔ 镜像 diff 逐字节一致。
+
 ### 新增（pi 宿主完整接入：trade skill 可在 pi 运行，2026-09-29）
 
 - **为什么改**：用户指令「把本项目完全改造成可以在 pi 中运行的项目」。此前项目已支持 CC / ZCode / CodeBuddy 三宿主（trade skill 还能通过 `.pi/skills → .claude/skills` 符号链接被 pi 发现），但 pi 宿主缺三块关键机制——① pi 官方无内建后台 bash（README 明说用 tmux），盯盘密采样的「后台段 → 段结束唤醒 AI → 读数据 + 分析 + 重启」循环转不起来；② pi 无内建 `AskUserQuestion`，实盘授权点击见证链断裂（`live_auth_witness` 收不到事件 = 实盘解锁不了）；③ 项目 hooks（monitor_guard / secret_guard / changelog_guard / live_auth_witness）没有 pi 挂载点。本次把三块补齐并做端到端验证（盘外三项 e2e + 20/20 冒烟；盘中实战验收留 TODO T159）。
