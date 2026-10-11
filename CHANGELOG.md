@@ -2,7 +2,13 @@
 
 本文件记录 DayTradingAgent 每个版本的主要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [Unreleased]
+## [0.3.0] - 2026-10-11
+
+第三个版本，涵盖 2026-09-18（0.2.0）之后的全部迭代。主要内容：
+
+- **pi 宿主完整接入**：项目 hooks 经 pi 扩展桥接到 pi（trade-guards / background-tasks / ask-question 三个扩展 + 公共库），脚本会话 ID 双读（`PI_SESSION_ID` 兜底）、pi transcript 死会话探测补全，pi 宿主下「采样段后台运行 → 完成唤醒 → 继续采样」与实盘授权见证链闭环（四宿主单源同享）；盘中实战验收留 TODO T159。
+- **子项目 TradingProofs 立项**：交易数学的 Lean 4 + Mathlib 机器可验证证明（核心定理链已本地构建通过），`notes/cumulative-return-derivation.md` 两处口径按形式化核对修正（§3 不等式改渐近形式、§7.3「两倍凯利」补边界与实算反例）。
+- **批量办结 11 条待办**：美股跨午夜持仓失明 / 连败漏记 / R 分母口径 / 富途脏点 / log 拒写坏数据 / 门槛文案脱节 / 影子 sec-type / 认领开关 / 墙钟时刻 + T146 四假设验证报告。
 
 ### 新增（子项目 TradingProofs 立项：交易数学的 Lean 形式化 + 源文档两处口径修正，2026-10-11）
 
