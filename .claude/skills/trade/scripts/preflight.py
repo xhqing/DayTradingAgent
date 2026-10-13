@@ -229,6 +229,44 @@ def _us_wrapup_check():
 
 _us_wrapup_check()
 
+# 飞书汇报漏发检查（2026-10-13 用户立）：每次停盯都要把停盯总结（业务版）推送到飞书，
+# 本检查看「最近一个已完结的美股交易日」已在 signals/actions 写入停盯总结、但
+# notify_feishu.py 的发送标记（tmp/feishu_sent_us_<交易日>.txt）不存在 → 提醒补发。
+# 只查 ET（停盯总结进文件与上方 _us_wrapup_check 同口径）；港股停盯当场闭环、暂不查。
+# 功能上线（2026-10-13）之前的交易日无标记属正常（历史记录不追责）。
+def _feishu_check():
+    try:
+        from zoneinfo import ZoneInfo
+        _us_now = datetime.datetime.now().astimezone(ZoneInfo("America/New_York"))
+    except Exception:
+        return
+    _d = _us_now.date()
+    if not (_us_now.weekday() < 5 and _us_now.hour >= 16):
+        _d = _d - datetime.timedelta(days=1)
+        while _d.weekday() >= 5:
+            _d = _d - datetime.timedelta(days=1)
+    if _d < datetime.date(2026, 10, 13):
+        return
+    _root = _os.path.abspath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                                          "..", "..", "..", ".."))
+    _has_summary = False
+    for _dir, _name in (("signals", f"{_d.isoformat()}-ET-signals.md"),
+                        ("actions", f"{_d.isoformat()}-ET-actions.md")):
+        try:
+            if "停盯总结" in open(_os.path.join(_root, _dir, _name), encoding="utf-8").read():
+                _has_summary = True
+                break
+        except Exception:
+            continue
+    if not _has_summary:
+        return
+    _marker = _os.path.join(_root, "tmp", f"feishu_sent_us_{_d.isoformat()}.txt")
+    if not _os.path.isfile(_marker):
+        print(f"📨 飞书汇报提醒：{_d.isoformat()} ET 的停盯总结已写但未见飞书推送记录——按用户规定"
+              f"（每次停盯必发业务版）补发：python3 scripts/notify_feishu.py --file <业务版文件> --market us")
+
+_feishu_check()
+
 # 标的池划分状态（2026-08-19 立，TODO「标的池自动划分」）：多会话并行时启动序列内
 # 方向研判定出候选池后跑 `python3 scripts/pool_claim.py claim <候选>` 认领（互斥划分，
 # 同一标的不落两会话）；此处打印当前全局划分让 AI / 用户启动即见「谁盯哪些」。

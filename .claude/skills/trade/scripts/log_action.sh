@@ -72,6 +72,15 @@ PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/../../../.." && pwd)}"
 ACTIONS_DIR="$PROJECT_ROOT/actions"
 mkdir -p "$ACTIONS_DIR"
 ACTION_FILE="$ACTIONS_DIR/$(date "+%Y-%m-%d")-${MARKET_SUFFIX}-actions.md"
+# 2026-10-13 修：ET 文件按美东交易日命名——北京日期跨午夜（次日 00:00 后）时本地日期已进
+# 次日，而美东仍在同一 ET 交易日（如北京 10-13 01:03 = 美东 10-12 13:03），原直接用本地
+# 日期会把成交记进次日 ET 文件（2026-10-13 01:03 实录：实盘第二笔开仓误入 10-13 文件，
+# 已迁正）；HKT 维持本地日期（港股盘中不跨北京午夜）。
+case "$MARKET" in
+  et) ACTION_DATE="$(TZ=America/New_York date "+%Y-%m-%d")" ;;
+  *)  ACTION_DATE="$(date "+%Y-%m-%d")" ;;
+esac
+ACTION_FILE="$ACTIONS_DIR/${ACTION_DATE}-${MARKET_SUFFIX}-actions.md"
 LOG_FILE="$PROJECT_ROOT/signals/ring-log.csv"
 
 # 时间戳：auto 模式直接用当前时间（下单时刻）；signal 模式读 ring-log 末行（= 拍板时刻）；

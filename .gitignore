@@ -12,6 +12,9 @@ archive/
 .claude/skills/trade/live-unlock.*.local
 .claude/skills/trade/live-auth.*.local
 
+# 飞书推送本机配置（接收人 user_id / 群 chat_id，仅本机保留），只入库 feishu.example.json 样板
+.claude/skills/trade/feishu.local.json
+
 # 临时产物目录（预览图、调试快照等），不入库
 tmp/
 

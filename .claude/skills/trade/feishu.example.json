@@ -1,0 +1,6 @@
+{
+  "_comment": "本机飞书推送配置样板（复制为同目录 feishu.local.json 后按本机填写；feishu.local.json 已被 .gitignore 忽略）。user_id 与 chat_id 二选一：user_id = 机器人私聊接收人，chat_id = 发到某个群。identity 默认 bot。enabled=false 可停用本机推送。",
+  "user_id": "<FEISHU_USER_OPEN_ID>",
+  "identity": "bot",
+  "enabled": true
+}
