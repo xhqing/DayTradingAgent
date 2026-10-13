@@ -2,6 +2,12 @@
 
 本文件记录 DayTradingAgent 每个版本的主要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased]
+
+### 变更（飞书汇报机器人显示名 Linda，2026-10-13）
+
+- **飞书汇报机器人的显示名定为 Linda**（描述写 "Victor's Assistant"，即 Victor 的助手，2026-10-13 用户设定并发布应用 1.0.1 版）。触发原因：此前文档里没记机器人名字，会话收尾核对时曾把飞书自带的「Feishu Assistant」误当成我们的机器人，容易认错汇报对象；本次在 `.claude/skills/trade/SKILL.md`「飞书汇报」节补记显示名，供各会话辨认。发送逻辑与配置不受影响（不依赖名字）。
+
 ## [0.4.3] - 2026-10-13
 
 第七个版本，涵盖 2026-10-12（0.4.2）之后的改动。主要内容：
