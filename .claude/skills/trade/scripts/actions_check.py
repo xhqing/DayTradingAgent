@@ -47,11 +47,11 @@ sys.path.insert(0, SCRIPT_DIR)
 _SECTION_RE = re.compile(
     r'\n(?=(?:#+\s*)?(?:🟢🟢🟢|🔴🔴🔴|🟡🟡🟡|🔵🔵🔵)\s*(?:被动\s*|主动\s*)?(?:开仓|平仓|移动止损|移动止盈))')
 _SYM_RE = re.compile(r'(HK\.\d{5}|US\.[A-Z]{1,6}(?![A-Z])|(?<![A-Z.\d])\d{5}(?!\d))')
-_QTY_ROW_RE = re.compile(r'\|\s*量\s*\|\s*\*{0,2}(\d+)')
+_QTY_ROW_RE = re.compile(r'\|\s*量\s*\|\s*\*{0,2}([\d,]+)')
 # 平仓记录转录模板无量行（2026-09-01 实测：开仓有「| 量 | 4700 股 |」、平仓表格是
 # 标的/方向/开仓价/平仓价/盈亏——当日真实检查误报未闭环 4700 股）。回退提取
 # 「开仓价 | …（4700 股…」括号内股数；都无 → None（配平按全平核销）。
-_QTY_OPEN_RE = re.compile(r'开仓价[^（(\n]*[（(](\d+)\s*股')
+_QTY_OPEN_RE = re.compile(r'开仓价[^（(\n]*[（(]([\d,]+)\s*股')
 _TS_RE = re.compile(r'⏰\s*(?:动作|补录)时间：(\S+)')
 
 
@@ -83,10 +83,10 @@ def _parse_events(files):
             if sym and not sym.startswith(("HK.", "US.")):
                 sym = f"{'HK' if market == 'HK' else 'US'}.{sym}"
             mq = _QTY_ROW_RE.search(sec)
-            qty = int(mq.group(1)) if mq else None
+            qty = int(mq.group(1).replace(',', '')) if mq else None
             if qty is None:
                 mo = _QTY_OPEN_RE.search(sec)
-                qty = int(mo.group(1)) if mo else None
+                qty = int(mo.group(1).replace(',', '')) if mo else None
             mt = _TS_RE.search(sec)
             events.append({"market": market, "ts": mt.group(1) if mt else "",
                            "type": etype, "sym": sym, "qty": qty, "file": os.path.basename(fp)})

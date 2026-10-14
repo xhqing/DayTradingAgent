@@ -118,8 +118,8 @@ def _parse_actions(files):
             ts = mtime.group(1) if mtime else ''
             mdir = re.search(r'\|\s*方向\s*\|\s*(\S+)', sec)
             direction = mdir.group(1) if mdir else ''
-            mqty = re.search(r'\|\s*量\s*\|\s*(\d+)', sec)
-            qty = int(mqty.group(1)) if mqty else 0
+            mqty = re.search(r'\|\s*量\s*\|\s*([\d,]+)', sec)
+            qty = int(mqty.group(1).replace(',', '')) if mqty else 0
             # 止损价：开仓「| 止损 | **HK$61.90**…」/ 移损「| 新止损 | **443.0…」（表格行首个
             # 数字；2026-09-18 修：原正则 `\*{0,2}(\d+` 遇货币前缀（HK$/US$/$）即失配 →
             # stop 恒为 None，「止损单铁律」恢复指引的失效前止损价一直取不到）
@@ -633,14 +633,14 @@ def position_status(account=None):
                              '先排查（常见根因：代理节点漂移出老虎 IP 白名单，见 proxy_guard 白名单守护），'
                              '修复前本段以 actions 记录为持仓依据。')
             stop = stops.get(code)
-            stop_str = f'{stop:.2f}' if stop is not None else '无活动止损单'
+            stop_str = f'{stop:g}' if stop is not None else '无活动止损单'
             lines.append(f'📌（actions 口径）{sym} {info["qty"]}股({info["dir"]}) | 活动止损单触发价 {stop_str}')
             continue
         # 账户持仓匹配（老虎持仓 symbol 为裸代码，取 p.contract.symbol——见 _pos_symbol）
         acct_pos = [p for p in positions if _pos_symbol(p) == code]
         acct_qty = sum(int(getattr(p, 'quantity', 0) or 0) for p in acct_pos)
         stop = stops.get(code)
-        stop_str = f'{stop:.2f}' if stop is not None else '无活动止损单'
+        stop_str = f'{stop:g}' if stop is not None else '无活动止损单'
         base = (f'📌 持仓状态: {sym} {info["qty"]}股({info["dir"]}) | 账户实持 {acct_qty}股'
                 f'（{account_tag}） | 活动止损单触发价 {stop_str}')
         # 🚨 止损单铁律（2026-08-23 用户立）：持仓在 → 止损单必须存在。账户仍有持仓但
@@ -653,7 +653,7 @@ def position_status(account=None):
         # 失效前止损价从当日 actions 解析（开仓「止损」/ 移损「新止损」行，见 _parse_actions）。
         if stop is None and acct_qty > 0:
             last_stop = _last_recorded_stop(sym, only_session=sid or None)
-            ls_str = f'{last_stop:.2f}' if last_stop is not None else '（当日记录未解析到止损价，按最新趋势反转位定）'
+            ls_str = f'{last_stop:g}' if last_stop is not None else '（当日记录未解析到止损价，按最新趋势反转位定）'
             lines.append(f'🚨 {base} —— 止损单铁律被破坏：**持仓在、止损单必须存在**，当前处于无止损裸奔状态！')
             lines.append(f'    → 处置（当段执行、二选一）：a) 仍想平仓 → close_position（补设止损单触发价=现价、市价触发离场）；')
             _dir_en = 'long' if '多' in info['dir'] else 'short'
@@ -685,7 +685,7 @@ def position_status(account=None):
                                  else '收紧（离场更近、风险变小）')
                     warn = (' ⚠️ 注意：方向与持仓相反的移动——若是按做多习惯改的请复核'
                             if loosened else '')
-                    note = (f' | 👤 用户改单：账户止损 {stop:.2f} ≠ 记录 {rec_stop:.2f}'
+                    note = (f' | 👤 用户改单：账户止损 {stop:g} ≠ 记录 {rec_stop:g}'
                             f'（判定为您在 App 手动修改，非脚本异常）——较记录{risk_word}{warn}')
             lines.append(base + ' | 账户一致 ✅' + note)
     # 账户有持仓而 actions 无记录 → 提示（用户手动开仓等漏网路径）。按账户分组判
