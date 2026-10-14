@@ -2,7 +2,13 @@
 
 本文件记录 DayTradingAgent 每个版本的主要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [Unreleased]
+## [0.4.4] - 2026-10-14
+
+第八个版本，涵盖 2026-10-13（0.4.3）之后的改动。主要内容：
+
+- **交易状态工具精度修复**：`account_status` / `actions_check` 数量解析支持千分位逗号、止损价显示精度修正（`:.2f` → `:g`）。
+- **T160 更新**（老虎白名单远端失配持仓中实录 + auto_switch 根因）+ **T161 登记**（`_sec_type_of` 将杠杆 ETF 误判 stock 致 max_loss 多算印花税）。
+- 2026-10-13 ET / 2026-10-14 HKT 交易日记录与停盯总结。
 
 ### 记录（老虎白名单「远端失配」持仓中复发 + auto_switch 干扰发现，2026-10-14）
 
