@@ -2,7 +2,12 @@
 
 本文件记录 DayTradingAgent 每个版本的主要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [Unreleased]
+## [0.4.5] - 2026-10-16
+
+第九个版本，涵盖 2026-10-14（0.4.4）之后的改动。主要内容：
+
+- **停盯总净赔率计入 token 费用**：新增 `token_cost.py` 按 DeepSeek 官方 `deepseek-flash` 分档价格（高峰/空闲）统计盯盘段 token 费用，停盯总结并报含费 / 不含费两口径净赔率，每次记录进 `reviews/token-cost-log.csv`（含单价快照）。
+- **项目级默认模型定为官方 `deepseek-flash`**：新增 `.pi/settings.json`（API 直充渠道）。
 
 ### 新增（停盯总净赔率计入 token 费用 + 项目级默认模型 deepseek-flash，2026-10-16）
 
