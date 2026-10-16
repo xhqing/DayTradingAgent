@@ -2,6 +2,19 @@
 
 本文件记录 DayTradingAgent 每个版本的主要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased]
+
+### 新增（停盯总净赔率计入 token 费用 + 项目级默认模型 deepseek-flash，2026-10-16）
+
+- **为什么改**：盯盘跑 LLM 会话本身有 token 运行成本，此前停盯总结只算交易盈亏、不含这项成本；用户 2026-10-16 要求把 token 费用计入停盯总净赔率、并每次记录（含单价快照，便于官方价格低频变化后追溯），同时把本项目默认模型定为 DeepSeek 官方 `deepseek-flash`（API 直充）。
+- **改了什么**：
+  - 新增 `.pi/settings.json`（项目级）：默认模型 = DeepSeek 官方 provider 的 `deepseek-flash`（`defaultProvider: "deepseek"`、`defaultModel: "deepseek-flash"`），仅本项目生效、不覆盖全局。
+  - 新增 `.claude/skills/trade/scripts/token_cost.py`：按 DeepSeek 官方分档价（高峰/空闲 × 缓存命中/未命中/输出，人民币）逐消息统计会话盯盘段 token 费用，输出分项 tokens、单价快照、费用，可追加进 CSV（`--write-csv`）。
+  - 新增 `reviews/token-cost-log.csv`：每次停盯一条记录（分项 tokens、单价快照、费用、交易盈亏、总 max_loss、含费/不含费两口径净赔率）；首行 = 2026-10-15 美股盯盘会话（费用 ¥11.37 ≈ $1.70，含费净赔率 +1.1732R vs 不含费 +1.1786R）。
+  - 修改 `.claude/skills/trade/SKILL.md` 停盯总结节：加「总净赔率含 token 费用口径」说明（两口径并报 + 跑脚本 + 回填 CSV 流程）。
+- **口径与来源**：官方定价页 https://api-docs.deepseek.com/zh-cn/quick_start/pricing （2026-10-16 查询）——deepseek-flash：输入缓存命中 0.02/0.04 元、未命中 1/2 元、输出 4/8 元（空闲/高峰，元/百万 tokens）；高峰 = 北京时间周一至周五 9:00-12:00、14:00-18:00（不含中国法定节假日，脚本按「周一至周五」近似、不识别节假日）。pi usage 字段口径实测：input = 未命中输入、cacheRead = 命中输入，四字段相加 = totalTokens（868/868 条全量一致）。
+- **验证**：脚本实跑本会话（10-15 盯盘段 803 条消息）= miss 963,047 / hit 442,372,864 / out 389,842 tokens、全空闲档、费用 ¥11.3699；CSV 首行独立复核（手工算式与脚本输出一致）。
+
 ## [0.4.4] - 2026-10-14
 
 第八个版本，涵盖 2026-10-13（0.4.3）之后的改动。主要内容：

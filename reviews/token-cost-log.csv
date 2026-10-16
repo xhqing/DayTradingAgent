@@ -1,0 +1,2 @@
+date,session,span,model,price_asof,tok_miss_off,tok_miss_peak,tok_hit_off,tok_hit_peak,tok_out_off,tok_out_peak,p_miss_off,p_miss_peak,p_hit_off,p_hit_peak,p_out_off,p_out_peak,cost_cny,fx_cny_usd,cost_usd,trades_pnl_usd,total_max_loss_usd,odds_excl_cost,odds_incl_cost,note
+2026-10-15,2026-10-15T13-25-06-190Z_01a13fbc-e40c-7039-a872-e88ff4a384a4.jsonl,2026-10-15 21:25~2026-10-16 04:18 北京,deepseek-flash,2026-10-16,963047,0,442372864,0,389842,0,1.0,2.0,0.02,0.04,4.0,8.0,11.3699,6.69,1.6995,366.48,310.94,1.1786,1.1732,10-15 美股 auto 盯盘（本会话）；汇率来源 Wise/XE 市场价
