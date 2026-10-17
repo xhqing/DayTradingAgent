@@ -2,6 +2,17 @@
 
 本文件记录 DayTradingAgent 每个版本的主要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased]
+
+### 变更（子项目智能体专属文件归属新规落地：TradingProofs 挂两条指回软链接，2026-10-17）
+
+- **为什么改**：用户 2026-10-17 修订团队规则（取代 2026-10-12 的「子项目一律不得存在」）——智能体专属文件的实体仍只在 Agent 项目，但子项目根目录挂两条指回负责 Agent 的软链接（`AGENTS.md`、`.pi`，随仓库提交），在子项目目录直接开会话即继承负责 Agent 的身份 / 规则 / 技能 / 扩展 / 设置（「Agent 进驻子项目」）；后台开启 / 唤醒会话仍限定 Agent 项目根为工作目录。细则见全局 `~/.claude/docs/agents-registry.md`「智能体专属文件归属与子项目映射（2026-10-17 修订）」节。
+- **改了什么**：
+  1. 子项目 TradingProofs：新增两条软链接（`AGENTS.md → ../DayTradingAgent/AGENTS.md`、`.pi → ../DayTradingAgent/.pi`，随仓库提交）；README「形式化纪律」节保持不变；该仓库 CHANGELOG 记对应条目。
+  2. 本文件「子项目清单」节同步为 2026-10-17 新规表述（实体只在 Agent 项目 + 两条软链接网络 + 后台会话限制保留）。
+- **验证**：软链接逐条解析实测——`TradingProofs/AGENTS.md` 经嵌套软链读到本项目规则全文（含居首的 DayTradingAgent 说明），`.pi/` 目录（extensions / settings.json / skills）可读。
+- **回归风险评估**：纯文档与仓库结构改动，无代码 / 交易逻辑影响；单独 clone 到别处时链接悬空属新规已知设计（无害、仅缺省）。
+
 ## [0.4.5] - 2026-10-16
 
 第九个版本，涵盖 2026-10-14（0.4.4）之后的改动。主要内容：
