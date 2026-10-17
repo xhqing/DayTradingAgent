@@ -61,7 +61,7 @@
 
 #### 与全局规定的关系
 
-本条与全局 `~/.claude/CLAUDE.md` 的「输出风格」一致，以全局规定为准。
+本条与全局 `~/.pi/agent/CLAUDE.md` 的「输出风格」一致，以全局规定为准。
 
 ## 文档规定必须尽可能配工具强制（2026-08-18 用户立）
 
@@ -106,7 +106,7 @@
 
 ## 子项目清单（智能体专属文件归属，2026-10-17 修订）
 
-本项目（Victor）负责维护的子项目如下（与全局 `~/.claude/docs/agents-registry.md`「智能体专属文件归属与子项目映射（2026-10-17 修订）」节的子项目映射表保持一致）：
+本项目（Victor）负责维护的子项目如下（与全局 `~/.pi/agent/docs/agents-registry.md`「智能体专属文件归属与子项目映射（2026-10-17 修订）」节的子项目映射表保持一致）：
 
 - **TradingProofs**（`/Users/xhq/Developer/TradingProofs`）：交易数学的 Lean 4 + Mathlib 机器可验证证明——从 `notes/cumulative-return-derivation.md` 的固定比例下注推导开始，逐步覆盖累计收益率公式、强数定律下的指数增长率、凯利最优 `f*` 与「两倍凯利」边界；与实盘执行完全隔离（不产出信号、不接证券账户）。2026-10-11 立项，负责人 Victor。
 - **智能体专属文件归属（2026-10-17 用户修订，取代 2026-10-12 的「子项目一律不得存在」）**：`CLAUDE.md` / `AGENTS.md` / `.claude/` / 项目级 `.pi/` 这类「会话启动时按工作目录加载、表征智能体身份」的项目级文件的**实体只在本项目（Agent 项目）**；**TradingProofs 根目录挂两条指回本项目的软链接**——`AGENTS.md → ../DayTradingAgent/AGENTS.md`、`.pi → ../DayTradingAgent/.pi`（随仓库提交）——在子项目目录开会话即继承 Victor 的身份与规则（Agent 进驻子项目；其 README「形式化纪律」节保持不变）。子项目的工作（读文件、跑命令、开发、提交）在本项目的会话里按路径跨目录操作（如 `git -C /Users/xhq/Developer/TradingProofs`）；通过 intercom / `agent_call` / `agent_wake` 为后台 pi 会话指定工作目录时，仍只能以本项目根目录为准（工具按注册表校验），不得指向子项目目录。

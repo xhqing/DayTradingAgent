@@ -2,6 +2,15 @@
 
 本文件记录 DayTradingAgent 每个版本的主要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased]
+
+### 变更（全局权威源迁移对齐：项目内文档的全局路径引用更新，2026-10-17）
+
+- **为什么改**：全局能力源 2026-10-17 从 `~/.claude/` 迁至 `~/.pi/agent/`（`~/.claude/MOVED-TO-PI.md`：全局规则 = `~/.pi/agent/CLAUDE.md`、技能 = `~/.pi/agent/skills/`、文档 = `~/.pi/agent/docs/`、patch = `~/.pi/agent/patch/`；`~/.claude/hooks/` 守卫保留原位）——项目文档里指向旧路径的引用改为新权威路径。
+- **改了什么**：`.claude/CLAUDE.md` 两处——① 「输出风格」节的全局规定指针 `~/.claude/CLAUDE.md` → `~/.pi/agent/CLAUDE.md`；② 「子项目清单」节的注册表指针 `~/.claude/docs/agents-registry.md` → `~/.pi/agent/docs/agents-registry.md`。纯路径引用更新，规则内容不变。
+- **验证**：逐处读回确认两处均为 `~/.pi/agent/` 前缀。
+- **回归风险评估**：无代码 / 交易逻辑影响；按 2026-10-13 发版门禁（纯文档类不发版、不 bump），本次不触发发版。
+
 ## [0.4.6] - 2026-10-17
 
 第十个版本，涵盖 2026-10-16（0.4.5）之后的改动。主要内容：
