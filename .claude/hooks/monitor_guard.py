@@ -46,6 +46,7 @@ session 语义：payload.session_id 优先，缺时环境变量 CLAUDE_CODE_SESS
 """
 import sys
 import os
+import glob
 import json
 import time
 import subprocess
@@ -175,13 +176,18 @@ def in_trading_session(now=None):
     return in_hk_session(now) or in_us_session(now)
 
 
-def _stop_done_reminder():
+def _stop_done_reminder(payload=None):
     """当日（ET）有成交但缺停盯收尾标记 → 注入提醒（不阻断）。
 
     判据（三件同时成立才提醒，避免误伤）：
       ① actions/<ET 日期>-ET-actions.md 存在且含「🟢🟢🟢 开仓」；
-      ② tmp/stop_done_us_<ET 日期>.txt 不存在（= stop_summary.py 没跑成功）；
+      ② tmp/stop_done_us_<ET 日期>[_<sid8>].txt 不存在（= stop_summary.py 没跑成功）；
       ③ 距该 et 日期末次订单/采样已过 30 分钟以上（避免盘中每回合都提醒）。
+
+    会话标识：优先 payload.session_id（pi 扩展桥把 session_id 放进 hook JSON；pi 进程
+    环境本身不含 PI_SESSION_ID、桥 spawn 的子进程拿不到——2026-10-20 实测修复），
+    其次环境变量（CC 宿主 / 手工调用）。拿不到 sid 时按「任意同日标记」宽松匹配
+    （旧版只认无 sid 名，而 stop_summary 写的是带 sid 名——会永远失配、反复误报）。
     """
     from datetime import datetime, timedelta, timezone
     try:
@@ -194,21 +200,18 @@ def _stop_done_reminder():
     root = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
     now_et = datetime.now(et)
     BJ_TZ = bj_tz
+    # 会话标识：优先 payload（扩展桥放 session_id 的 hook JSON 字段）、其次环境变量；
+    # 都拿不到时 sid8 为空（提醒判定会退回宽松匹配，见函数 docstring）。
+    sid = ""
+    if isinstance(payload, dict):
+        sid = str(payload.get("session_id") or "")
+    sid = sid or os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("PI_SESSION_ID") or ""
+    sid8 = sid[:8]
     # 取 ET 今天与昨天（美股交易日跨北京午夜，两个都要看）
     for back in (0, 1):
         d = (now_et - timedelta(days=back)).strftime("%Y-%m-%d")
         acts = os.path.join(root, "actions", f"{d}-ET-actions.md")
         if not os.path.exists(acts):
-            continue
-        # 标记按会话隔离（2026-10-20，多会话并行）：并行时 A 会话的收尾标记不能压掉
-        # B 会话的提醒。sid8 来自 payload/环境变量；无 sid 时退回旧的全账户标记名。
-        sid = os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("PI_SESSION_ID") or ""
-        sid8 = sid[:8]
-        # 有 sid → 只认本会话标记（多会话隔离）；无 sid（拿不到会话标识的宿主/手工调用）
-        # 才退回全账户标记，避免「一个会话收尾压掉所有会话的提醒」。
-        cands = [os.path.join(root, "tmp", f"stop_done_us_{d}_{sid8}.txt")] if sid8 \
-            else [os.path.join(root, "tmp", f"stop_done_us_{d}.txt")]
-        if any(os.path.exists(x) for x in cands):
             continue
         try:
             txt = open(acts, encoding="utf-8").read()
@@ -216,9 +219,30 @@ def _stop_done_reminder():
             continue
         if "🟢🟢🟢 开仓" not in txt:
             continue
-        # 时间门槛：该文件最后修改距今 < 30 分钟 → 视为盘中仍在记录，不提醒
+        # 标记匹配（2026-10-20 二改）：本会话在该日有交易（文件里有本会话 🆔）→ 只认本
+        # 会话标记（多会话隔离：A 的收尾不能压掉 B 的提醒）；否则（非盯盘会话 / 拿不到
+        # sid）→ 任意同日标记都算该日已收尾（防非盯盘会话反复误报）。
+        is_owner = bool(sid8) and (f"🆔 会话：{sid8}" in txt)
+        tmp_dir = os.path.join(root, "tmp")
+        if is_owner:
+            cands = [os.path.join(tmp_dir, f"stop_done_us_{d}_{sid8}.txt")]
+            if any(os.path.exists(x) for x in cands):
+                continue
+        else:
+            if glob.glob(os.path.join(tmp_dir, f"stop_done_us_{d}*.txt")):
+                continue
+            cands = [os.path.join(tmp_dir, f"stop_done_us_{d}.txt")]  # 仅供提示文案
+        # 时间门槛 A：该文件最后修改距今 < 30 分钟 → 视为盘中仍在记录，不提醒
         age_min = (time.time() - os.path.getmtime(acts)) / 60.0
         if age_min < 30:
+            continue
+        # 时间门槛 B（2026-10-20 增）：当前仍有密采样在跑（交易稀疏的静默窗口期，文件
+        # 可能 30 分钟无人写，但采样段仍在跑）→ 盯盘未结束，不提醒。
+        try:
+            running, _why = monitor_segment_running()
+        except Exception:
+            running = False
+        if running:
             continue
         msg = (
             f"⚠️ 停盯收尾缺失提醒：{d}（美东交易日）有成交记录，但没有停盯收尾标记"
@@ -230,15 +254,12 @@ def _stop_done_reminder():
         _emit_reminder(msg, "Stop")
         return
 
-    # 港股同款检查（2026-10-20 补）：HKT actions 按【北京日期】命名，标记为 stop_done_hk_<北京日期>_<sid8>
+    # 港股同款检查（2026-10-20 补；标记匹配/时间门槛与美股段同口径）：HKT actions 按
+    # 【北京日期】命名，标记为 stop_done_hk_<北京日期>_<sid8>。
     for back in (0, 1):
         d = (datetime.now(BJ_TZ) - timedelta(days=back)).strftime("%Y-%m-%d")
         acts = os.path.join(root, "actions", f"{d}-HKT-actions.md")
         if not os.path.exists(acts):
-            continue
-        cands = [os.path.join(root, "tmp", f"stop_done_hk_{d}_{sid8}.txt")] if sid8 \
-            else [os.path.join(root, "tmp", f"stop_done_hk_{d}.txt")]
-        if any(os.path.exists(x) for x in cands):
             continue
         try:
             txt = open(acts, encoding="utf-8").read()
@@ -246,7 +267,23 @@ def _stop_done_reminder():
             continue
         if "🟢🟢🟢 开仓" not in txt:
             continue
+        is_owner = bool(sid8) and (f"🆔 会话：{sid8}" in txt)
+        tmp_dir = os.path.join(root, "tmp")
+        if is_owner:
+            cands = [os.path.join(tmp_dir, f"stop_done_hk_{d}_{sid8}.txt")]
+            if any(os.path.exists(x) for x in cands):
+                continue
+        else:
+            if glob.glob(os.path.join(tmp_dir, f"stop_done_hk_{d}*.txt")):
+                continue
+            cands = [os.path.join(tmp_dir, f"stop_done_hk_{d}.txt")]  # 仅供提示文案
         if (time.time() - os.path.getmtime(acts)) / 60.0 < 30:
+            continue
+        try:
+            running, _why = monitor_segment_running()
+        except Exception:
+            running = False
+        if running:
             continue
         _emit_reminder(
             f"⚠️ 停盯收尾缺失提醒：{d}（港股交易日）有成交记录，但没有停盯收尾标记"
@@ -623,7 +660,7 @@ def main():
     # 才发现（例如美股收盘后 / 次日），若跟其它守卫一起被时段门早退挡掉就永远不提醒。
     if hook_type == "stop":
         try:
-            _stop_done_reminder()
+            _stop_done_reminder(payload)
         except Exception:
             pass
 
