@@ -460,6 +460,10 @@ def main():
         print("\n[dry-run] 未落盘、未发送、未写标记")
         return 0
 
+    # 会话短 id 后缀（多会话并行时区分飞书文件 / 收尾标记；2026-10-20 修：原定义在步骤 3、
+    # 步骤 2 飞书文件先引用导致 UnboundLocalError 崩溃）
+    mid = f"_{sid8}" if sid8 else ""
+
     # 1) 追加进 actions 文件
     suffix = "ET" if a.market == "us" else "HKT"
     actions_path = os.path.join(root, "actions", f"{date}-{suffix}-actions.md")
@@ -510,7 +514,6 @@ def main():
         print("⚠️ --no-feishu：跳过飞书推送")
 
     # 3) 收尾标记（供 monitor_guard / preflight 检查）
-    mid = f"_{sid8}" if sid8 else ""
     marker = os.path.join(root, "tmp", f"stop_done_{a.market}_{date}{mid}.txt")
     with open(marker, "w", encoding="utf-8") as f:
         f.write(json.dumps({
