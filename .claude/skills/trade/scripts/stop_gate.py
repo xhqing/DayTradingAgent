@@ -67,7 +67,19 @@ def _us_sessions_now(now):
     return False, None
 
 
-def check(force=False):
+def check(force=False, market=None):
+    """market=None 保持旧行为（港股优先、其次美股）；market='us'/'hk' 只看该市场。
+
+    为什么加 market（2026-10-20 立）：美股会话停盯时，若北京时钟恰在港股交易时段
+    （例如北京 14:00 = 港股下午盘），旧逻辑先命中港股分支直接拒绝，美股会话因此
+    无法解除防睡眠 / 注销——2026-10-19 美股交易日收尾实测踩到（补跑 keepawake_off
+    被「港股盘中 距收盘 120 分钟」拒绝）。停盯口径应按「本次盯的是哪个市场」判，
+    不该被另一个市场的时段拦。
+    """
+    if market == "us":
+        return _check_us_only(force)
+    if market == "hk":
+        return _check_hk_only(force)
     now = datetime.now()
     # 港股判定
     if _hk_sessions_today(now):
@@ -100,19 +112,61 @@ def check(force=False):
     return True, "outside_trading_hours", None, None
 
 
+def _check_hk_only(force=False):
+    now = datetime.now()
+    if _hk_sessions_today(now):
+        t = now.hour * 60 + now.minute
+        for open_m, close_m in _HK_SESSIONS:
+            if open_m <= t < close_m:
+                mins = close_m - t
+                if mins <= _CLOSE_WINDOW_MIN:
+                    return True, "hk_close_window", mins, "HK"
+                if force:
+                    return True, "forced_by_user", mins, "HK"
+                return (False,
+                        f"港股盘中（距收盘 {mins} 分钟 > {_CLOSE_WINDOW_MIN}）——盯盘终止条件只有"
+                        f"用户喊停或收盘（取先到），空仓 / 无信号 / 市场无聊都不是停盯理由；"
+                        f"确属用户喊停请加 --force",
+                        mins, "HK")
+    return True, "outside_trading_hours", None, None
+
+
+def _check_us_only(force=False):
+    now = datetime.now()
+    in_us, us_mins = _us_sessions_now(now)
+    if in_us:
+        if us_mins <= _CLOSE_WINDOW_MIN:
+            return True, "us_close_window", us_mins, "US"
+        if force:
+            return True, "forced_by_user", us_mins, "US"
+        return (False,
+                f"美股可交易时段（距收盘 {us_mins} 分钟 > {_CLOSE_WINDOW_MIN}）——盯盘终止条件只有"
+                f"用户喊停或收盘（取先到），空仓 / 无信号 / 市场无聊都不是停盯理由；"
+                f"确属用户喊停请加 --force",
+                us_mins, "US")
+    return True, "outside_trading_hours", None, None
+
+
 def main():
     args = sys.argv[1:]
     if not args or args[0] != "check":
         print(__doc__)
         return 0
     force = "--force" in args
-    allowed, reason, mins, market = check(force)
+    mkt = None
+    if "--market" in args:
+        i = args.index("--market")
+        if i + 1 < len(args):
+            mkt = args[i + 1].strip().lower()
+            mkt = mkt if mkt in ("us", "hk") else None
+    allowed, reason, mins, market = check(force, market=mkt)
     print(json.dumps({
         "allowed": allowed,
         "reason": reason,
         "detail": "" if allowed else reason,
         "minutes_to_close": mins,
         "market": market,
+        "forced_market": mkt,
         "force": force,
     }, ensure_ascii=False))
     return 0 if allowed else 2

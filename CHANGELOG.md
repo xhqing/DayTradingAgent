@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+### 新增 / 修复（停盯收尾工具强制：脚本化对账 + 北京日期对照 + 飞书 + 收尾标记，2026-10-20）
+
+- **为什么改**：2026-10-19 美股交易日（ET）做了 6 笔，AI 在美东 14:29 因会话上下文耗尽停止盯盘时**只停了采样脚本**，停盯规定的四件事一件没做——① 停盯总结没写进 `actions/`；② 飞书（Linda）没发，用户次日才发现没收到；③ 没有「北京日期对照」，用户查老虎 App「今日成交」只看到 1 笔（另 5 笔在北京 10-19 22:04~23:20、第 6 笔在北京 10-20 01:20，App 按北京日期切成两天），一度怀疑账目丢失；④ 解除防睡眠 / 注销会话被 `stop_gate.py` 按「港股盘中」拒绝（北京 14:00 恰在港股下午盘），美股会话停盯被另一市场时段误拦。四件事同一根因：**全靠 AI 记着做，收尾一急就漏**。
+- **改了什么**：
+  1. 新增 `scripts/stop_summary.py`（停盯收尾一键脚本）：直接查**券商 API** 该 ET 交易日全部订单、按父/子单配对成笔（净盈亏取券商 `realized_pnl`、修正 max_loss 用 `fee_schedule` 实算、**原始止损从 actions 开仓记录解析**——止损腿 `aux_price` 会被 `move_stop` 改成最新值，用它算会把赔率算虚高、实测第 6 笔误算 +4.30R 而真值 +1.88R）；自动生成**北京日期对照表**；停盯总结追加进 `actions/`（已有则跳过防重复）；生成并推送飞书业务版；成功后写收尾标记 `tmp/stop_done_<market>_<et_date>.txt`。
+  2. `scripts/stop_gate.py`：`check()` 新增 `market` 参数、CLI 新增 `--market us|hk`——停盯口径按「本次盯的是哪个市场」判定，不再被另一市场的交易时段误拦（默认 `None` 保持旧的港股优先行为）。
+  3. `scripts/keepawake_off.sh` / `scripts/monitor_unregister.sh`：按「今天实际有哪个市场的盯盘 log」自动给 `stop_gate` 传 `--market`。
+  4. `.claude/hooks/monitor_guard.py`：新增 `_stop_done_reminder()` 并在 `Stop` 事件中**提到交易时段门之前**调用——当日（ET 今天/昨天）`actions/` 有开仓记录、却没有收尾标记时注入提醒（盘外同样生效；文件 30 分钟内被改过则视为仍在盘中、不打扰）。
+  5. `SKILL.md`「停盯总结」节：停盯第一个动作改为跑 `stop_summary.py`，AI 只补要点与教训，禁止手写明细表与统计。
+- **验证**：用 2026-10-19 真实数据端到端跑通——脚本输出 6 笔、券商 `realized_pnl` 合计 +182.47、总 max_loss 1334.87、整体 +0.14R、胜率 33%，与人工逐笔记录**完全一致**；`stop_gate check`（默认）仍拒绝、`--market us` 放行；`keepawake_off.sh` 实测解除 16 小时 caffeinate 并成功注销会话；`monitor_guard.py stop` 在无标记时注入提醒、补标记后静默。
+- **多会话并行适配（2026-10-20 追加，用户要求「本项目所有功能都要适配多会话同时盯盘」）**：初版脚本有 4 处会互相踩，已逐项修正——① 收尾总结原来拉**全账户**当日订单（违反「停盯总结只总结本会话」T127）→ 改为 `--scope session`（默认）：`log_action.sh` 为每条动作追加 `> 🆔 会话：<sid8>`，`stop_summary.py` 按 sid 过滤出本会话的成交；取不到归属记录时显式告警并退化为账户口径（历史 records 没有 sid 行，只能如此）。② 收尾标记原来全局单文件（A 跑完会压掉 B 的缺收尾提醒）→ 改为 `tmp/stop_done_<market>_<et_date>_<sid8>.txt`，`monitor_guard` 有 sid 时**只认本会话标记**（无 sid 才退回旧全局名）。③ 飞书业务文件同名互相覆盖 → 文件名加 `<sid8>`。④ `keepawake_off.sh` / `monitor_unregister.sh` 原来按「今天有哪个市场的 log」选 `--market`（港股+美股并行时港股会话会被误判成美股 → 港股盘中非法停盯）→ 改为按**本会话自己的动作归属**探测市场（`stop_summary.py --detect-market`），探测不出则不传 `--market`、保持旧的保守行为。另：停盯总结追加 actions 时加 `fcntl.flock`，防两会话几乎同时停盯交错写入；`monitor_guard` 补港股分支（HKT 按北京日期命名、标记 `stop_done_hk_<北京日期>_<sid8>.txt`）。
+- **多会话验证（打桩双会话 AAAA1111 / BBBB2222）**：归属过滤（A 得 SOXL+00700、B 得 NVDA）、市场探测（A 末条 HK → `hk`；B 全 US → `us`）、标记隔离（A 写标记后 A 静默、B 仍被提醒）、提醒文案显示本会话标记名——四项全部符合预期。
+- **回归风险评估**：`stop_gate` 默认行为不变（未传 `--market` 走原逻辑），其它市场会话零影响；`monitor_guard` 新提醒只在「有成交 + 无收尾标记 + 文件 30 分钟未更新」三条件同时成立时触发，盘中活跃时不会误报。新增脚本不改任何交易执行链路（只读券商订单 + 写文档/发通知）。
+
 ### 变更（全局权威源迁移对齐：项目内文档的全局路径引用更新，2026-10-17）
 
 - **为什么改**：全局能力源 2026-10-17 从 `~/.claude/` 迁至 `~/.pi/agent/`（`~/.claude/MOVED-TO-PI.md`：全局规则 = `~/.pi/agent/CLAUDE.md`、技能 = `~/.pi/agent/skills/`、文档 = `~/.pi/agent/docs/`、patch = `~/.pi/agent/patch/`；`~/.claude/hooks/` 守卫保留原位）——项目文档里指向旧路径的引用改为新权威路径。

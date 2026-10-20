@@ -26,12 +26,35 @@ REG_FILE="$SCRIPT_DIR/../../../../tmp/monitor_sessions.txt"
 
 # —— 停盯边界时间闸：盘中拒绝解除防睡眠（用户喊停 --force 放行）——
 STOP_GATE="$SCRIPT_DIR/stop_gate.py"
+
+# 2026-10-20 立（多会话并行安全版）：市场由【本会话自己的动作记录】判定
+# （stop_summary.py --detect-market 读 actions 里 🆔 会话 标记），而不是「今天有哪些 log」——
+# 后者在港股+美股并行时会把港股会话误判成美股，导致港股盘中非法停盯。判不出时不传 --market，
+# 保持旧保守行为（任一市场在盘中即拒绝）。
+MARKET_DETECTED=$(python3 "$SCRIPT_DIR/stop_summary.py" --detect-market 2>/dev/null | tr -d '[:space:]')
+MARKET_FLAG=""
+case "$MARKET_DETECTED" in
+  us) MARKET_FLAG="--market us" ;;
+  hk) MARKET_FLAG="--market hk" ;;
+  *)  MARKET_FLAG="" ;;
+esac
+
+
+# 2026-10-20 立：按「今天实际盯的市场」给 stop_gate 传 --market，
+# 避免美股会话停盯被港股盘中窗口误拦（2026-10-19 实测踩到）。
+MARKET_FLAG=""
+if ls "$SCRIPT_DIR/../../../../tmp"/monitor_log_US_*_"$(date +%Y%m%d)"_*.csv >/dev/null 2>&1 || \
+   ls "$SCRIPT_DIR/../../../../tmp"/monitor_log_US_*_"$(date -v-1d +%Y%m%d)"_*.csv >/dev/null 2>&1; then
+  MARKET_FLAG="--market us"
+elif ls "$SCRIPT_DIR/../../../../tmp"/monitor_log_HK_*_"$(date +%Y%m%d)"_*.csv >/dev/null 2>&1; then
+  MARKET_FLAG="--market hk"
+fi
 FORCE_FLAG=""
 for a in "$@"; do
     [ "$a" = "--force" ] && FORCE_FLAG="--force"
 done
 if [ -f "$STOP_GATE" ]; then
-    if ! python3 "$STOP_GATE" check $FORCE_FLAG; then
+    if ! python3 "$STOP_GATE" check $FORCE_FLAG $MARKET_FLAG; then
         echo "⛔ 已拒绝解除防睡眠：停盯需等收盘边界（≤5 分钟窗口自动放行）或用户明确喊停（--force）" >&2
         exit 2
     fi

@@ -175,6 +175,87 @@ def in_trading_session(now=None):
     return in_hk_session(now) or in_us_session(now)
 
 
+def _stop_done_reminder():
+    """当日（ET）有成交但缺停盯收尾标记 → 注入提醒（不阻断）。
+
+    判据（三件同时成立才提醒，避免误伤）：
+      ① actions/<ET 日期>-ET-actions.md 存在且含「🟢🟢🟢 开仓」；
+      ② tmp/stop_done_us_<ET 日期>.txt 不存在（= stop_summary.py 没跑成功）；
+      ③ 距该 et 日期末次订单/采样已过 30 分钟以上（避免盘中每回合都提醒）。
+    """
+    from datetime import datetime, timedelta, timezone
+    try:
+        from zoneinfo import ZoneInfo
+        et = ZoneInfo("America/New_York")
+        bj_tz = ZoneInfo("Asia/Shanghai")
+    except Exception:
+        et = timezone(timedelta(hours=-4))
+        bj_tz = timezone(timedelta(hours=8))
+    root = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+    now_et = datetime.now(et)
+    BJ_TZ = bj_tz
+    # 取 ET 今天与昨天（美股交易日跨北京午夜，两个都要看）
+    for back in (0, 1):
+        d = (now_et - timedelta(days=back)).strftime("%Y-%m-%d")
+        acts = os.path.join(root, "actions", f"{d}-ET-actions.md")
+        if not os.path.exists(acts):
+            continue
+        # 标记按会话隔离（2026-10-20，多会话并行）：并行时 A 会话的收尾标记不能压掉
+        # B 会话的提醒。sid8 来自 payload/环境变量；无 sid 时退回旧的全账户标记名。
+        sid = os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("PI_SESSION_ID") or ""
+        sid8 = sid[:8]
+        # 有 sid → 只认本会话标记（多会话隔离）；无 sid（拿不到会话标识的宿主/手工调用）
+        # 才退回全账户标记，避免「一个会话收尾压掉所有会话的提醒」。
+        cands = [os.path.join(root, "tmp", f"stop_done_us_{d}_{sid8}.txt")] if sid8 \
+            else [os.path.join(root, "tmp", f"stop_done_us_{d}.txt")]
+        if any(os.path.exists(x) for x in cands):
+            continue
+        try:
+            txt = open(acts, encoding="utf-8").read()
+        except Exception:
+            continue
+        if "🟢🟢🟢 开仓" not in txt:
+            continue
+        # 时间门槛：该文件最后修改距今 < 30 分钟 → 视为盘中仍在记录，不提醒
+        age_min = (time.time() - os.path.getmtime(acts)) / 60.0
+        if age_min < 30:
+            continue
+        msg = (
+            f"⚠️ 停盯收尾缺失提醒：{d}（美东交易日）有成交记录，但没有停盯收尾标记"
+            f"（{os.path.basename(cands[0])}）。按 trade skill「停盯总结」节，停盯必须跑："
+            f"`python3 .claude/skills/trade/scripts/stop_summary.py --market us --date {d}`"
+            f"—— 它会一次生成【券商对账明细 + 北京日期对照表 + 统计 + 飞书业务版推送】并写收尾标记。"
+            f"（2026-10-19 事故：只停采样没做收尾，飞书没发、用户次日才发现。）"
+        )
+        _emit_reminder(msg, "Stop")
+        return
+
+    # 港股同款检查（2026-10-20 补）：HKT actions 按【北京日期】命名，标记为 stop_done_hk_<北京日期>_<sid8>
+    for back in (0, 1):
+        d = (datetime.now(BJ_TZ) - timedelta(days=back)).strftime("%Y-%m-%d")
+        acts = os.path.join(root, "actions", f"{d}-HKT-actions.md")
+        if not os.path.exists(acts):
+            continue
+        cands = [os.path.join(root, "tmp", f"stop_done_hk_{d}_{sid8}.txt")] if sid8 \
+            else [os.path.join(root, "tmp", f"stop_done_hk_{d}.txt")]
+        if any(os.path.exists(x) for x in cands):
+            continue
+        try:
+            txt = open(acts, encoding="utf-8").read()
+        except Exception:
+            continue
+        if "🟢🟢🟢 开仓" not in txt:
+            continue
+        if (time.time() - os.path.getmtime(acts)) / 60.0 < 30:
+            continue
+        _emit_reminder(
+            f"⚠️ 停盯收尾缺失提醒：{d}（港股交易日）有成交记录，但没有停盯收尾标记"
+            f"（{os.path.basename(cands[0])}）。停盯必须跑："
+            f"`python3 .claude/skills/trade/scripts/stop_summary.py --market hk --date {d}`。",
+            "Stop")
+        return
+
+
 def monitor_segment_running(now=None):
     """monitor_segment（或 ws_segment / futu_ws_segment，2026-08-16 扩检测面）是否在跑：
     进程在 OR monitor_log 近 RUNNING_SECONDS 有更新。
@@ -538,6 +619,14 @@ def main():
             print(msg, file=sys.stderr)
             sys.exit(2)
 
+    # 停盯收尾缺失检查提到时段门外（2026-10-20）：收尾这件事恰恰最容易在「盘外」
+    # 才发现（例如美股收盘后 / 次日），若跟其它守卫一起被时段门早退挡掉就永远不提醒。
+    if hook_type == "stop":
+        try:
+            _stop_done_reminder()
+        except Exception:
+            pass
+
     # 盘外不干预（周末 / 夜间 / 午休）
     if not in_trading_session():
         sys.exit(0)
@@ -681,6 +770,11 @@ def main():
         # 都不命中 = 非盯盘会话，静默退出（AI 不自主启动盯盘，盘中开盯的会话必然先走
         # preflight 注册 / claim 认领 / 写采样日志之一，不会漏拦真盯盘会话的断采样）。
         sid = payload.get("session_id") or os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("PI_SESSION_ID", "")
+        # 停盯收尾缺失检查（2026-10-20 立，2026-10-19 事故）：当日有成交、但没跑
+        # stop_summary.py（= 没写停盯总结 / 没发飞书 / 没做北京日期对照）时，回合静止
+        # 就注入提醒。事故经过：美股 10-19 交易日 6 笔，AI 停止盯盘时只停采样、
+        # 没做收尾，用户次日发现「Linda 没发通知」，且 App 只看到 1 笔（跨北京午夜）
+        # 一度怀疑账目不对。强制点选在「回合静止」= 最接近停盯时刻的可检测信号。
         if not running and _is_monitoring_session(sid):
             msg = (
                 f"⚠️ 密采样守卫提醒：回合结束，盘中但密采样未在跑（{why}）。"

@@ -20,8 +20,20 @@ FORCE_FLAG=""
 for a in "$@"; do
     [ "$a" = "--force" ] && FORCE_FLAG="--force"
 done
+# 2026-10-20 立（多会话并行安全版）：市场由【本会话自己的动作记录】判定
+# （stop_summary.py --detect-market 读 actions 里 🆔 会话 标记），而不是「今天有哪些 log」——
+# 后者在港股+美股并行时会把港股会话误判成美股，导致港股盘中非法停盯。判不出时不传 --market，
+# 保持旧保守行为（任一市场在盘中即拒绝）。
+MARKET_DETECTED=$(python3 "$SCRIPT_DIR/stop_summary.py" --detect-market 2>/dev/null | tr -d '[:space:]')
+MARKET_FLAG=""
+case "$MARKET_DETECTED" in
+  us) MARKET_FLAG="--market us" ;;
+  hk) MARKET_FLAG="--market hk" ;;
+  *)  MARKET_FLAG="" ;;
+esac
+
 if [ -f "$SCRIPT_DIR/stop_gate.py" ]; then
-    if ! python3 "$SCRIPT_DIR/stop_gate.py" check $FORCE_FLAG; then
+    if ! python3 "$SCRIPT_DIR/stop_gate.py" check $FORCE_FLAG $MARKET_FLAG; then
         echo "⛔ 已拒绝注销：停盯需等收盘边界（≤5 分钟窗口自动放行）或用户明确喊停（--force）" >&2
         exit 2
     fi

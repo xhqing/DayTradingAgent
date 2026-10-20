@@ -110,18 +110,28 @@ if ! printf '%s\n' "$CONTENT" | awk '
   echo "Error: 未检测到动作标题行（行首或 Markdown 标题（## ）后以 🟢🔴🟡🔵 开头，如「## 🟢🟢🟢 开仓 · …」）——拒写；时间戳位置对解析很关键，宁可不写也不写错位数据，请补标题行后重发" >&2
   exit 1
 fi
+# 会话标识（2026-10-20 立，多会话并行）：每条动作记录写一行「> 🆔 会话：<sid8>」，
+# 供 stop_summary.py 判定「哪些交易属于本会话」——停盯总结只能总结本会话自己（T127）。
+# 无会话环境变量时记 anon（此时 stop_summary 会退化为账户口径并显式警告）。
+SID_FULL="${CLAUDE_CODE_SESSION_ID:-${PI_SESSION_ID:-}}"
+SID8="${SID_FULL:0:8}"
+[ -z "$SID8" ] && SID8="anon"
+
 [ -s "$ACTION_FILE" ] && echo "" >> "$ACTION_FILE"
-printf '%s\n' "$CONTENT" | awk -v ts="$ACTION_TS" '
+printf '%s\n' "$CONTENT" | awk -v ts="$ACTION_TS" -v sid="$SID8" '
   BEGIN { has_ts = 0 }
   /⏰[ \t]*动作时间/ { has_ts = 1 }
   { lines[NR] = $0; keep[NR] = 1 }
   END {
     for (i = 1; i <= NR; i++) {
       print lines[i]
+      if (has_ts && !sid_ins && lines[i] ~ /⏰[ \t]*动作时间/) {
+        print "> 🆔 会话：" sid; sid_ins = 1
+      }
       if (!has_ts) {
         line = lines[i]; sub(/^#+[ \t]*/, "", line)
         if (!inserted && (index(line,"🟢")==1 || index(line,"🔴")==1 || index(line,"🟡")==1 || index(line,"🔵")==1)) {
-          print "> ⏰ 动作时间：" ts; inserted = 1
+          print "> ⏰ 动作时间：" ts; print "> 🆔 会话：" sid; inserted = 1
         }
       }
     }
