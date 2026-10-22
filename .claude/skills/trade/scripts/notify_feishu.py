@@ -22,6 +22,11 @@ SKILL.md「停盯总结 · 飞书汇报（业务版）」节。
 并在 tmp/feishu_sent/ 留发送内容存档。退出码：0 成功 / 2 内容被过滤拦下 /
 3 未配置或已停用 / 1 发送失败。
 
+**消息最前面自动加 session_id（2026-10-21 用户立：跳代码追踪）**：默认在消息首行插入
+`session_id: <完整会话 id>`（从 CLAUDE_CODE_SESSION_ID / PI_SESSION_ID 环境变量读），
+方便用户看出这条投报是哪一条会话发的。加在内容过滤**之后**——否则「会话」二字
+会被黑名单当成技术词拦下。拿不到 id 时自动跳过；确不需要时加 `--no-session-id`。
+
 本机飞书域名必须直连（shell 挂全局代理时 NO_PROXY 不排除会连不上）——本脚本已内置
 NO_PROXY（与 backup skill 的飞书端点同口径）。
 """
@@ -72,6 +77,27 @@ def filter_message(text):
             if pat.search(line):
                 hits.append((i, tok, line.strip()[:80]))
     return hits
+
+
+def current_session_id():
+    """完整会话 id（2026-10-21 用户立：飞书投报首行带 session_id，方便看是哪条会话发的）。"""
+    return (os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("PI_SESSION_ID") or "").strip()
+
+
+def with_session_id(text, enabled=True):
+    """把 `session_id: <完整 id>` 插到消息最前面（不得在过滤前插——“会话”会被黑名单拦）。
+
+    幂等：已经带 session_id 首行就不重复加。拿不到 id 时原样返回。
+    """
+    if not enabled:
+        return text
+    sid = current_session_id()
+    if not sid:
+        return text
+    body = text.lstrip("\n")
+    if body.startswith("session_id:") or body.startswith("session_id："):
+        return body
+    return f"session_id: {sid}\n\n{body}"
 
 
 def load_config():
@@ -139,6 +165,8 @@ def main():
     ap.add_argument("--market", choices=["us", "hk"], help="市场（us 美股 / hk 港股；默认按当前时刻推断）")
     ap.add_argument("--date", help="交易日 YYYY-MM-DD（默认取该市场时区的今天；只用于发送标记）")
     ap.add_argument("--dry-run", action="store_true", help="只做过滤校验并打印预览，不发送")
+    ap.add_argument("--no-session-id", action="store_true",
+                    help="不在消息最前面加 session_id（默认会加，2026-10-21 用户立）")
     args = ap.parse_args()
 
     market = args.market or default_market()
@@ -174,6 +202,12 @@ def main():
             print(f"   ……其余 {len(hits) - 10} 处省略")
         print("   请改写为业务表述后重试。")
         return 2
+
+    # —— 注入 session_id：[注意] 必须在内容过滤之后（否则“会话/session”会被黑名单拦下）——
+    message = with_session_id(message, enabled=not args.no_session_id)
+    if len(message) > 20000:
+        print(f"⛔ 消息过长（{len(message)} 字符 > 上限 20000）——请精简", file=sys.stderr)
+        return 1
 
     if args.dry_run:
         print(f"✅ 过滤校验通过（market={market}, date={date_str}, {len(message)} 字符）——以下为将发送内容：\n")
