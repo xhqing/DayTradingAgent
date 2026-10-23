@@ -72,10 +72,14 @@ def current_sid8():
 
 
 def owned_entries(actions_path, sid8):
-    """从 actions 里取出【本会话】写的动作条目 → [(symbol, entry_price, market_prefix)]。
+    """从 actions 里取出【本会话】写的开仓条目 → [(symbol, entry_price, market_prefix)]。
 
     依据是 log_action.sh 2026-10-20 起为每条动作追加的「> 🆔 会话：<sid8>」行。
     多会话并行时用它判定「哪些交易属于本会话」（停盯总结只总结本会话自己，T127）。
+
+    2026-10-23 修：改跟 `_iter_open_sections()` 同一套切段（先看「开仓 · SYMBOL」标题、
+    再兜底旧格式的「| 标的 |」行）——旧实现只认「| 标的 |」行，而 2026-10 起的开仓表
+    已经没这行，导致永远认不出本会话、降级成全账户口径（会混入并行会话的交易）。
     """
     out = []
     if not sid8 or not os.path.exists(actions_path):
@@ -84,15 +88,15 @@ def owned_entries(actions_path, sid8):
         txt = open(actions_path, encoding="utf-8").read()
     except Exception:
         return out
-    for m in re.finditer(r"🆔\s*会话：\s*([0-9a-zA-Z]+)", txt):
-        if m.group(1) != sid8:
+    prefix = "us" if "-ET-actions" in os.path.basename(actions_path) else "hk"
+    for sym, window in _iter_open_sections(txt):
+        m_sid = re.search(r"🆔\s*会话：\s*([0-9a-zA-Z]+)", window)
+        if not m_sid or m_sid.group(1) != sid8:
             continue
-        window = txt[m.start(): m.start() + 1600]
-        m_sym = re.search(r"\|\s*标的\s*\|\s*([A-Z]{1,6})\.([A-Z0-9]{1,8})", window)
-        m_entry = re.search(r"\|\s*成交价\s*\|[^|]*?\$?([\d.]+)", window)
-        if m_sym and m_entry:
+        m_entry = re.search(r"\|\s*\**\s*成交价\s*\**\s*\|\s*\**\s*\$?([\d.]+)", window)
+        if m_entry:
             try:
-                out.append((m_sym.group(2), float(m_entry.group(1)), m_sym.group(1).lower()))
+                out.append((sym, float(m_entry.group(1)), prefix))
             except ValueError:
                 continue
     return out
@@ -125,8 +129,41 @@ def detect_market_for_session():
     return "us" if last == "us" else ("hk" if last == "hk" else "")
 
 
+def market_day_tz(market):
+    """交易日按哪个自然日切：美股 ET、港股 BJ（北京/香港同时区）。
+
+    为什么不能都按 ET：港股 10-23 早市（北京 09:30-12:00）落在 ET 10-22 晚间，
+    统一按 ET 自然日分组会把港股交易归到前一日、把总结写进
+    `actions/<前一日>-HKT-actions.md`（2026-10-23 实测踩到：港股总结被写进
+    2026-10-22-HKT-actions.md）。港美交易日口径天然不同，必须各用各的自然日。
+    """
+    return BJ if market == "hk" else ET
+
+
+def _order_market(o):
+    """判定一条订单属于哪个市场：优先币种（HKD=港股、USD=美股），缺失时按代码形态兜底
+    （港股 5 位数字代码、美股字母代码）。返回 'hk' / 'us' / ''。"""
+    c = getattr(o, "contract", None)
+    cur = str(getattr(c, "currency", "") or "").upper()
+    sym = str(getattr(c, "symbol", "") or "")
+    if cur == "HKD":
+        return "hk"
+    if cur == "USD":
+        return "us"
+    if sym.isdigit():
+        return "hk"
+    if sym.isalpha():
+        return "us"
+    return ""
+
+
 def fetch_orders(market, account_mode, start_dt, end_dt):
-    """拉该时间窗内全部订单。返回 (orders, masked_account)。"""
+    """拉该时间窗内的订单，**只保留本市场的**（港美分开统计）。返回 (orders, masked_account)。
+
+    为什么必须过滤市场：老虎账户港美股共用同一个账户号，client.get_orders 返回账户
+    全部订单——不过滤的话港股总结会混进美股成交（2026-10-23 实测：港股总结里出现
+    4 笔 AMD/META 美股成交，用户明确要求「港股里面不要混入美股，二者分开汇报」）。
+    """
     if market == "us":
         import trade_utils_tiger_us as U
         cfg = U.load_config(account=None if account_mode == "paper" else account_mode)
@@ -141,7 +178,12 @@ def fetch_orders(market, account_mode, start_dt, end_dt):
     e = int(end_dt.timestamp() * 1000)
     orders = client.get_orders(account=acc, start_time=s, end_time=e)
     masked = acc[:2] + "****" + acc[-2:]
-    return orders, masked
+    kept = [o for o in orders if _order_market(o) == market]
+    dropped = len(orders) - len(kept)
+    if dropped:
+        print(f"ℹ️ 按市场过滤：丢弃 {dropped} 条非 {market.upper()} 订单"
+              f"（港股总结只算港股、美股总结只算美股——2026-10-23 用户立）")
+    return kept, masked
 
 
 def status_str(o):
@@ -201,15 +243,9 @@ def original_stops(actions_path):
         txt = open(actions_path, encoding="utf-8").read()
     except Exception:
         return out
-    for m in re.finditer(r"\|\s*标的\s*\|([^|\n]*)\|", txt):
-        head = txt[max(0, m.start() - 400):m.start()]
-        if "开仓" not in head or "移损" in head.split("开仓")[-1]:
-            continue
-        window = txt[m.start(): m.end() + 1200]
-        m_entry = re.search(r"\|\s*成交价\s*\|[^|]*?\$?([\d.]+)", window)
-        m_stop = re.search(r"\|\s*止损\s*\|[^|]*?\$?([\d.]+)", window)
-        m_sym = re.search(r"[A-Z]{1,6}\.([A-Z]{1,6})", m.group(1))
-        sym = m_sym.group(1) if m_sym else None
+    for sym, window in _iter_open_sections(txt, window_len=1400):
+        m_entry = re.search(r"\|\s*\**\s*成交价\s*\**\s*\|\s*\**\s*\$?([\d.]+)", window)
+        m_stop = re.search(r"\|\s*\**\s*止损\s*\**\s*\|\s*\**\s*\$?([\d.]+)", window)
         if sym and m_entry and m_stop:
             try:
                 out.append((sym, float(m_entry.group(1)), float(m_stop.group(1))))
@@ -243,30 +279,84 @@ def et_hm(ts_ms):
     return datetime.fromtimestamp(ts_ms / 1000, ET).strftime("%m-%d %H:%M")
 
 
-def parse_stage_odds(actions_path):
-    """从 actions 文件解析「三阶段赔率」列，返回 {序号: '初始→修正'} 供拼表；解析不到返回 {}。"""
-    out = {}
+def net_odds_at(price, stop, target, qty, market):
+    """净预期赔率（在给定入场价下算）：[|target−price|×qty − 开仓边费 − 止盈价平仓费]
+    ÷ [|price−stop|×qty + 开仓边费 + 止损价平仓费]。"""
+    import fee_schedule as F
+    if not (price and stop and target and qty):
+        return None
+    mkt = "US" if market == "us" else "HK"
+    f_open = F.fee_per_side(mkt, "etf", price * qty, shares=qty)
+    f_stop = F.fee_per_side(mkt, "etf", stop * qty, shares=qty)
+    f_tgt = F.fee_per_side(mkt, "etf", target * qty, shares=qty)
+    denom = abs(price - stop) * qty + f_open + f_stop
+    if not denom:
+        return None
+    return (abs(target - price) * qty - f_open - f_tgt) / denom
+
+
+def _iter_open_sections(txt, window_len=1600):
+    """按【开仓】段落切取 (symbol, window)。两代格式都支持：
+
+    ① 新一代（2026-10 起）：标题行「🟢🟢🟢 开仓 · US.AMD 美国超微公司 · 做空 🟢🟢🟢」，
+       表格里【没有】「| 标的 |」行（港股同理：开仓 · HK.07552 ...，代码是 5 位数字——
+       正则必须含数字，原 [A-Z]{1,6} 会漏掉全部港股开仓记录，2026-10-23 实测踩到）；
+    ② 旧格式：表格里有「| 标的 | US.AMD ... |」，前置 400 字符含「开仓」且不含「移损」。
+    标题法优先，找不到再退回旧法（保证历史 actions 文件仍可解析）。
+    """
+    secs = [(m.group(1).split(".")[1], txt[m.end(): m.end() + window_len])
+            for m in re.finditer(r"开仓\s*·\s*([A-Z]{1,6}\.[A-Z0-9]{1,6})", txt)]
+    if secs:
+        return secs
+    for m in re.finditer(r"\|\s*标的\s*\|([^|\n]*)\|", txt):
+        head = txt[max(0, m.start() - 400):m.start()]
+        if "开仓" not in head or "移损" in head.split("开仓")[-1]:
+            continue
+        sym = re.search(r"[A-Z]{1,6}\.([A-Z0-9]{1,6})", m.group(1))
+        if sym:
+            secs.append((sym.group(1), txt[m.end(): m.end() + window_len]))
+    return secs
+
+
+def parse_open_records(actions_path):
+    """从 actions 解析每条【开仓】记录的 参考价 / 成交价 / 止损 / 止盈 / 初始预期赔率 / 修正预期赔率。
+
+    2026-10-23 用户立：停盯总结与飞书必须**逐笔写出三阶段赔率**（初始预期 → 修正预期 → 实际落地）。
+    优先用 AI 开仓时已写入的「初始预期赔率 / 修正预期赔率」字段（权威、含真实降档），
+    缺失时由 net_odds_at() 按参考价 / 成交价 + 原始止损 + 止盈目标 + 实际股数重算。
+    返回 list[dict]，按出现顺序。
+    """
+    out = []
     if not os.path.exists(actions_path):
         return out
     try:
         txt = open(actions_path, encoding="utf-8").read()
     except Exception:
         return out
-    for m in re.finditer(r"初始预期赔率\s*\|\s*([\d.]+)R", txt):
-        pass
-    rows = re.findall(r"\|\s*初始预期赔率\s*\|\s*([\d.]+)R.*?\|", txt)
-    fixes = re.findall(r"修正预期赔率\s*\|\s*([\d.]+)R", txt)
-    for i, init in enumerate(rows, 1):
-        fix = fixes[i - 1] if i - 1 < len(fixes) else "-"
-        out[i] = f"{init} → {fix}"
+    for sym, window in _iter_open_sections(txt):
+
+        def num(pat, _w=window):
+            mm = re.search(pat, _w)
+            return float(mm.group(1)) if mm else None
+
+        out.append({
+            "symbol": sym,
+            "ref": num(r"\|\s*\**\s*参考价\s*\**\s*\|\s*\**\s*\$?([\d.]+)"),
+            "entry": num(r"\|\s*\**\s*成交价\s*\**\s*\|\s*\**\s*\$?([\d.]+)"),
+            "stop": num(r"\|\s*\**\s*止损\s*\**\s*\|\s*\**\s*\$?([\d.]+)"),
+            "target": num(r"\|\s*\**\s*止盈\s*\**\s*\|\s*\**\s*\$?([\d.]+)"),
+            "init_r": num(r"\|\s*\**\s*初始预期赔率\s*\**\s*\|\s*\**\s*R?\s*([\d.]+)"),
+            "fix_r": num(r"\|\s*\**\s*修正预期赔率\s*\**\s*\|\s*\**\s*R?\s*([\d.]+)"),
+        })
     return out
 
 
 def detect_trade_date(market, account_mode):
-    """最近 7 天内最近一个有成交的 ET 交易日。"""
+    """最近 7 天内最近一个有成交的交易日（美股按 ET、港股按 BJ 自然日）。"""
+    tz = market_day_tz(market)
     for back in range(0, 7):
-        d = (datetime.now(ET) - timedelta(days=back)).date()
-        s = datetime(d.year, d.month, d.day, 0, 0, tzinfo=ET)
+        d = (datetime.now(tz) - timedelta(days=back)).date()
+        s = datetime(d.year, d.month, d.day, 0, 0, tzinfo=tz)
         e = s + timedelta(days=1)
         try:
             orders, _ = fetch_orders(market, account_mode, s, e)
@@ -274,7 +364,7 @@ def detect_trade_date(market, account_mode):
             continue
         if any(status_str(o) == "FILLED" for o in orders):
             return d.isoformat()
-    return datetime.now(ET).date().isoformat()
+    return datetime.now(market_day_tz(market)).date().isoformat()
 
 
 def main():
@@ -299,10 +389,12 @@ def main():
     sid8 = current_sid8()
     date = a.date or detect_trade_date(a.market, a.account)
     y, m, d = [int(x) for x in date.split("-")]
-    start = datetime(y, m, d, 0, 0, tzinfo=ET)
+    tz_day = market_day_tz(a.market)
+    start = datetime(y, m, d, 0, 0, tzinfo=tz_day)
     end = start + timedelta(days=1)
+    day_label = "ET" if a.market == "us" else "北京"
 
-    print(f"=== 停盯收尾：{a.market.upper()} ET 交易日 {date} ===")
+    print(f"=== 停盯收尾：{a.market.upper()} {day_label}交易日 {date}（只统计本市场订单）===")
     orders, masked = fetch_orders(a.market, a.account, start, end)
     trades = [t for t in build_trades(orders) if t["entry_filled"]]
     scope = a.scope or ("session" if sid8 else "account")
@@ -331,6 +423,7 @@ def main():
     suffix0 = "ET" if a.market == "us" else "HKT"
     acts_path = os.path.join(root, "actions", f"{date}-{suffix0}-actions.md")
     orig = original_stops(acts_path)
+    recs = parse_open_records(acts_path)
 
     rows = []
     total_pnl = 0.0
@@ -347,6 +440,19 @@ def main():
         else:
             t["stop"] = t.get("stop_leg")
             t["stop_src"] = "leg(含移损,可能偏小)"
+        # 三阶段赔率（2026-10-23 用户立：每笔都要写出 初始预期 → 修正预期 → 实际落地）
+        rcand = sorted(
+            [o for o in recs if o["symbol"] == t["symbol"] and t["entry"] and o.get("entry")
+             and abs(o["entry"] - t["entry"]) / t["entry"] < 0.01],
+            key=lambda o: abs(o["entry"] - t["entry"]))
+        rec = rcand[0] if rcand else {}
+        tgt_px = rec.get("target") or t.get("target")
+        init_r = rec.get("init_r")
+        if init_r is None:
+            init_r = net_odds_at(rec.get("ref") or t["entry"], t["stop"], tgt_px, t["qty"], a.market)
+        fix_r = rec.get("fix_r")
+        if fix_r is None:
+            fix_r = net_odds_at(t["entry"], t["stop"], tgt_px, t["qty"], a.market)
         ml = net_max_loss(t, a.market)
         r = (t["pnl"] / ml) if (ml and t["pnl"] is not None) else None
         total_pnl += t["pnl"] or 0
@@ -355,15 +461,35 @@ def main():
         if (t["pnl"] or 0) > 0:
             wins += 1
         rows.append({
-            "i": i, "t": t, "ml": ml, "r": r,
+            "i": i, "t": t, "ml": ml, "r": r, "init_r": init_r, "fix_r": fix_r, "target": tgt_px,
             "in_bj": bj(t["entry_time"]), "out_bj": bj(t["exit_time"]),
             "in_et": et_hm(t["entry_time"]), "out_et": et_hm(t["exit_time"]),
         })
 
     overall_r = (total_pnl / total_ml) if total_ml else None
-    print(f"净盈亏 {total_pnl:+.2f} USD｜总 max_loss {total_ml:.2f}｜整体赔率 "
+
+    # 币种单位（2026-10-23 用户立：所有金额必须带单位；港币写 HK$、禁止裸 $；
+    # 港股汇总不得标成 USD——港美分开统计，币种随 --market 走）
+    CUR = "$" if a.market == "us" else "HK$"
+
+    def money(x):
+        """金额带币种单位：+$21.08 / -$36.52 / +HK$21.08（正负号在币种符号前）。"""
+        s = f"{x:+.2f}"
+        return f"{s[0]}{CUR}{s[1:]}"
+
+    print(f"净盈亏 {money(total_pnl)}｜总 max_loss {CUR}{total_ml:.2f}｜整体赔率 "
           f"{('%.2fR' % overall_r) if overall_r is not None else 'N/A'}｜胜率 "
           f"{(wins / len(trades) * 100 if trades else 0):.0f}%")
+
+    def money_abs(x):
+        """不带符号的金额（用于 max_loss 这类恒正项）：$299.62。"""
+        return f"{CUR}{x:.2f}"
+
+    def stage_str(rw):
+        """三阶段赔率一行展示：初始预期 → 修正预期 → 实际落地（缺失的显示 —）。"""
+        def f(x):
+            return f"{x:+.2f}R" if x is not None else "—"
+        return f"{f(rw.get('init_r'))} → {f(rw.get('fix_r'))} → {f(rw.get('r'))}"
 
     # ---- 汇总 Markdown ----
     L = []
@@ -376,27 +502,27 @@ def main():
     L.append("")
     L.append("## 一、交易明细（券商对账口径）")
     L.append("")
-    L.append("| # | 标的 | 方向 | 量 | 开仓价 | 平仓价 | 净盈亏 | 原始止损 | 修正 max_loss | 实际落地赔率 | 止损来源 |")
+    L.append(f"| # | 标的 | 方向 | 量 | 开仓价（{CUR}） | 平仓价（{CUR}） | 净盈亏（{CUR}） | 原始止损（{CUR}） | 修正 max_loss（{CUR}） | 三阶段赔率（初始→修正→落地） | 止损来源 |")
     L.append("|---|---|---|---|---|---|---|---|---|---|---|")
     for rw in rows:
         t = rw["t"]
-        L.append("| {i} | {sym} | {d} | {q} | {e:.4f} | {x} | {p} | {s} | {ml} | {r} | {src} |".format(
+        L.append("| {i} | {sym} | {d} | {q} | {e:.4f} | {x} | {p} | {s} | {ml} | {st} | {src} |".format(
             i=rw["i"], sym=t["symbol"], d=("做多" if t["direction"] == "long" else "做空"),
             q=t["qty"], e=t["entry"],
             x=("%.4f" % t["exit"]) if t["exit"] else "—",
-            p=("%+.2f" % t["pnl"]) if t["pnl"] else "0.00",
-            s=("%.2f" % t["stop"]) if t.get("stop") else "—",
+            p=money(t["pnl"]) if t["pnl"] else money(0),
+            s=(("%.3f" if a.market == "hk" else "%.2f") % t["stop"]) if t.get("stop") else "—",
             ml=("%.2f" % rw["ml"]) if rw["ml"] else "—",
-            r=("%+.2fR" % rw["r"]) if rw["r"] is not None else "—",
+            st=stage_str(rw),
             src=t.get("stop_src", "-")))
     L.append("")
     L.append("## 二、统计汇总")
     L.append("")
     L.append("| 指标 | 值 |")
     L.append("|---|---|")
-    L.append(f"| 净盈亏 | **{total_pnl:+.2f}** |")
+    L.append(f"| 净盈亏 | **{money(total_pnl)}** |")
     L.append(f"| 笔数 / 胜率 | {len(trades)} 笔 / **{(wins / len(trades) * 100 if trades else 0):.0f}%** |")
-    L.append(f"| 总 max_loss（净口径） | {total_ml:.2f} |")
+    L.append(f"| 总 max_loss（净口径） | {money_abs(total_ml)} |")
     L.append(f"| **整体实际落地赔率** | **{('%.2fR' % overall_r) if overall_r is not None else 'N/A'}**（总盈亏 ÷ 总 max_loss） |")
     L.append("")
     L.append("## 三、北京日期对照（App 对账用）")
@@ -414,8 +540,8 @@ def main():
     if len(by_bj) > 1:
         parts = []
         for k, v in sorted(by_bj.items()):
-            parts.append(f"北京 {k} 见 {len(v)} 笔（净 {sum(x['t']['pnl'] or 0 for x in v):+.2f}）")
-        L.append("**对照结论**：" + "；".join(parts) + f"，合计 {total_pnl:+.2f}。")
+            parts.append(f"北京 {k} 见 {len(v)} 笔（净 {money(sum(x['t']['pnl'] or 0 for x in v))}）")
+        L.append("**对照结论**：" + "；".join(parts) + f"，合计 {money(total_pnl)}。")
         L.append("")
     L.append("## 四、要点与教训（AI 手写补充区）")
     L.append("")
@@ -426,24 +552,26 @@ def main():
 
     # ---- 飞书业务版 ----
     F = []
-    F.append(f"# {a.market.upper()} {date} 交易日小结（模拟盘）")
+    # 标题不带「（模拟盘）」——指令由用户发起，用户自己清楚账户类型（2026-10-23 用户立）
+    F.append(f"# {a.market.upper()} {date} 交易日小结")
     F.append("")
     F.append("## 交易明细")
     F.append("")
-    F.append("| # | 标的 | 方向 | 开仓价 | 平仓价 | 净盈亏 |")
-    F.append("|---|---|---|---|---|---|")
+    F.append(f"| # | 标的 | 方向 | 开仓价（{CUR}） | 平仓价（{CUR}） | 净盈亏（{CUR}） | 三阶段赔率（初始→修正→落地） |")
+    F.append("|---|---|---|---|---|---|---|")
     for rw in rows:
         t = rw["t"]
-        F.append("| {i} | {sym} | {d} | {e:.4f} | {x} | {p} |".format(
+        F.append("| {i} | {sym} | {d} | {e:.4f} | {x} | {p} | {st} |".format(
             i=rw["i"], sym=t["symbol"], d=("做多" if t["direction"] == "long" else "做空"),
             e=t["entry"], x=("%.4f" % t["exit"]) if t["exit"] else "—",
-            p=("%+.2f" % t["pnl"]) if t["pnl"] else "0.00"))
+            p=money(t["pnl"]) if t["pnl"] else money(0),
+            st=stage_str(rw)))
     F.append("")
     F.append("## 汇总")
     F.append("")
     F.append(f"- 笔数：{len(trades)} 笔（{wins} 胜 {len(trades) - wins} 负），胜率 {(wins / len(trades) * 100 if trades else 0):.0f}%")
-    F.append(f"- 净盈亏：**{total_pnl:+.2f}**")
-    F.append(f"- 整体实际落地赔率：**{('%.2fR' % overall_r) if overall_r is not None else 'N/A'}**（总盈亏 ÷ 总 max_loss {total_ml:.2f}）")
+    F.append(f"- 净盈亏：**{money(total_pnl)}**")
+    F.append(f"- 整体实际落地赔率：**{('%.2fR' % overall_r) if overall_r is not None else 'N/A'}**（总盈亏 ÷ 总 max_loss {money_abs(total_ml)}）")
     F.append(f"- 收工时状态：空仓（无隔夜持仓）")
     if len(by_bj) > 1:
         F.append("")
@@ -451,7 +579,7 @@ def main():
         F.append("")
         F.append("老虎 App 按北京日期分组，本交易日跨北京午夜，会被拆成两天显示：")
         for k, v in sorted(by_bj.items()):
-            F.append(f"- 北京 {k}：{len(v)} 笔（净 {sum(x['t']['pnl'] or 0 for x in v):+.2f}）")
+            F.append(f"- 北京 {k}：{len(v)} 笔（净 {money(sum(x['t']['pnl'] or 0 for x in v))}）")
     feishu_md = "\n".join(F)
 
     if a.dry_run:
