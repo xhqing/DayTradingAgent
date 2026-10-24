@@ -2,7 +2,7 @@
 
 本文件记录 DayTradingAgent 每个版本的主要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [Unreleased]
+## [0.5.0] - 2026-10-24
 
 ### 变更（美股费率口径修正：补齐三项每笔最低 + 卖侧规费，全量重算历史，2026-10-24 用户立「全量重算历史、口径统一」）
 
