@@ -38,7 +38,7 @@ def ppos_emp(xbar, n, sigma):
 
 # 单边费率（2026-08-12 改真实费率，复用 fee_schedule；2026-08-17 平台费改固定模式 + 美股按股）：
 # 港股按额计（佣金 max(15,×0.029%) + 印花税(个股0.1%/ETF免) + 征费 + 平台费 15/笔）、
-# 美股按股计（佣金 0.0039/股 + 平台费 0.004/股 + 代收近似 0.00396/股）。
+# 美股按股计 + 三项每笔最低（佣金/平台费/外部机构费，2026-10-24 修正）+ 卖侧规费 0.79bp。
 def _market_of(symbol):
     s = (symbol or '').upper()
     if s.startswith('HK.'): return 'HK'
@@ -143,13 +143,14 @@ trades = []
 for x in rows_raw:
     market = _market_of(x['symbol'])
     P_gross = (x['exit'] - x['entry']) * x['shares'] * x['sign']              # 毛盈亏
-    fee_open = FS.fee_per_side(market, x['sec_type'], x['entry'] * x['shares'], shares=x['shares'])
-    fee_close = FS.fee_per_side(market, x['sec_type'], x['exit'] * x['shares'], shares=x['shares'])
+    _so, _sc = ("buy", "sell") if x.get('sign', 1) > 0 else ("sell", "buy")   # 2026-10-24：美股卖侧规费
+    fee_open = FS.fee_per_side(market, x['sec_type'], x['entry'] * x['shares'], shares=x['shares'], side=_so)
+    fee_close = FS.fee_per_side(market, x['sec_type'], x['exit'] * x['shares'], shares=x['shares'], side=_sc)
     fee = fee_open + fee_close                                                # 开 + 平 两边手续费
     # 净 max_loss（2026-08-28，与 review.py 同步）：止损价由 M/shares 反推
     _d = x['M'] / x['shares'] if x['shares'] > 0 else 0.0
     _stop = x['entry'] - _d * x['sign']                                       # 做多止损在下方、做空上方
-    _fee_stop = FS.fee_per_side(market, x['sec_type'], abs(_stop * x['shares']), shares=x['shares'])
+    _fee_stop = FS.fee_per_side(market, x['sec_type'], abs(_stop * x['shares']), shares=x['shares'], side=_sc)
     M_net = x['M'] + fee_open + _fee_stop
     R = (P_gross - fee) / M_net                                               # 净 R（分母净 max_loss）
     trades.append([x['date'], x['symbol'], R])

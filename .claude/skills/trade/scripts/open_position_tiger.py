@@ -142,7 +142,7 @@ def _min_net_odds_from_config():
 
 
 def _enforce_explicit_quantity_risk(quantity, entry_ref, stop_loss, result_base, equity,
-                                    currency, lot):
+                                    currency, lot, direction=None):
     """显式传量路径的风控校验（2026-08-16 立，修复「显式传量绕过全部风控上限」）。
 
     原实现：f_max / max_leverage / equity 约束只在 quantity=0 自动算仓位时生效，显式
@@ -161,7 +161,7 @@ def _enforce_explicit_quantity_risk(quantity, entry_ref, stop_loss, result_base,
     risk_fraction, f_max = _risk_params_from_config()
     stop_distance = abs(entry_ref - stop_loss)
     actual_max_loss = U.net_max_loss("HK", U._sec_type_of(result_base["symbol"]),
-                                     quantity, entry_ref, stop_loss)
+                                     quantity, entry_ref, stop_loss, direction=direction)
     max_loss_cap = equity * f_max if equity else None
     notes = []
     if max_loss_cap is not None and actual_max_loss > max_loss_cap:
@@ -605,7 +605,8 @@ def main():
             result_base["sizing_source"] = sizing_source
         _lot_for_check = lot_size if lot_size else U.get_lot_size_tiger(_tc_tick, symbol)
         ok, err = _enforce_explicit_quantity_risk(
-            quantity, entry_ref, stop_loss, result_base, equity, currency, _lot_for_check)
+            quantity, entry_ref, stop_loss, result_base, equity, currency, _lot_for_check,
+            direction=direction)
         if not ok:
             result_base.update({"ok": False, "error": err,
                                 "equity": equity, "equity_currency": currency})
@@ -880,7 +881,8 @@ def main():
         result_base["failed_attempts"] = failures
         stop_distance = abs(entry_ref - stop_loss)
         actual_max_loss = U.net_max_loss("HK", U._sec_type_of(symbol),
-                                         result_base["quantity"], entry_ref, stop_loss)
+                                         result_base["quantity"], entry_ref, stop_loss,
+                                         direction=direction)
         result_base["actual_max_loss"] = round(actual_max_loss, 2)
         result_base["actual_max_loss_basis"] = "net（止损距+开仓费+止损价平仓费，2026-08-28 口径）"
         budget_note = ""

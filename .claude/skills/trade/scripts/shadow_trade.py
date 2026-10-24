@@ -135,9 +135,10 @@ def close_shadow(market, symbol, exit_price, reason):
     sign = 1 if direction == "long" else -1
     gross = (exit_price - pos["decision_price"]) * qty * sign
     stop_dist = abs(pos["decision_price"] - pos["stop"])
-    fee_open = _side_fee(market, symbol, qty, pos["decision_price"])
-    fee_exit = _side_fee(market, symbol, qty, exit_price)
-    fee_stop = _side_fee(market, symbol, qty, pos["stop"])
+    _so, _sc = ("buy", "sell") if direction == "long" else ("sell", "buy")   # 2026-10-24：美股卖侧规费
+    fee_open = _side_fee(market, symbol, qty, pos["decision_price"], side=_so)
+    fee_exit = _side_fee(market, symbol, qty, exit_price, side=_sc)
+    fee_stop = _side_fee(market, symbol, qty, pos["stop"], side=_sc)
     max_loss = qty * stop_dist + fee_open + fee_stop   # 净值（毛止损距 + 开仓费 + 止损价平仓费）
     net = gross - fee_open - fee_exit
     r = net / max_loss if max_loss > 0 else 0.0
@@ -264,17 +265,22 @@ def _approx_fee(market, symbol, qty, price_in, price_out):
     影子记录的费用口径与 review.py 复盘口径同源（fee_schedule），保证影子样本与
     真实样本在复盘时费用口径一致、可比。
     """
-    return _side_fee(market, symbol, qty, price_in) + _side_fee(market, symbol, qty, price_out)
+    # 影子近似费不区分方向时，两边各按「卖侧」算（美股卖侧另收 0.79bp，多算一点保守）
+    return (_side_fee(market, symbol, qty, price_in, side="sell")
+            + _side_fee(market, symbol, qty, price_out, side="sell"))
 
 
-def _side_fee(market, symbol, qty, price):
+def _side_fee(market, symbol, qty, price, side=None):
     """单边费（2026-08-28 拆出：净 max_loss 需按止损价单算一边费、分子按实际平仓价单算
-    一边费，两边各自按各自价格算——fee_schedule 复用，失败时 0 保守退化）。"""
+    一边费，两边各自按各自价格算——fee_schedule 复用，失败时 0 保守退化）。
+
+    side：'buy' / 'sell'（2026-10-24 加，美股卖侧规费按方向算；港股忽略）。缺省按买侧。
+    """
     try:
         import fee_schedule as FS
         mkt = "HK" if market == "HKT" else "US"
         sec = _sec_type(symbol)
-        return FS.fee_per_side(mkt, sec, abs(qty * price), shares=qty)
+        return FS.fee_per_side(mkt, sec, abs(qty * price), shares=qty, side=side)
     except Exception:
         return 0.0
 

@@ -1163,7 +1163,8 @@ def calc_position_extremes_tiger(symbol, mode="signal", project_root=None):
 
 # 单边费率（2026-08-12 改真实费率，复用 fee_schedule；2026-08-17 平台费改固定模式 + 美股改
 # 按股结构）：港股按额计（佣金 max(15,×0.029%) + 印花税(个股0.1%/ETF免) + 征费 + 平台费 15/笔）、
-# 美股按股计（佣金 0.0039/股 + 平台费 0.004/股 max(1, 0.5%×额) + 代收近似 0.00396/股）。
+# 美股按股计 + 三项每笔最低（佣金 max(股×0.0039,0.99) + 平台费 max(股×0.004,1) + 外部机构费
+# max(股×0.003,0.99)，各自 cap）+ CAT + 卖侧规费 0.79bp（2026-10-24 修正）。
 # 盯盘前瞻与复盘 review.py 同口径（2026-08-12 用户立：完全精算）。
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fee_schedule as FS   # 共享真实费率模块
@@ -1312,8 +1313,9 @@ def attach_net_pnl_app(result, config, tiger_sym, direction, quantity, exit_pric
             futu = f'HK.{str(tiger_sym).zfill(5)}' if is_hk else f'US.{tiger_sym}'
             market = 'HK' if is_hk else 'US'
             sec_type = _sec_type_of(futu)
-            fee_open = FS.fee_per_side(market, sec_type, entry_price * quantity, shares=quantity)
-            fee_close = FS.fee_per_side(market, sec_type, exit_price * quantity, shares=quantity)
+            _so, _sc = _sides_of(direction)   # 2026-10-24：美股卖侧规费按方向
+            fee_open = FS.fee_per_side(market, sec_type, entry_price * quantity, shares=quantity, side=_so)
+            fee_close = FS.fee_per_side(market, sec_type, exit_price * quantity, shares=quantity, side=_sc)
             gross = ((exit_price - entry_price) if direction == 'long'
                      else (entry_price - exit_price)) * quantity
             result['net_pnl_app'] = round(gross - fee_open - fee_close, 2)
@@ -1444,17 +1446,33 @@ def get_month_order_count_tiger(config, market=None):
         return None
 
 
-def net_max_loss(market, sec_type, shares, entry, stop):
+def net_max_loss(market, sec_type, shares, entry, stop, direction=None):
     """净 max_loss（2026-08-28 用户立：费计入分母，止损离场恰好 −1R）。
 
     = shares × |entry − stop| + 开仓边费(entry×shares) + 止损价平仓边费(stop×shares)。
     entry 取哪口径由调用方决定：开仓前 = 初始预期口径（参考价/现价），成交后 = 修正口径
     （实际成交价）。设计动机：止损价精确成交时净亏损 = 本值 → R 恰好 −1.000，最大亏损
     不再深于 −1R（仅剩滑点一层——止损 STP 市价触发单成交价劣于触发价时的真实滑点）。
+
+    2026-10-24 加 direction：**美股需区分买卖侧**（卖侧另收约 0.79bp×额，见 fee_schedule）——
+    开仓边：long 买 / short 卖；止损平仓边：long 卖 / short 买。direction 缺省时按 long
+    处理（与旧行为一致）；所有内部调用点均显式传。港股无方向差异，传不传不影响结果。
     """
-    fee_open = FS.fee_per_side(market, sec_type, entry * shares, shares=shares)
-    fee_stop = FS.fee_per_side(market, sec_type, stop * shares, shares=shares)
+    side_open, side_close = _sides_of(direction)
+    fee_open = FS.fee_per_side(market, sec_type, entry * shares, shares=shares, side=side_open)
+    fee_stop = FS.fee_per_side(market, sec_type, stop * shares, shares=shares, side=side_close)
     return shares * abs(entry - stop) + fee_open + fee_stop
+
+
+def _sides_of(direction):
+    """方向→（开仓侧, 平仓侧）买卖标签；direction 非 short 一律按 long。
+
+    2026-10-24 立：美股卖侧规费与买卖方向挂钩（fee_schedule 新增 side 参数），需要把
+    「持仓方向」翻译成「该成交腿是买还是卖」。
+    """
+    if str(direction or "").strip().lower() == "short":
+        return "sell", "buy"
+    return "buy", "sell"
 
 
 def _net_odds(direction, entry, target, stop, fee_per_side=None, fee_ctx=None):
@@ -1470,7 +1488,8 @@ def _net_odds(direction, entry, target, stop, fee_per_side=None, fee_ctx=None):
     - fee_ctx 给定（正常路径）：真实费率。fee_ctx = {shares, sec_type, market}。
       开仓边费按 entry×shares、止盈/止损边费按 target/stop×shares，各自用 FS.fee_per_side
       ——港股按额计（佣金 max(15,×0.029%) + 印花税 + 征费 + 固定平台费 15/笔）、美股按股计
-      （佣金 0.0039/股 + 平台费 0.004/股 max(1, 0.5%×额) + 代收近似 0.00396/股）。
+      （佣金 0.0039/股 min 0.99 + 平台费 0.004/股 min 1 + 外部机构费 0.003/股 min 0.99，
+      各 cap；+ CAT + 卖侧规费 0.79bp——2026-10-24 修正三项每笔最低）。
     - fee_ctx 缺省（向后兼容）：shares 未知（quantity=0 自动算仓位前的价格范围检查），
       无法算绝对费额——退回旧百分比口径估分子费、分母保持毛止损距（费用占比小、偏差有限，
       算出仓位后由调用方按真实费率复核）。
@@ -1493,9 +1512,10 @@ def _net_odds(direction, entry, target, stop, fee_per_side=None, fee_ctx=None):
         shares = fee_ctx['shares']
         sec_type = fee_ctx['sec_type']
         market = fee_ctx['market']
-        fee_open = FS.fee_per_side(market, sec_type, entry * shares, shares=shares)
-        fee_target = FS.fee_per_side(market, sec_type, target * shares, shares=shares)
-        fee_stop = FS.fee_per_side(market, sec_type, stop * shares, shares=shares)
+        side_open, side_close = _sides_of(direction)   # 2026-10-24：美股卖侧另收费
+        fee_open = FS.fee_per_side(market, sec_type, entry * shares, shares=shares, side=side_open)
+        fee_target = FS.fee_per_side(market, sec_type, target * shares, shares=shares, side=side_close)
+        fee_stop = FS.fee_per_side(market, sec_type, stop * shares, shares=shares, side=side_close)
         num = gross_gain * shares - fee_open - fee_target
         den = stop_dist * shares + fee_open + fee_stop
         return num / den
@@ -1550,7 +1570,7 @@ def check_price_in_range(direction, current_price, entry_ref, stop_loss, target,
 
 def calc_position_size(equity, risk_fraction, f_max, stop_distance, lot_size,
                        entry_price=None, max_leverage=None, sec_type=None, market=None,
-                       stop_price=None):
+                       stop_price=None, direction=None):
     """按 B = risk_fraction*equity、净 max_loss 上限 f_max*equity 选最接近 B 的 lot 离散仓位。
 
     2026-08-28 分母改净口径（用户立「max_loss 加止损价成交的手续费」）：max_loss = 股数×止损距
@@ -1586,7 +1606,7 @@ def calc_position_size(equity, risk_fraction, f_max, stop_distance, lot_size,
     def _ml(s):
         """候选档 s 的 max_loss（净口径齐备则净、否则毛）。"""
         if net_ok:
-            return net_max_loss(market, sec_type, s, entry_price, stop_price)
+            return net_max_loss(market, sec_type, s, entry_price, stop_price, direction=direction)
         return s * stop_distance
 
     B = equity * risk_fraction
@@ -1767,15 +1787,17 @@ def update_losing_streak(market, symbol, direction, entry_price, stop_dist,
         if not entry_price or not stop_dist or stop_dist <= 0 or not quantity or not fill_price:
             return {"skipped": "缺 entry_price / stop_dist / quantity / fill_price，无法算 R，连败文件未更新"}
         stop_price = (entry_price - stop_dist) if direction == "long" else (entry_price + stop_dist)
-        m_net = net_max_loss(market, _sec_type_of(symbol), quantity, entry_price, stop_price)
+        m_net = net_max_loss(market, _sec_type_of(symbol), quantity, entry_price, stop_price,
+                             direction=direction)
         if net_pnl is not None:
             r = net_pnl / m_net
             basis = "net_pnl（App 实测净利 ÷ 净 max_loss）"
         else:
             import fee_schedule as _FS
             sec_type = _sec_type_of(symbol)
-            fee_open = _FS.fee_per_side(market, sec_type, entry_price * quantity, shares=quantity)
-            fee_close = _FS.fee_per_side(market, sec_type, fill_price * quantity, shares=quantity)
+            _so, _sc = _sides_of(direction)   # 2026-10-24：美股卖侧规费按方向
+            fee_open = _FS.fee_per_side(market, sec_type, entry_price * quantity, shares=quantity, side=_so)
+            fee_close = _FS.fee_per_side(market, sec_type, fill_price * quantity, shares=quantity, side=_sc)
             sign = 1 if direction == "long" else -1
             pnl_est = sign * (fill_price - entry_price) * quantity - fee_open - fee_close
             r = pnl_est / m_net

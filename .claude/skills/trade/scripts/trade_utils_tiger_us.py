@@ -20,7 +20,7 @@ denied US market），get_quote_us 改富途 OpenD 单源（美股行情只有�
 - **lot_size = 1**（美股 1 股/手，从 get_contract.lot_size 取、fallback 1）。
 - **tick = 0.01**（美股统一最小报价单位、无价位表）。
 - **币种 USD**：账户 currency=USD，equity 取 net_liquidation 直用（无需港股的 HKD 保守口径换算）。
-- **费率**：真实费率（2026-08-12 改，复用 fee_schedule / trade_utils_tiger 的 _market_of + _sec_type_of + build_fee_ctx；2026-08-17 美股改**按股结构**）：佣金 0.0039 USD/股（cap 0.5%×额）+ 平台费 0.004 USD/股（每笔最低 1、cap 0.5%×额）+ 代收近似 0.00396 USD/股，≈0.0087 USD/股线性、无印花税。
+- **费率**：真实费率（2026-08-12 改，复用 fee_schedule / trade_utils_tiger 的 _market_of + _sec_type_of + build_fee_ctx；2026-08-17 美股改**按股结构**）：佣金 0.0039 USD/股（**每笔最低 0.99**、cap 0.5%×额）+ 平台费 0.004 USD/股（每笔最低 1、cap 0.5%×额）+ 外部机构费 0.003 USD/股（**每笔最低 0.99**、cap 7%×额）+ CAT 0.000003/股 + 卖侧规费 0.79bp×额（仅卖单）；**2026-10-24 起小仓位（≲254 股）单边费恒约 2.98 USD**，无印花税。
 - 交易时段：美东 04:00-16:00 = 盘前 + 盘中（2026-08-18 立规；夏令时北京 16:00-次日 04:00 / 冬令时 17:00-次日 05:00）。
   订单统一带 outside_rth=True（盘前可成交，见 _make_order_us），时间闸按 04:00 起判（trade_utils_tiger.minutes_to_session_end）。
 """

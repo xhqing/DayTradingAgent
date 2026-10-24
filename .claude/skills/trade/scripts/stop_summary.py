@@ -262,8 +262,9 @@ def net_max_loss(t, market):
     side = "etf" if market == "us" else "etf"
     mkt = "US" if market == "us" else "HK"
     dist = abs(t["entry"] - t["stop"])
-    f_open = F.fee_per_side(mkt, side, t["entry"] * t["qty"], shares=t["qty"])
-    f_stop = F.fee_per_side(mkt, side, t["stop"] * t["qty"], shares=t["qty"])
+    _so, _sc = ("buy", "sell") if t.get("direction") != "short" else ("sell", "buy")
+    f_open = F.fee_per_side(mkt, side, t["entry"] * t["qty"], shares=t["qty"], side=_so)
+    f_stop = F.fee_per_side(mkt, side, t["stop"] * t["qty"], shares=t["qty"], side=_sc)
     return abs(dist * t["qty"]) + f_open + f_stop
 
 

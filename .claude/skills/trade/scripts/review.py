@@ -41,7 +41,9 @@ CSV 字段（首行表头，逗号分隔；# 开头行当注释跳过）:
   盈亏 P 与 R 一律扣双边手续费后再算：P_net = P_gross − fee，
   fee = 开仓边费 + 平仓边费（两边各自按各自成交额/股数计费）。
   港股单边费 = 佣金(max(15, 成交额×0.029%)) + 印花税(个股0.1%,ETF免) + 各征费 + 固定平台费(15/笔)；
-  美股单边费 = 佣金(0.0039/股, cap 0.5%×额) + 平台费(0.004/股, 最低1/笔, cap 0.5%×额) + 代收近似(0.00396/股)。
+  美股单边费 = 佣金(0.0039/股, **最低 0.99**/笔, cap 0.5%×额) + 平台费(0.004/股, 最低 1/笔, cap 0.5%×额)
+  + 外部机构费(0.003/股, 最低 0.99/笔, cap 7%×额) + CAT(0.000003/股) + 卖侧规费(0.79bp×额, 仅卖单)。
+  （2026-10-24 修正：三项每笔最低此前只实现了平台费一项，小仓位单边费被低估约 $1.79；详见 fee_schedule.py 模块 docstring）
   按「市场 + 标的类型(type列 stock/etf) + 成交额/股数」精确算，见 fee_schedule.py。
   R 分母 = 净 max_loss = 毛 M + 开仓边费 + 止损价平仓边费（止损价由 M/shares 反推）——
   止损价精确成交的笔净 R 恰好 −1.000，最大亏损不深于 −1R（仅剩滑点一层）。
@@ -95,7 +97,8 @@ def _direction(s):
 
 # 单边费率（2026-08-12 改真实费率，复用 fee_schedule；2026-08-17 平台费改固定模式 + 美股按股）：
 # 港股按额计（佣金 max(15,×0.029%) + 印花税(个股0.1%/ETF免) + 征费 + 平台费 15/笔）、
-# 美股按股计（佣金 0.0039/股 + 平台费 0.004/股 + 代收近似 0.00396/股）。
+# 美股按股计 + 三项每笔最低（佣金 0.0039/股最低 0.99 + 平台费 0.004/股最低 1 + 外部机构费
+# 0.003/股最低 0.99）+ CAT + 卖侧规费 0.79bp（2026-10-24 修正）。
 def _market_of(symbol):
     s = (symbol or '').upper()
     if s.startswith('HK.'): return 'HK'
@@ -190,8 +193,9 @@ def load_trades(path):
     for t in trades:
         amt_open = t['entry'] * t['shares']
         amt_close = t['exit'] * t['shares']
-        fee_open = FS.fee_per_side(t['market'], t['sec_type'], amt_open, shares=t['shares'])
-        fee_close = FS.fee_per_side(t['market'], t['sec_type'], amt_close, shares=t['shares'])
+        _so, _sc = ("buy", "sell") if t['sign'] > 0 else ("sell", "buy")   # 2026-10-24：美股卖侧规费
+        fee_open = FS.fee_per_side(t['market'], t['sec_type'], amt_open, shares=t['shares'], side=_so)
+        fee_close = FS.fee_per_side(t['market'], t['sec_type'], amt_close, shares=t['shares'], side=_sc)
         t['fee_open'] = fee_open
         t['fee_close'] = fee_close
         t['fee'] = fee_open + fee_close  # 开仓 + 平仓 两边手续费（各自按成交额/股数计费）
@@ -201,7 +205,7 @@ def load_trades(path):
         per_share_dist = t['M'] / t['shares'] if t['shares'] > 0 else 0.0
         stop_implied = t['entry'] - per_share_dist * t['sign']   # 做多止损在下方（sign=+1）、做空上方（−1）
         fee_stop = FS.fee_per_side(t['market'], t['sec_type'],
-                                   abs(stop_implied * t['shares']), shares=t['shares'])
+                                   abs(stop_implied * t['shares']), shares=t['shares'], side=_sc)
         t['M_net'] = t['M'] + fee_open + fee_stop
         t['fee_stop'] = fee_stop
         t['R'] = t['P'] / t['M_net']    # 净 R；分母净 max_loss（毛 M + 开仓费 + 止损价平仓费）
@@ -612,7 +616,7 @@ def _circuit_breaker_check(csv_path):
         print(f"  ▶ 建议：继续实盘（不触发熔断）。安全边际：P(g>0) {_margin}；近 {len(recent)} 笔中盈利 "
               f"{sum(1 for r in recent if r > 0)} 笔（触发需连续 {n_winless} 笔全无盈利）。")
 
-    print("\n⚠️ 盈亏按信号参考价与 max_loss 实算、扣双边手续费（真实费率：港股佣金 max(15,×0.029%) + 印花税(个股0.1%/ETF免) + 征费 + 固定平台费15/笔；美股佣金0.0039/股 + 平台费0.004/股(最低1/笔) + 代收0.00396/股，见 fee_schedule.py），不涉及真实账户资金（信号模式）。R 分母 = 净 max_loss（毛 M + 开仓费 + 止损价平仓费，2026-08-28 净口径）——止损价精确成交的笔净 R 恰好 −1.000。")
+    print("\n⚠️ 盈亏按信号参考价与 max_loss 实算、扣双边手续费（真实费率：港股佣金 max(15,×0.029%) + 印花税(个股0.1%/ETF免) + 征费 + 固定平台费15/笔；美股佣金0.0039/股(最低0.99/笔) + 平台费0.004/股(最低1/笔) + 外部机构费0.003/股(最低0.99/笔) + 卖侧规费0.79bp(仅卖单)，见 fee_schedule.py），不涉及真实账户资金（信号模式）。R 分母 = 净 max_loss（毛 M + 开仓费 + 止损价平仓费，2026-08-28 净口径）——止损价精确成交的笔净 R 恰好 −1.000。")
 
 
 if __name__ == '__main__':

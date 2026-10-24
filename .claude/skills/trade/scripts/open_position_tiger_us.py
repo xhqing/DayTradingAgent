@@ -88,7 +88,8 @@ def _min_net_odds_from_config():
         return 1.2
 
 
-def _enforce_explicit_quantity_risk(quantity, entry_ref, stop_loss, equity, symbol=None):
+def _enforce_explicit_quantity_risk(quantity, entry_ref, stop_loss, equity, symbol=None,
+                                    direction=None):
     """显式传量路径的风控校验（2026-08-16 立，同港股版：原显式传量绕过 f_max /
     max_leverage 全部上限、唯一护栏是券商保证金拒单）。max_loss 2026-08-28 起净口径
     （止损距×量 + 开仓边费 + 止损价平仓边费，symbol 缺失时退毛值）。超限拒绝下单。
@@ -98,7 +99,7 @@ def _enforce_explicit_quantity_risk(quantity, entry_ref, stop_loss, equity, symb
     stop_distance = abs(entry_ref - stop_loss)
     if symbol:
         actual_max_loss = U.net_max_loss("US", U._sec_type_of(symbol),
-                                         quantity, entry_ref, stop_loss)
+                                         quantity, entry_ref, stop_loss, direction=direction)
     else:
         actual_max_loss = quantity * stop_distance
     notes = []
@@ -406,7 +407,7 @@ def main():
         else:
             result_base["sizing_source"] = sizing_source
         ok, err = _enforce_explicit_quantity_risk(quantity, entry_ref, stop_loss, equity,
-                                                  symbol=symbol)
+                                                  symbol=symbol, direction=direction)
         if not ok:
             result_base.update({"ok": False, "error": err,
                                 "equity": equity, "equity_currency": currency})
@@ -626,7 +627,8 @@ def main():
         result_base["failed_attempts"] = failures
         stop_distance = abs(entry_ref - stop_loss)
         actual_max_loss = U.net_max_loss("US", U._sec_type_of(symbol),
-                                         result_base["quantity"], entry_ref, stop_loss)
+                                         result_base["quantity"], entry_ref, stop_loss,
+                                         direction=direction)
         result_base["actual_max_loss"] = round(actual_max_loss, 2)
         result_base["actual_max_loss_basis"] = "net（止损距+开仓费+止损价平仓费，2026-08-28 口径）"
         budget_note = ""
