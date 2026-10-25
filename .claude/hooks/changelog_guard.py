@@ -25,6 +25,7 @@ stdout 为 JSON hookSpecificOutput{hookEventName:"PostToolUse", additionalContex
 （CC / ZCode 的 PostToolUse 均注入对话，两宿主行为一致）。
 """
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -136,6 +137,18 @@ def main():
     # 2026-09-18 立：TODO.md 卫生检测（历史备注行 + 重复分节标题），编辑 TODO.md 后即时提醒。
     for issue in _todo_hygiene_issues(file_path):
         reminders.append(f'📌 TODO.md 卫生提醒（工具强制）：{issue}。')
+    # 2026-10-24 立：复盘报告嵌图提醒——写 reviews/*review*.md 时提醒 7 张演化图必须
+    # 以 ![]() 嵌在正文 + 收尾跑 check_review_images.py（用户当日重申「7 张序贯演化图
+    # 需要放在复盘报告里面」；此前只在产物表列文件名、漏了嵌入）。
+    _rp = str(file_path)
+    if '/reviews/' in _rp and _rp.endswith('.md') and 'review' in os.path.basename(_rp):
+        reminders.append(
+            '📌 复盘报告嵌图提醒（工具强制，2026-10-24 用户立）：7 张序贯演化图必须以 '
+            '`![说明](文件名.png)` 嵌在本报告正文里（bayes / ev / winrate / pg / psum40 / '
+            'pg20 / psum40-20pct），**只在配套产物表里列 png 文件名不算交付**；写完跑 '
+            '`python3 .claude/skills/trade/scripts/check_review_images.py <本报告路径>` '
+            '校验（逐张比对文件存在 + 已嵌入），不通过不算复盘完成。'
+        )
     if reminders:
         # 输出形态（2026-09-02 双宿主适配）：stdout JSON hookSpecificOutput——两宿主官方
         # 支持的注入通道（CC 源码实证 PostToolUse 的 hookSpecificOutput.additionalContext
