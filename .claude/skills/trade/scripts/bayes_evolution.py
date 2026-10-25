@@ -56,6 +56,7 @@ def _resolve_date(argv=None):
     交易模式的演化子集（与 review.py --mode 同口径）；不传时保持真实全样本（剔除影子）。
     """
     date, suffix, mode, vline = None, "", None, None
+    since, until = None, None
     if argv:
         i = 0
         while i < len(argv):
@@ -84,6 +85,18 @@ def _resolve_date(argv=None):
                 continue
             if a.startswith("--vline-date="):
                 vline = a.split("=", 1)[1]
+            if a == "--since" and i + 1 < len(argv):
+                since = argv[i + 1]
+                i += 2
+                continue
+            if a.startswith("--since="):
+                since = a.split("=", 1)[1]
+            if a == "--until" and i + 1 < len(argv):
+                until = argv[i + 1]
+                i += 2
+                continue
+            if a.startswith("--until="):
+                until = a.split("=", 1)[1]
             i += 1
     if mode is not None and mode not in ('signal', 'auto_paper', 'auto_live', 'shadow'):
         raise SystemExit(f"--mode 非法 '{mode}'（signal/auto_paper/auto_live/shadow）")
@@ -97,10 +110,10 @@ def _resolve_date(argv=None):
             raise SystemExit("未找到 reviews/*-trades.csv，请用 --date YYYY-MM-DD 指定")
         cand.sort(key=lambda x: x[0])
         date = cand[-1][0]
-    return date, suffix, mode, vline
+    return date, suffix, mode, vline, since, until
 
 
-DATE, SUFFIX, MODE, VLINE_DATE = _resolve_date(sys.argv[1:])
+DATE, SUFFIX, MODE, VLINE_DATE, SINCE, UNTIL = _resolve_date(sys.argv[1:])
 CSV_PATH = f"reviews/{DATE}-trades{SUFFIX}.csv"
 
 # 读累积 trades CSV（单一数据源，与 review.py 同源；每次复盘更新此 CSV）
@@ -139,6 +152,17 @@ with open(CSV_PATH) as fh:
             'shares': float(r['shares']), 'M': float(r['max_loss']),
             'sec_type': sec_type,
         })
+# 日期区间过滤（2026-10-24 立：用户要求「只看某月数据」单独出一版演化图）
+if SINCE or UNTIL:
+    _before = len(rows_raw)
+    rows_raw = [r for r in rows_raw
+                if (not SINCE or str(r['date']) >= SINCE)
+                and (not UNTIL or str(r['date']) <= UNTIL)]
+    if not rows_raw:
+        raise SystemExit(f"❌ --since {SINCE or '-'} / --until {UNTIL or '-'} 过滤后无样本"
+                         f"（原 {_before} 笔）")
+    print(f"【日期子集】{SINCE or '起始'} ~ {UNTIL or '最新'}：{len(rows_raw)} 笔"
+          f"（原 {_before} 笔，演化图仅画该区间）")
 if MODE is not None and not rows_raw:
     raise SystemExit(f"❌ --mode {MODE} 无匹配行——CSV 缺 mode 列或该模式无样本（先按 T134 打标）")
 if MODE is not None:
@@ -325,7 +349,9 @@ add_vline(ax)
 mark_end_single(ax, xs, ppos, val_fmt='{:.1f}')
 plt.tight_layout()
 _MODE_TAG = f'-mode-{MODE}' if MODE else ''   # T134：--mode 子集图带标识段，不覆盖全样本同名图
-out = f'reviews/{DATE}{SUFFIX}{_MODE_TAG}-bayes-evolution.png'
+_RANGE_TAG = (f'-from-{SINCE}' if SINCE else '') + (f'-to-{UNTIL}' if UNTIL else '')
+# 2026-10-24：--since/--until 日期子集图带区间标识，不覆盖全量图
+out = f'reviews/{DATE}{SUFFIX}{_MODE_TAG}{_RANGE_TAG}-bayes-evolution.png'
 plt.savefig(out, dpi=120)
 print(f'\n✅ 图已存 {out}')
 
@@ -347,7 +373,7 @@ ax2.grid(alpha=0.3)
 add_vline(ax2)
 mark_end_single(ax2, ev_xs, ev_mean, unit='R', val_fmt='{:+.2f}')
 plt.tight_layout()
-out2 = f'reviews/{DATE}{SUFFIX}{_MODE_TAG}-ev-evolution.png'
+out2 = f'reviews/{DATE}{SUFFIX}{_MODE_TAG}{_RANGE_TAG}-ev-evolution.png'
 plt.savefig(out2, dpi=120)
 print(f'✅ 图已存 {out2}')
 
@@ -371,7 +397,7 @@ ax3.grid(alpha=0.3)
 add_vline(ax3)
 mark_end_single(ax3, wr_xs, wr_bayes, val_fmt='{:.1f}')
 plt.tight_layout()
-out3 = f'reviews/{DATE}{SUFFIX}{_MODE_TAG}-winrate-evolution.png'
+out3 = f'reviews/{DATE}{SUFFIX}{_MODE_TAG}{_RANGE_TAG}-winrate-evolution.png'
 plt.savefig(out3, dpi=120)
 print(f'✅ 图已存 {out3}')
 
@@ -415,7 +441,7 @@ ax4.grid(alpha=0.3)
 add_vline(ax4)
 mark_end_multi(ax4, pg_xs, ends4)
 plt.tight_layout(rect=[0, 0, 0.80, 1])
-out4 = f'reviews/{DATE}{SUFFIX}{_MODE_TAG}-pg-evolution.png'
+out4 = f'reviews/{DATE}{SUFFIX}{_MODE_TAG}{_RANGE_TAG}-pg-evolution.png'
 plt.savefig(out4, dpi=120)
 print(f'\n✅ 图已存 {out4}')
 
@@ -441,7 +467,7 @@ ax5.grid(alpha=0.3)
 add_vline(ax5)
 mark_end_multi(ax5, pg_xs, ends5)
 plt.tight_layout(rect=[0, 0, 0.80, 1])
-out5 = f'reviews/{DATE}{SUFFIX}{_MODE_TAG}-psum40-evolution.png'
+out5 = f'reviews/{DATE}{SUFFIX}{_MODE_TAG}{_RANGE_TAG}-psum40-evolution.png'
 plt.savefig(out5, dpi=120)
 print(f'✅ 图已存 {out5}')
 
@@ -472,7 +498,7 @@ ax6.grid(alpha=0.3)
 add_vline(ax6)
 mark_end_multi(ax6, pg_xs, ends6)
 plt.tight_layout(rect=[0, 0, 0.80, 1])
-out6 = f'reviews/{DATE}{SUFFIX}{_MODE_TAG}-pg{int(TARGET*100):02d}-evolution.png'
+out6 = f'reviews/{DATE}{SUFFIX}{_MODE_TAG}{_RANGE_TAG}-pg{int(TARGET*100):02d}-evolution.png'
 plt.savefig(out6, dpi=120)
 print(f'✅ 图已存 {out6}')
 
@@ -497,7 +523,7 @@ ax7.grid(alpha=0.3)
 add_vline(ax7)
 mark_end_multi(ax7, pg_xs, ends7)
 plt.tight_layout(rect=[0, 0, 0.80, 1])
-out7 = f'reviews/{DATE}{SUFFIX}{_MODE_TAG}-psum40-{int(TARGET*100):02d}pct-evolution.png'
+out7 = f'reviews/{DATE}{SUFFIX}{_MODE_TAG}{_RANGE_TAG}-psum40-{int(TARGET*100):02d}pct-evolution.png'
 plt.savefig(out7, dpi=120)
 print(f'✅ 图已存 {out7}')
 

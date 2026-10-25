@@ -48,7 +48,7 @@ def parse_report(path):
     return m.group(1), ("-" + m.group(2) if m.group(2) else "")
 
 
-def check(path, suffix=None):
+def check(path, suffix=None, since=None):
     date, auto_suffix = parse_report(path)
     if not date:
         print(f"❌ 无法从文件名解析复盘日期：{path}")
@@ -66,13 +66,22 @@ def check(path, suffix=None):
     embedded = re.findall(r"!\[[^\]]*\]\(([^)]+\.png)\)", txt)
     embedded_names = {os.path.basename(p) for p in embedded}
 
-    print(f"=== 校验 {os.path.basename(path)}（date={date}, suffix='{sfx or '无'}') ===")
+    print(f"=== 校验 {os.path.basename(path)}（date={date}, suffix='{sfx or '无'}'"
+          f"{', since=' + since if since else ''}）===")
     ok = True
     for key, label in FIGS:
-        # 文件名兼容三种命名：{date}{sfx}-{key}（新）/ {date}-{key}（无后缀，历史）/ {date}-hk|us-{key}
-        cands = [f"{date}{sfx}-{key}-evolution.png"]
-        for alt in ("", "-hk", "-us", "-HKT", "-ET"):
-            cands.append(f"{date}{alt}-{key}-evolution.png")
+        # 文件名兼容多种命名：{date}{sfx}-{key}（新）/ {date}-{key}（无后缀，历史）/
+        # {date}-hk|us-{key} / {date}{sfx}-from-{since}-{key}（--since 日期子集，2026-10-24 立）
+        if since:
+            # 指定 --since 时只认日期子集图（{date}[sfx]-from-{since}-{key}），
+            # 不回退到全量图——否则会误判「子集图已嵌入」而实际嵌的是全量图。
+            cands = [f"{date}{sfx}-from-{since}-{key}-evolution.png"]
+            for alt in ("", "-hk", "-us", "-HKT", "-ET"):
+                cands.append(f"{date}{alt}-from-{since}-{key}-evolution.png")
+        else:
+            cands = [f"{date}{sfx}-{key}-evolution.png"]
+            for alt in ("", "-hk", "-us", "-HKT", "-ET"):
+                cands.append(f"{date}{alt}-{key}-evolution.png")
         hit_img = next((c for c in cands if c in embedded_names), None)
         hit_file = next((c for c in cands if os.path.exists(os.path.join(reviews_dir, c))), None)
         if hit_img and hit_file:
@@ -98,6 +107,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("report", nargs="?", help="复盘报告 md 路径")
     ap.add_argument("--suffix", default=None, help="市场后缀，如 -hk / -us（缺省从文件名推断）")
+    ap.add_argument("--since", default=None, help="校验 --since 日期子集图（如 2026-10-01）")
     ap.add_argument("--all", metavar="DIR", help="批量校验目录下所有复盘报告")
     a = ap.parse_args()
 
@@ -114,7 +124,7 @@ def main():
 
     if not a.report:
         ap.error("需要报告路径，或用 --all <dir>")
-    return 0 if check(a.report, a.suffix) else 1
+    return 0 if check(a.report, a.suffix, a.since) else 1
 
 
 if __name__ == "__main__":
