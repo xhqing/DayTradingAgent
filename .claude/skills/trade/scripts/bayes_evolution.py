@@ -55,7 +55,7 @@ def _resolve_date(argv=None):
     2026-08-31 立（T134）：支持 --mode signal/auto_paper/auto_live/shadow——只画某一
     交易模式的演化子集（与 review.py --mode 同口径）；不传时保持真实全样本（剔除影子）。
     """
-    date, suffix, mode = None, "", None
+    date, suffix, mode, vline = None, "", None, None
     if argv:
         i = 0
         while i < len(argv):
@@ -78,6 +78,12 @@ def _resolve_date(argv=None):
                 continue
             if a.startswith("--mode="):
                 mode = a.split("=", 1)[1]
+            if a == "--vline-date" and i + 1 < len(argv):
+                vline = argv[i + 1]
+                i += 2
+                continue
+            if a.startswith("--vline-date="):
+                vline = a.split("=", 1)[1]
             i += 1
     if mode is not None and mode not in ('signal', 'auto_paper', 'auto_live', 'shadow'):
         raise SystemExit(f"--mode 非法 '{mode}'（signal/auto_paper/auto_live/shadow）")
@@ -91,10 +97,10 @@ def _resolve_date(argv=None):
             raise SystemExit("未找到 reviews/*-trades.csv，请用 --date YYYY-MM-DD 指定")
         cand.sort(key=lambda x: x[0])
         date = cand[-1][0]
-    return date, suffix, mode
+    return date, suffix, mode, vline
 
 
-DATE, SUFFIX, MODE = _resolve_date(sys.argv[1:])
+DATE, SUFFIX, MODE, VLINE_DATE = _resolve_date(sys.argv[1:])
 CSV_PATH = f"reviews/{DATE}-trades{SUFFIX}.csv"
 
 # 读累积 trades CSV（单一数据源，与 review.py 同源；每次复盘更新此 CSV）
@@ -201,6 +207,21 @@ for i, t in enumerate(trades, 1):
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+
+# 中文字体（2026-10-24）：期间分界线的标注含中文（如「2026-10 起」），DejaVu Sans 缺中文字形
+# 会渲染成方框并刷 UserWarning。按优先级挑第一个本机可用的 CJK 字体，找不到就静默回退
+# （英文标签不受影响，仅中文标注可能缺字——此时可改用 --vline-date 的英文标注或忽略）。
+try:
+    import matplotlib.font_manager as _fm
+    _avail = {f.name for f in _fm.fontManager.ttflist}
+    for _cand in ('Arial Unicode MS', 'PingFang HK', 'Heiti TC', 'STHeiti',
+                  'Hiragino Sans GB', 'Songti SC'):
+        if _cand in _avail:
+            matplotlib.rcParams['font.sans-serif'] = [_cand] + list(matplotlib.rcParams['font.sans-serif'])
+            matplotlib.rcParams['axes.unicode_minus'] = False
+            break
+except Exception:
+    pass
 from matplotlib.transforms import blended_transform_factory
 
 
@@ -253,6 +274,37 @@ def mark_end_multi(ax, xs, ends, unit='%'):
 
 
 # ① P(EV>0) 演化图
+
+# ---- 期间分界线（2026-10-24 用户立：用一条垂直竖线区分「10 月之后」与「之前」的数据）----
+# 为什么参数化：分界日期是复盘语境相关的（本次美股复盘的分界是 10 月——8-9 月是重灾区、
+# 10 月回到打平），写死会在别的复盘里画错线；不传 --vline-date 就不画（历史图行为不变）。
+_VLINE_N = None          # 分界后第一笔的序号（1-based）
+_VLINE_LABEL = ""
+if VLINE_DATE:
+    for _i, _t in enumerate(trades, 1):
+        if str(_t[0]) >= VLINE_DATE:
+            _VLINE_N = _i
+            _VLINE_LABEL = f"{VLINE_DATE[:7]} 起"
+            break
+    if _VLINE_N:
+        print(f"【期间分界线】{VLINE_DATE} 起为第 {_VLINE_N} 笔（竖线画在第 "
+              f"{_VLINE_N - 0.5:g} 笔处，前 {_VLINE_N - 1} 笔为「之前」）")
+    else:
+        print(f"⚠️ --vline-date {VLINE_DATE} 晚于全部样本日期，不分界")
+
+
+def add_vline(ax):
+    """在横轴（交易序号）上画期间分界竖线 + 顶部标注。未指定 --vline-date 时不做任何事。"""
+    if not _VLINE_N:
+        return
+    ax.axvline(_VLINE_N - 0.5, color='#C0392B', linestyle='--', linewidth=1.6, alpha=0.85,
+               zorder=1, label=_VLINE_LABEL)
+    # 顶部文字标注（坐标轴变换，避免被数据线遮挡）
+    ax.annotate(_VLINE_LABEL, xy=(_VLINE_N - 0.5, 1.0), xycoords=('data', 'axes fraction'),
+                xytext=(-4, -12), textcoords='offset points', ha='right', va='top',
+                fontsize=9.5, color='#C0392B', fontweight='bold',
+                bbox=dict(boxstyle='round,pad=0.25', fc='white', ec='#C0392B', alpha=0.85, lw=0.8))
+
 fig, ax = plt.subplots(figsize=(13, 6.5))
 ax.fill_between(xs, los, his, color='#3498DB', alpha=0.18, label='σ-uncertain range')
 ax.plot(xs, his, '--', color='#3498DB', alpha=0.55, linewidth=1)
@@ -267,7 +319,9 @@ ax.set_ylim(0, 105)
 ax.set_xticks(xs)
 ax.set_xticklabels([f'{i}\n{trades[i-1][0][5:]}' for i in xs], fontsize=7.5)
 ax.legend(loc='lower right', fontsize=9)
+
 ax.grid(alpha=0.3)
+add_vline(ax)
 mark_end_single(ax, xs, ppos, val_fmt='{:.1f}')
 plt.tight_layout()
 _MODE_TAG = f'-mode-{MODE}' if MODE else ''   # T134：--mode 子集图带标识段，不覆盖全样本同名图
@@ -288,7 +342,9 @@ ax2.set_title(f'Cumulative EV Evolution  N=1~{len(trades)}  (mean R ± freq. 95%
 ax2.set_xticks(ev_xs)
 ax2.set_xticklabels([f'{i}\n{trades[i-1][0][5:]}' for i in ev_xs], fontsize=7.5)
 ax2.legend(loc='lower right', fontsize=9)
+
 ax2.grid(alpha=0.3)
+add_vline(ax2)
 mark_end_single(ax2, ev_xs, ev_mean, unit='R', val_fmt='{:+.2f}')
 plt.tight_layout()
 out2 = f'reviews/{DATE}{SUFFIX}{_MODE_TAG}-ev-evolution.png'
@@ -310,7 +366,9 @@ ax3.set_ylim(0, 105)
 ax3.set_xticks(wr_xs)
 ax3.set_xticklabels([f'{i}\n{trades[i-1][0][5:]}' for i in wr_xs], fontsize=7.5)
 ax3.legend(loc='lower right', fontsize=9)
+
 ax3.grid(alpha=0.3)
+add_vline(ax3)
 mark_end_single(ax3, wr_xs, wr_bayes, val_fmt='{:.1f}')
 plt.tight_layout()
 out3 = f'reviews/{DATE}{SUFFIX}{_MODE_TAG}-winrate-evolution.png'
@@ -352,7 +410,9 @@ ax4.set_ylim(0, 105)
 ax4.set_xticks(pg_xs)
 ax4.set_xticklabels([f'{i}\n{trades[i-1][0][5:]}' for i in pg_xs], fontsize=7.5)
 ax4.legend(loc='lower right', fontsize=9, ncol=2)
+
 ax4.grid(alpha=0.3)
+add_vline(ax4)
 mark_end_multi(ax4, pg_xs, ends4)
 plt.tight_layout(rect=[0, 0, 0.80, 1])
 out4 = f'reviews/{DATE}{SUFFIX}{_MODE_TAG}-pg-evolution.png'
@@ -376,7 +436,9 @@ ax5.set_ylim(0, 105)
 ax5.set_xticks(pg_xs)
 ax5.set_xticklabels([f'{i}\n{trades[i-1][0][5:]}' for i in pg_xs], fontsize=7.5)
 ax5.legend(loc='lower right', fontsize=9, ncol=2)
+
 ax5.grid(alpha=0.3)
+add_vline(ax5)
 mark_end_multi(ax5, pg_xs, ends5)
 plt.tight_layout(rect=[0, 0, 0.80, 1])
 out5 = f'reviews/{DATE}{SUFFIX}{_MODE_TAG}-psum40-evolution.png'
@@ -405,7 +467,9 @@ ax6.set_ylim(0, 105)
 ax6.set_xticks(pg_xs)
 ax6.set_xticklabels([f'{i}\n{trades[i-1][0][5:]}' for i in pg_xs], fontsize=7.5)
 ax6.legend(loc='lower right', fontsize=9, ncol=2)
+
 ax6.grid(alpha=0.3)
+add_vline(ax6)
 mark_end_multi(ax6, pg_xs, ends6)
 plt.tight_layout(rect=[0, 0, 0.80, 1])
 out6 = f'reviews/{DATE}{SUFFIX}{_MODE_TAG}-pg{int(TARGET*100):02d}-evolution.png'
@@ -428,7 +492,9 @@ ax7.set_ylim(0, 105)
 ax7.set_xticks(pg_xs)
 ax7.set_xticklabels([f'{i}\n{trades[i-1][0][5:]}' for i in pg_xs], fontsize=7.5)
 ax7.legend(loc='lower right', fontsize=9, ncol=2)
+
 ax7.grid(alpha=0.3)
+add_vline(ax7)
 mark_end_multi(ax7, pg_xs, ends7)
 plt.tight_layout(rect=[0, 0, 0.80, 1])
 out7 = f'reviews/{DATE}{SUFFIX}{_MODE_TAG}-psum40-{int(TARGET*100):02d}pct-evolution.png'
