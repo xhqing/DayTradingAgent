@@ -176,7 +176,15 @@ def fetch_orders(market, account_mode, start_dt, end_dt):
         client = U.new_trade_client()
     s = int(start_dt.timestamp() * 1000)
     e = int(end_dt.timestamp() * 1000)
-    orders = client.get_orders(account=acc, start_time=s, end_time=e)
+    # ⚠️ limit 必须显式给大值（2026-10-24 修正）：get_orders 默认 limit=100，返回条数
+    # 恰好达 100 条时说明可能被截断——实测 10-14~10-25 窗口 limit=100 返回 100 条、
+    # limit=500 返回 118 条，漏了 18 条订单（10-14 的 6 笔 SOXL 交易消失，导致美股
+    # 全量复盘少 6 笔样本）。传 1000 并对「命中上限」显式告警，不再静默截断。
+    ORDER_LIMIT = 1000
+    orders = client.get_orders(account=acc, start_time=s, end_time=e, limit=ORDER_LIMIT)
+    if len(orders) >= ORDER_LIMIT:
+        print(f"🚨 订单拉取命中 limit={ORDER_LIMIT} 上限（返回 {len(orders)} 条）——"
+              f"可能仍有截断，请缩小时间窗或提高 limit 后重跑！", file=sys.stderr)
     masked = acc[:2] + "****" + acc[-2:]
     kept = [o for o in orders if _order_market(o) == market]
     dropped = len(orders) - len(kept)
