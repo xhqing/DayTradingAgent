@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### 登记（新增子项目 NewsScoreStudy + 两条软链接，2026-10-26 用户立）
+
+- **为什么改**：用户接到一个面试实操题（题目：评估「大模型给新闻打的分（-1~1）值不值得交易」，自带 5 个模拟数据 CSV），要求新建独立 git 仓库、并把该项目交给我（Victor）负责。按团队「Agent 进驻子项目」规矩（2026-10-17 修订），子项目必须是独立仓库 + 挂两条指回 Agent 项目的软链接，故登记为 Victor 的第二个子项目。
+- **改了什么**：
+  1. 新建仓库 `~/Developer/NewsScoreStudy`（本地 `git init`，未建远程、未 push）：题目原文存档 `docs/take-home-brief-cn.md`、原始数据 `data/raw/`（5 个 CSV，7.3MB，含 `scores` / `prices` / `stock_info` / `universe_current` / `delistings`）、README / VERSION / CHANGELOG / `.gitignore` 骨架；两个初始提交（初始化 + 软链接）。
+  2. 仓库根目录挂两条相对软链接并提交入库（git mode 120000）：`AGENTS.md → ../DayTradingAgent/AGENTS.md`、`.pi → ../DayTradingAgent/.pi`——在该目录直接开会话即继承 Victor 的身份、规则与 trade skill（已实测 `.pi/skills/trade/SKILL.md` 解析到本项目实体，非复制）。
+  3. 本节「子项目清单」新增 NewsScoreStudy 条目；将原文「TradingProofs 根目录挂两条软链接」改为「**各子项目**（TradingProofs、NewsScoreStudy）根目录各挂两条」，并同步跨目录操作示例路径。
+  4. 全局 `~/.pi/agent/docs/agents-registry.md` 子项目映射表新增同一条目（同步动作按规矩只记 CapabilityManagerAgent 的 CHANGELOG）。
+- **回归风险**：无——只新增子项目与文档行，不改动任何盯盘 / 下单 / 复盘逻辑，也不动既有子项目 TradingProofs 的软链接与内容。唯一可预期的影响：`settle-repo-check` 收尾巡检从本次起把 NewsScoreStudy 纳入「负责仓库必须干净」的检查范围（预期行为）。
+- **边界**：`PLAN.md` 尚未开始写（用户未决定是否做该选题），仓库当前只有题目存档、原始数据与骨架；数据为出题方提供的模拟数据、股票代码已匿名化，不含真实公司信息。
+
 ### 修复 + 记录（美股复盘重大数据修正：EV −0.196 → −0.111R、10 月 −0.003 → +0.117R；新增三阶段赔率图，2026-10-24 用户立）
 
 - **为什么改**：① 用户要求新增「10 月每笔交易三阶段赔率（初始预期 → 修正预期 → 实际落地）按时间先后」的折线图，做图过程中逐笔配对 actions 与交易 CSV，**暴露出初版复盘的两处数据层缺陷**；② 缺陷导致初版结论（全量 EV −0.196R、10 月 −0.003R）系统性偏负，必须修数据并重算。
