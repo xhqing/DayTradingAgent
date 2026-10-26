@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### 移交（NewsScoreStudy 改由 Mark 负责；并更正同日「本机 QuantStrategistAgent 是遗留副本」的表述，2026-10-26 用户决定）
+
+- **为什么改**：① 用户 2026-10-26 决定把 NewsScoreStudy 从 Victor 移交 **Mark（QuantStrategistAgent）** 负责——该项目性质是「信号值不值得交易」的策略研究，属量化策略研究岗而非日内执行岗；② 同日用户把 Mark 全体系从 macmini **拷回本机**，**本机 `~/Developer/QuantStrategistAgent` 是权威源**（不再是迁移后的遗留副本）——同日早先那条登记条目的相关措辞因此作废，以本条为准。
+- **改了什么**：① 本节「子项目清单」把 NewsScoreStudy 改为「已移交」行（保留指针，避免以后又有人问这个仓库谁管）；② 软链接规则句恢复为只写 TradingProofs（Victor 当前唯一子项目）；③ 归属登记两端同步：全局 registry 该行 owner 改为 `QuantStrategistAgent（Mark）`，Mark 项目「子项目清单」新增该仓库，NewsScoreStudy 仓库内两条软链接改指 `../QuantStrategistAgent/`（已实测解析到 Mark 的 CLAUDE.md 与 `.pi/skills/quant`）。
+- **仓库位置不变**：仍在本机 `/Users/xhq/Developer/NewsScoreStudy`（用户明确选择「仓库留在本机、只改归属登记」），私有远程仓库 `xhqing/NewsScoreStudy` 不变。
+- **回归风险**：无——不涉及任何盯盘 / 下单 / 复盘代码与参数；唯一影响是 `settle-repo-check` 的归属：该仓库不再算 Victor 名下、改由 Mark 的会话巡检（预期行为）。
+
 ### 登记（新增子项目 NewsScoreStudy + 两条软链接，2026-10-26 用户立）
 
 - **为什么改**：用户接到一个面试实操题（题目：评估「大模型给新闻打的分（-1~1）值不值得交易」，自带 5 个模拟数据 CSV），要求新建独立 git 仓库、并把该项目交给我（Victor）负责。按团队「Agent 进驻子项目」规矩（2026-10-17 修订），子项目必须是独立仓库 + 挂两条指回 Agent 项目的软链接，故登记为 Victor 的第二个子项目。
@@ -13,7 +20,7 @@
   3. 本节「子项目清单」新增 NewsScoreStudy 条目；将原文「TradingProofs 根目录挂两条软链接」改为「**各子项目**（TradingProofs、NewsScoreStudy）根目录各挂两条」，并同步跨目录操作示例路径。
   4. 全局 `~/.pi/agent/docs/agents-registry.md` 子项目映射表新增同一条目（同步动作按规矩只记 CapabilityManagerAgent 的 CHANGELOG）。
 - **回归风险**：无——只新增子项目与文档行，不改动任何盯盘 / 下单 / 复盘逻辑，也不动既有子项目 TradingProofs 的软链接与内容。唯一可预期的影响：`settle-repo-check` 收尾巡检从本次起把 NewsScoreStudy 纳入「负责仓库必须干净」的检查范围（预期行为）。
-- **边界**：`PLAN.md` 尚未开始写（用户未决定是否做该选题），仓库当前只有题目存档、原始数据与骨架；数据为出题方提供的模拟数据、股票代码已匿名化，不含真实公司信息。
+- **边界**：`PLAN.md` 尚未开始写（用户未决定是否做该选题），仓库当前只有题目存档、原始数据与骨架；数据为出题方提供的模拟数据、股票代码已匿名化，不含真实公司信息。⚠️ **本条目中「本机 `~/Developer/QuantStrategistAgent` 是遗留副本」的措辞已于同日作废**（用户已把 Mark 拷回本机、本机为权威源），详见上方「移交」条目。
 
 ### 修复 + 记录（美股复盘重大数据修正：EV −0.196 → −0.111R、10 月 −0.003 → +0.117R；新增三阶段赔率图，2026-10-24 用户立）
 
