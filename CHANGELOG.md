@@ -2,7 +2,7 @@
 
 本文件记录 DayTradingAgent 每个版本的主要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [Unreleased]
+## [0.6.0] - 2026-10-27
 
 ### 变更（本项目默认模型改为 TokenPlus 的 deepseek-v4.1-flash-1017，2026-10-27 用户要求）
 
