@@ -1,4 +1,4 @@
 {
-  "defaultProvider": "deepseek",
-  "defaultModel": "deepseek-flash"
+  "defaultProvider": "tokenplus",
+  "defaultModel": "deepseek/deepseek-v4.1-flash-1017"
 }

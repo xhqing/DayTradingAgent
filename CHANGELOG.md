@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 变更（本项目默认模型改为 TokenPlus 的 deepseek-v4.1-flash-1017，2026-10-27 用户要求）
+
+- **为什么改**：用户要求把本项目（DayTradingAgent）的默认模型换成 TokenPlus 渠道的 DeepSeek V4.1 Flash 1017 固定快照，不再默认走原生的 deepseek 渠道 `deepseek-flash`。
+- **改了什么**：项目级 `.pi/settings.json` 的 `defaultProvider` 由 `deepseek` 改为 `tokenplus`、`defaultModel` 由 `deepseek-flash` 改为 `deepseek/deepseek-v4.1-flash-1017`（该模型已在全局 `~/.pi/agent/models.json` 的 `tokenplus` provider 下定义，`tokenplus` 凭证也已在全局 `auth.json` 就绪）。**只改本项目**，不影响其它 agent 项目与全局默认（全局仍为 `volcengine-agent-plan` / `deepseek-v4.1-flash`）。
+- **回归风险**：低。项目级仍沿用全局的 `defaultThinkingLevel: max`，该模型 `thinkingLevelMap` 支持 `max`；只影响新开会话的默认模型选择，不改任何交易护栏、脚本或 hook。
+- **边界**：本次只动默认值，会话内仍可用 `/model` 临时切换；TokenPlus 固定快照与自动路由版本（`deepseek/deepseek-v4.1-flash`）是同一批模型定义里的两个条目，需要用后者时改这一行即可。
+
+
 ### 新增（白名单提醒面板加「复制全部 IP」一键复制按钮 + 面板源码更新自动重编，2026-10-27 用户立）
 
 - **为什么改**：用户 2026-10-27 反馈「昨天盘中弹出的节点 IP 变化提醒，这里给出的 IP 我没办法复制」。截图核对：面板正文清单是**自动折行**的（`96.45.18` / `9.150` 被断成两行），虽然文本框本身可选（`isSelectable = true`），但鼠标拉选长串极易漏字符或把换行一起带进去，粘到老虎开发者页就是无效白名单——要的是「点一下就复制好」。
