@@ -11,7 +11,13 @@
 //       message         正文（多行，支持 \n）
 //       button_ok       确认按钮文案（默认 "已添加"）
 //       button_cancel   取消按钮文案（默认 "取消"；设 "none" = 单按钮模式，如"知道了"）
+//       copy_text       可选：一键复制按钮要写入剪贴板的文本（设 "none"/缺省 = 不显示该按钮）
 //       timeout_secs    自动关闭秒数（默认 3600；超时按 timeout 写结果，由调用方冷却重弹）
+//
+// 一键复制按钮（2026-10-27 用户立）：白名单 IP 串又长又会被自动换行截断，鼠标选中
+// 极易漏字符 / 带进换行；面板直接给一个「复制全部 IP」按钮，点一下把 copy_text 原样
+// 写进系统剪贴板（也支持 ⌘⇧C）。按钮不关闭面板——复制完还要去老虎页粘贴、回来点「已添加」。
+// 复制内容由调用方通过 copy_text 显式传入，不从 message 里正则抓取（避免解析歧义）。
 //     点击后写 result_json：{"clicked": "ok" | "cancel" | "timeout"}
 //   alert_panel --self-test
 //     3 秒自动关的样例窗（编译产物冒烟用；结果写 stdout）
@@ -133,6 +139,31 @@ func runPanel(pendingPath: String, resultPath: String,
         cancelBtn.frame.origin = NSPoint(x: x, y: 16)
         content.addSubview(cancelBtn)
         cancelBtn.onAction = { _ in delegate.finish("cancel") }
+    }
+
+    // 一键复制按钮（2026-10-27 用户立）：点一下把 copy_text 写进剪贴板、不关面板。
+    // 复制完按钮文案变「✅ 已复制」2 秒再复原，给用户确定性反馈（否则不知道有没有成功）。
+    let copyText = (pend["copy_text"] as? String ?? "")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    if !copyText.isEmpty && copyText.lowercased() != "none" {
+        let copyBtn = NSButton(title: "复制全部 IP", target: nil, action: nil)
+        copyBtn.bezelStyle = .push
+        copyBtn.sizeToFit()
+        x -= copyBtn.frame.width + 12
+        copyBtn.frame.origin = NSPoint(x: x, y: 16)
+        // ⌘⇧C 快捷键：不占用 ⌘C（⌘C 仍是文本框内选中复制）
+        copyBtn.keyEquivalent = "C"
+        copyBtn.keyEquivalentModifierMask = [.command, .shift]
+        content.addSubview(copyBtn)
+        copyBtn.onAction = { btn in
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.setString(copyText, forType: .string)
+            btn.title = "✅ 已复制"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak btn] in
+                btn?.title = "复制全部 IP"
+            }
+        }
     }
     okBtn.onAction = { _ in delegate.finish("ok") }
 

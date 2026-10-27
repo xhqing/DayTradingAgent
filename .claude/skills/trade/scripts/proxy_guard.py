@@ -149,8 +149,19 @@ def replace_whitelist(new_ips):
 
 
 def ensure_panel():
-    """确保提醒面板二进制存在（缺失则 swiftc 现场编译，约 10s、一次性）。返回是否可用。"""
+    """确保提醒面板二进制可用（缺失或源码更新过则 swiftc 现场编译，约 10s、一次性）。
+
+    2026-10-27 补「源码更新自动重编」：原来只看二进制是否存在，改了 alert_panel.swift
+    后旧二进制会一直沿用（如新增的一键复制按钮不生效）——现改为源码 mtime 晚于二进制
+    即重编，改源码后无需手动删二进制。
+    """
+    need_build = True
     if os.path.isfile(PANEL_BIN) and os.access(PANEL_BIN, os.X_OK):
+        try:
+            need_build = os.path.getmtime(PANEL_SRC) > os.path.getmtime(PANEL_BIN)
+        except OSError:
+            need_build = False   # 取不到 mtime 就当已就绪（不因读不到时间戳把面板搞坏）
+    if not need_build:
         return True
     if not os.path.isfile(PANEL_SRC):
         _print(f"⚠️ 面板源码缺失（{PANEL_SRC}）——回退 osascript 弹窗")
@@ -281,8 +292,11 @@ def remind(add_ips, message, title="DayTradingAgent · 老虎白名单提醒", d
         return
     try:
         os.makedirs(TMP_DIR, exist_ok=True)
+        # copy_text：面板「复制全部 IP」按钮写入剪贴板的内容（2026-10-27 用户立）。
+        # 与 message 里的清单同源（都是 ";" 拼接），不靠面板解析正文。
         with open(PENDING_PATH, "w") as f:
-            json.dump({"ips": list(add_ips), "message": message, "title": title},
+            json.dump({"ips": list(add_ips), "message": message, "title": title,
+                       "copy_text": ";".join(str(ip).strip() for ip in add_ips)},
                       f, ensure_ascii=False)
     except OSError as e:
         _print(f"  ⚠️ pending 文件写入失败（{e}）——点「已添加」将拿不到待合并 IP，仍弹窗提醒")
@@ -430,13 +444,21 @@ def main():
 
     if "--test-alert" in args:
         ring()
+        # 测试面板要看得到「复制全部 IP」按钮（2026-10-27 新增）：copy_text 用**当前 config
+        # 里的白名单**填（真数据、复制了也无害），但 ips 故意留空 → 点「已添加」不会写
+        # config（不会把真实白名单覆盖成样例值）。
+        demo_copy = ";".join(load_whitelist() or [])
         try:
             os.makedirs(TMP_DIR, exist_ok=True)
             with open(PENDING_PATH, "w") as f:
                 json.dump({"ips": [],
                            "message": "测试提醒（--test-alert）：确认窗样式与「已添加 → "
                                       "自动同步」链路测试。本次 IP 为空，点「已添加」"
-                                      "不会改 config.json。",
+                                      "不会改 config.json。\n\n"
+                                      "【复制全部 IP】按钮复制的 = 当前 config 里的真实"
+                                      "白名单（仅作按钮演示，可右粘贴验证）；正式提醒时"
+                                      "复制的是待加白的全量 IP 清单。",
+                           "copy_text": demo_copy,
                            "title": "DayTradingAgent · 白名单提醒（测试）"},
                           f, ensure_ascii=False)
         except OSError:
@@ -546,6 +568,8 @@ def main():
                    f"建议全量重配（老虎开发者信息页 → 额外配置 → IP 白名单）：先【清空】"
                    f"已有白名单，再一次性粘贴以下【全部可用 IP】（{len(all_ips)} 个、"
                    f"\";\" 分隔）：\n{all_str}\n\n"
+                   f"👉 点下方【复制全部 IP】按钮即可一键复制上面这串（⌘⇧C 同效），"
+                   f"不用手动选中文字（清单会自动折行，手选容易漏字符 / 带进换行）。\n\n"
                    f"不处理风险：当前节点日后漂移时，新 IP 节点无法作为切换备选；旧 IP "
                    f"不清会逐步占满白名单数量上限。",
                    title="DayTradingAgent · 节点 IP 变化提醒", dry_run=dry_run)
