@@ -2,6 +2,17 @@
 
 本文件记录 DayTradingAgent 每个版本的主要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased]
+
+### 记录（2026-10-28 ET 盯盘 6 笔 + 收尾降级；新增待办 T175，2026-10-29 04:30）
+
+- **为什么记**：当日（ET 2026-10-28）auto 模式模拟盘盯盘产生 6 笔交易记录，收尾时暴露一个运营问题（券商链路被白名单拒），需要留痕并登记待办。
+- **盯盘结果**：US.SOXL 6 笔全做多，2 胜 4 负（胜率 33%），净 **-$392.94**，整体实际落地赔率 **-0.29R**；账户收工时空仓、无残留条件单。明细与要点教训见 `actions/2026-10-28-ET-actions.md`「停盯总结」节。
+- **收尾降级（T175 的直接触发）**：`stop_summary.py --market us` 连续失败，券商网关回 `access forbidden`——实查是**当前代理节点的出口 IP 漂到了白名单之外**（同一节点出口 IP 变更、白名单未跟上；具体 IP 与节点代号属敏感类，本文件不转录，查 `xpilot status` / `xpilot node list` / 本机 config 白名单三段比对即得）。停盯总结改由 AI 依 `actions/` 记录 + 交易执行时脚本返回的 `net_pnl_app`（App 实测口径）手工汇总；飞书业务版照常发送成功（`message_id om_x100b6111dc86d0a4c0bcf1892de776f`）；收尾标记 `tmp/stop_done_us_2026-10-28.txt` 记录了降级原因。
+- **新增待办**：`TODO.md` 红色节 T175——开盘前须把新出口 IP 加白（或 `xpilot switch` 到已加白节点并 restart，restart 需用户授权），链路恢复后重跑 `stop_summary.py --market us --date 2026-10-28` 做券商侧复核。
+- **回归风险**：无代码 / 规则变更——本条只记运行时数据与待办登记；买卖执行链路、风控参数、hooks 均未改动。
+- **边界**：`actions/` / `signals/` / `reviews/` 属运行时数据，逐日记录不单独进 CHANGELOG；本条的记录点是「盯盘结果 + 运营异常 + 待办登记」。
+
 ## [0.6.0] - 2026-10-27
 
 ### 变更（本项目默认模型改为 TokenPlus 的 deepseek-v4.1-flash-1017，2026-10-27 用户要求）
