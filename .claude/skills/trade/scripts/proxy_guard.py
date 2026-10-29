@@ -1,74 +1,43 @@
 #!/usr/bin/env python3
-"""老虎 IP 白名单守护（2026-08-19 立）：代理节点 IP 漂移检测 + 自动切换 + 响铃弹窗 +
-「已添加」点击自动同步本地白名单。
+"""老虎 IP 白名单守护（2026-08-19 立；2026-10-29 重写为「与 xpilot 彻底解耦」）。
 
-背景（为什么需要，2026-08-19 实录）：老虎开发者级 IP 白名单只认 IP 不认域名，代理订阅
-刷新后节点入口 IP 会变——当天多个节点 IP 全变，当前节点出口漂出白名单，
-get_filled_orders 被「access forbidden: request ip is not in ip whitelist」拒，实盘 / 模拟
-（apply_scope=all 金丝雀）全部断 API。白名单本身无 API 可改（只能在老虎开发者信息页
-手改），但「漂移后自动恢复服务 + 提醒补白 + 本地自动同步」可以全自动。
+# 定位（用户 2026-10-29）
 
-四件事（2026-08-19 用户立，按钮确认制；2026-09-01 T133 修订为全量清单制）：
-  1. 当前节点 IP 不在白名单 → 自动 `xpilot switch` 切到白名单内可用节点（vless 优先）
-     + 连通验证（xpilot test --current）；
-  2. 检测到 代理节点 IP 变化（漂移）→ 响铃 + 可最小化提醒面板（2026-09-01 T128 换载体，
-     见 alert_panel.swift）；
-  3. 面板给出【当前全部可用 IP 清单】（2026-09-01 T133：`xpilot node list` 实查的全部
-     节点出口 IP——旧口径只给漂移后新 IP，用户只能逐个补、旧 IP 无法按额度上限清理；
-     新口径支持「先清空老虎页白名单 → 一次性粘贴全部可用 IP」的全量重配）；
-  4. 用户在老虎页完成「清空 → 全量粘贴」后回面板点「已添加」→ 等待子进程收到点击信号，
-     把 config.json 的 proxy.tiger_whitelist **全量替换**为面板所给清单（旧口径是合并，
-     与「先清空再加白」的老虎页操作不对应——本地会残留老虎页已清掉的死 IP）。
+本项目是**监护者**，不是执行者：xpilot 是另一个独立项目，唯一共同点是都消费同一份
+JMS 提供的 IP 池。本项目只做三件事：
 
-数据源（全部本机实读、不硬编码节点）：
-  - 节点全景：`xpilot node list` 实查（2026-09-01 T133 起；失败回退 ~/.config/xpilot/
-    nodes.json——xpilot 订阅同步后写入，含每节点真实入口 IP）；
-  - 当前节点：实查输出的 `*` 行（回退 nodes.json 的 default_node）；
-  - 白名单：config.json 的 proxy.tiger_whitelist（本地副本 = 比对基准；老虎页真实白名单
-    无 API 可读，靠「用户点已添加」把老虎页的变更同步到这份副本）。
+1. **比对**：JMS 最新 IP 池（本项目自己拉的订阅，见 `jms_pool.py`）↔ 老虎 IP 白名单
+   （本地镜像 `config.tiger_whitelist`）。不一致 → 响铃 + 面板给「全量 IP 清单」，
+   用户去老虎开发者页「先清空再全量粘贴」；用户点「已添加」后本脚本自动同步本地镜像。
+2. **校验当前出口**：实测**本项目自己代理池**（`ip_pool.py` 起的 xray，端口 10871+）
+   的出口 IP 是否在白名单内。
+3. **池内自愈**：出口不在白名单 → 在自有端口池里换一个端口（毫秒级、不重启进程）。
 
-行为分支：
-  - 当前节点 IP 在白名单、无节点漂移 → 打印一行 ✅、退出 0（正常态，preflight / 巡检
-    每次跑都过）。
-  - 当前节点 IP 不在白名单 → 响铃 + 面板（告知漂移 + 给全量可用 IP 清单），然后自动
-    `xpilot switch` 切到「IP 仍在白名单内」的节点并验证连通；切换成功打印恢复摘要、
-    退出 0（服务已自动恢复，面板只等用户加白后点「已添加」）；无可用节点时面板升级
-    告知「全部漂出白名单」、退出 2。
-  - 当前节点 IP 在白名单但其它节点 IP 漂移 → 低频提醒（面板给全量清单；响铃一次），
-    不切节点、退出 0。
+# 明确不做
 
-面板与点击链路（2026-09-01 T128 换载体；2026-08-19 原按钮确认制语义不变）：remind()
-把 {ips, message, title} 写 tmp/proxy_guard_pending.json，派生 `--await-confirm` 子进程
-（start_new_session 脱离守护进程——守护退出 / 下轮巡检不影响等待）；子进程起 alert_panel
-（AppKit 面板，scripts/alert_panel.swift 编译产物 tmp/alert_panel——**可最小化到 Dock、
-点 Dock 图标唤回**，替代 osascript display dialog 模态窗的「置顶不可最小化」；产物缺失
-时子进程自动 swiftc 现场编译）等点击：
-  - 点「已添加」→ replace_whitelist 把 pending 里的全量清单**整体写入** config.json +
-    log_event 留痕（对应老虎页「先清空 → 全量粘贴」操作）；
-  - 点「取消」/ 关窗 / 超时 → 不替换、删 pending 退出（条件仍成立时 5 分钟冷却后再提醒）。
+- 不调 `xpilot switch` / `xpilot test` / `xpilot node list`，不读 `~/.config/xpilot/*`。
+- 不替用户决定老虎白名单内容（老虎无 API，必须人工去开发者页操作）。
+- 不重启任何代理进程（换端口即可，进程不动）。
 
-为什么切节点前先提醒不阻塞流程：自动切换是恢复主路径，面板是「提醒用户去老虎页补白」
-的异步信息——若等用户点「已添加」才切，断 API 窗口被人为拉长。响铃用 Basso
-（macOS 警示音，watcher 通知同款）。
+# 调用方
 
-⚠️ 误点边界（如实说明）：点「已添加」即视为「老虎页已按清单全量重配」，代码不二次验证
-（老虎无 API 可查白名单）——若实际没改就点，本地白名单会与老虎页不一致（本地可能超前
-或滞后），guard 的漂移判定会失真、切换后可能被老虎拒（连通验证测的是节点出网
-generate_204、测不出老虎层拒绝）。面板文案明确「先在老虎页完成清空 + 全量粘贴、再点
-已添加」。
+- `preflight.py`：盯盘启动时跑一次（无参数）。
+- `.claude/hooks/monitor_watcher.py`：盯盘期间每 10 秒兜底跑一次（launchd 驱动）。
+- 本文件同时被 `ip_pool.py` / `jms_pool.py` import，复用 `load_whitelist()` /
+  `log_event()` / `_print()` / `PROJECT_ROOT` / `TMP_DIR` / `CONFIG_PATH`（这些是纯工具
+  函数，与 xpilot 无关，改动时注意别破坏被别人 import 的接口）。
 
-通知冷却：同事件（漂移提醒 / 全漂出警报）5 分钟内不重复弹（tmp/proxy_guard_<key>.stamp
-mtime 判定，与 monitor_watcher 的 NOTIFY_COOLDOWN_SECONDS 同思路）——本脚本被
-launchd 巡检高频触发时不会弹窗风暴。
+# 参数
 
-用法：
-  python3 proxy_guard.py               # 检查 + 按需自动切换 + 提醒（preflight / 巡检挂接）
-  python3 proxy_guard.py --dry-run     # 只检查和打印会做什么、不实际切换不弹窗（测试用）
-  python3 proxy_guard.py --test-alert  # 弹一次测试确认面板（ips 为空、点已添加不改 config）
-  python3 proxy_guard.py --await-confirm  # 【内部】等面板点击 + 替换（remind 派生，不手跑）
+- （无参数）        正常检测 + 必要时提醒/换端口
+- `--dry-run`       只检测与打印，不响铃、不弹窗、不写冷却状态
+- `--test-alert`    发一个测试面板（点「已添加」不会改 config）
+- `--await-confirm` 内部模式：等弹窗点击后合并白名单（`remind()` 派生的子进程入口）
 
-退出码：0 = 正常或已自动恢复；2 = 全部节点漂出白名单（需人工补白）/ 切换全部失败；
-3 = 配置缺失（白名单未配置 / 节点清单取不到）。
+# 冷却
+
+两类提醒各自 5 分钟冷却（`in_cooldown()` / `mark_notified()`），launchd 每 10 秒触发
+不会弹窗风暴。
 """
 import json
 import os
@@ -79,7 +48,6 @@ import time
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "..", "..", ".."))
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "..", "config.json")
-NODES_PATH = os.path.expanduser("~/.config/xpilot/nodes.json")
 TMP_DIR = os.path.join(PROJECT_ROOT, "tmp")
 # 弹窗待确认内容（ips + 文案）：remind 写入、--await-confirm 子进程读取
 PENDING_PATH = os.path.join(TMP_DIR, "proxy_guard_pending.json")
@@ -175,45 +143,6 @@ def ensure_panel():
         return False
 
 
-def fetch_nodes_live():
-    """`xpilot node list` 实查（2026-09-01 T133）→ (当前节点 id or None, {node_id: info})。
-
-    输出行格式：`[*) ]<id>: <name>@<host>:<port> [<protocol>] <ip>:<port> - <延迟>`；
-    `*` 前缀 = 当前节点。实查保证 IP 清单反映订阅最新状态（nodes.json 可能滞后）。
-    返回 {node_id: {"address", "protocol", "name"}}（与 load_nodes 同构，main 直接换用）。
-    命令失败 / 解析为空 → (None, {})，调用方回退 nodes.json。"""
-    try:
-        r = subprocess.run(["xpilot", "node", "list"], capture_output=True,
-                           text=True, timeout=NODE_LIST_TIMEOUT)
-        if r.returncode != 0:
-            return None, {}
-        import re
-        nodes, cur = {}, None
-        for line in (r.stdout or "").splitlines():
-            m = re.match(
-                r"^(\*?)\s*(\S+?):\s*(\S+?)@\S+\s+\[(\w+)\]\s+(\d{1,3}(?:\.\d{1,3}){3}):\d+",
-                line.strip())
-            if m:
-                if m.group(1) == "*":
-                    cur = m.group(2)
-                nodes[m.group(2)] = {"address": m.group(5), "protocol": m.group(4),
-                                     "name": m.group(3)}
-        return cur, nodes
-    except Exception:
-        return None, {}
-
-
-def load_nodes():
-    """读 nodes.json → (default_node_id, {node_id: {address, name, protocol}})。"""
-    try:
-        with open(NODES_PATH) as f:
-            data = json.load(f)
-    except Exception:
-        return None, None
-    nodes = data.get("nodes", {})
-    default = data.get("default_node")
-    return default, {nid: {"address": v.get("address"), "name": v.get("name"),
-                           "protocol": v.get("protocol")} for nid, v in nodes.items()}
 
 
 def in_cooldown(key):
@@ -408,33 +337,33 @@ def await_confirm():
     return 0
 
 
-def test_node_connectivity():
-    """当前节点真实流量连通性检测（xpilot test --current）。返回 True/False/None
-    （None = 命令执行异常，视作 False 处理但保留区分）。"""
-    try:
-        r = subprocess.run(["xpilot", "test", "--current"], capture_output=True,
-                           text=True, timeout=TEST_TIMEOUT)
-        out = r.stdout + r.stderr
-        return ("OK" in out) and ("失败" not in out and "FAIL" not in out)
-    except Exception:
-        return None
-
-
-def switch_node(node_id, dry_run=False):
-    """xpilot switch 到指定节点，返回是否成功（switch 后 nodes.json 的 default_node
-    已更新、xray 配置已重载——xpilot 自身保证）。"""
-    if dry_run:
-        _print(f"  [dry-run] 将执行: xpilot switch {node_id}")
-        return True
-    try:
-        r = subprocess.run(["xpilot", "switch", node_id], capture_output=True,
-                           text=True, timeout=60)
-        return r.returncode == 0
-    except Exception:
-        return False
 
 
 def main():
+    """白名单守护（2026-10-29 重写：与 xpilot 彻底解耦）。
+
+    ## 现在的职责（用户 2026-10-29 定的定位）
+
+    本项目 = **监护者**，不是执行者。做三件事：
+
+    1. **比对**：JMS 最新 IP 池（本项目自己拉的订阅）↔ 老虎 IP 白名单（本地镜像）。
+       不一致 → 响铃 + 面板给「全量 IP 清单」，用户去老虎页清空重配；用户点「已添加」
+       后由 `await_confirm()` 自动同步本地镜像。
+    2. **校验当前出口**：实测本项目自己代理池的出口 IP 是否在白名单内。
+    3. **池内自愈**：出口不在白名单 → 在**本项目自己的端口池**（10871–10875）里换一个
+       端口，毫秒级，不重启任何进程。
+
+    ## 明确不做的事
+
+    - 不调 `xpilot switch` / `xpilot test` / `xpilot node list`，不读 `~/.config/xpilot/*`
+      ——xpilot 是独立项目，唯一共同点是都消费同一份 JMS IP 池。
+    - 不替用户决定老虎白名单内容（老虎无 API，必须人工去开发者页操作）。
+
+    分支说明：
+      A. JMS 池里有 IP 不在白名单（含当前出口不在）→ 响铃 + 面板（全量清单）+ 池内换端口
+      B. 白名单里有 IP 已不在 JMS 池（拉不到的旧 IP）→ 低频提醒建议清掉
+      C. 完全一致 → 什么都不做
+    """
     args = sys.argv[1:]
     dry_run = "--dry-run" in args
 
@@ -444,9 +373,8 @@ def main():
 
     if "--test-alert" in args:
         ring()
-        # 测试面板要看得到「复制全部 IP」按钮（2026-10-27 新增）：copy_text 用**当前 config
-        # 里的白名单**填（真数据、复制了也无害），但 ips 故意留空 → 点「已添加」不会写
-        # config（不会把真实白名单覆盖成样例值）。
+        # 测试面板要看得到「复制全部 IP」按钮：copy_text 用**当前 config 里的白名单**填
+        # （真数据、复制了也无害），但 ips 故意留空 → 点「已添加」不会写 config。
         demo_copy = ";".join(load_whitelist() or [])
         try:
             os.makedirs(TMP_DIR, exist_ok=True)
@@ -467,119 +395,146 @@ def main():
         _print("✅ 测试提醒面板已发出（detached 等待点击；点「已添加」= 收到信号、不改 config）")
         return 0
 
-    # 配置读取（节点全景以 xpilot node list 实查为准，2026-09-01 T133；实查失败回退
-    # nodes.json——订阅同步后的落地数据，可能滞后于订阅最新状态）
     whitelist = load_whitelist()
-    default_id, nodes = fetch_nodes_live()
-    nodes_source = "xpilot node list 实查"
-    if not nodes:
-        default_id, nodes = load_nodes()
-        nodes_source = "nodes.json（实查失败回退）"
     if not whitelist:
         _print("⚠️ config.json 未配置 proxy.tiger_whitelist —— 无法做白名单比对。"
                "请在 config.json 的 proxy 节加 tiger_whitelist（当前老虎页配置的 IP 清单）；"
                "之后老虎页加白时弹窗点「已添加」会自动同步这里。")
         return 3
-    if not nodes or not default_id:
-        _print("⚠️ 节点清单取不到（xpilot node list 与 nodes.json 都失败）—— 先跑 xpilot "
-               "node list / xpilot update 确认订阅已同步。")
+
+    # ── 数据源：本项目自己拉的 JMS 订阅（不读 xpilot 任何东西）────────────────
+    try:
+        import jms_pool as J
+    except Exception as e:
+        _print(f"❌ 无法加载 jms_pool.py（{e}）")
+        return 3
+    _jms = J.refresh()
+    if not _jms.get("ok") or not _jms.get("nodes"):
+        _print(f"❌ JMS 订阅取不到节点（{_jms.get('reason')}）—— 无法比对白名单。"
+               f"手查：python3 .claude/skills/trade/scripts/jms_pool.py")
         return 3
 
+    nodes = _jms["nodes"]
+    jms_ips = _jms["ips"]
     wl_set = set(whitelist)
-    cur = nodes.get(default_id)
-    cur_ip = (cur or {}).get("address")
-    _print(f"🌐 当前节点：{cur.get('name') if cur else default_id}（出口 {cur_ip}）"
-          f" | 白名单 {len(wl_set)} IP | 节点数据：{nodes_source}")
-
-    # 节点 IP 全景与白名单的关系
-    in_wl = {nid: v for nid, v in nodes.items() if v.get("address") in wl_set}
-    drifted = {nid: v for nid, v in nodes.items() if v.get("address") not in wl_set}
-    # 全量可用 IP 清单（2026-09-01 T133）：当前全部节点的出口 IP——「既有白名单中仍可用
-    # （= 有节点对应的白名单 IP）+ 漂移后新节点」的并集即节点全集；白名单里无节点对应
-    # 的死 IP 不给（先清空重配的意图就是清掉它们，老虎页白名单有数量上限）。
-    all_ips = sorted({v["address"] for v in nodes.values() if v.get("address")})
+    # 全量可用 IP 清单（给用户去老虎页「先清空再全量粘贴」用）：JMS 池里的全部入口 IP。
+    # 白名单里那些已拉不到的旧 IP 不放进复制串——清空重配的意图正是把它们清掉。
+    all_ips = list(jms_ips)
     all_str = ";".join(all_ips)
-    add_str = all_str   # 旧变量名沿用（log / 提醒串），语义已从「漂移新 IP」改为「全量清单」
 
-    # ── 分支 1：当前节点漂出白名单 → 面板提醒（全量清单）+ 自动切换恢复 ──────────
-    if cur_ip not in wl_set:
+    missing = [ip for ip in jms_ips if ip not in wl_set]        # JMS 有、白名单没有 → 待加白
+    stale = [ip for ip in whitelist if ip not in set(jms_ips)]  # 白名单有、JMS 没有 → 可清
+
+    _print(f"🌐 JMS 池 {len(nodes)} 节点 / {len(jms_ips)} IP"
+           f"（订阅缓存 {_jms.get('reason')}）| 白名单镜像 {len(wl_set)} IP"
+           f" | 待加白 {len(missing)} | 可清除 {len(stale)}")
+
+    # ── 当前出口：本项目自己的端口池（不是 xpilot 的当前节点）──────────────────
+    try:
+        import ip_pool as P
+    except Exception as e:
+        _print(f"❌ 无法加载 ip_pool.py（{e}）")
+        return 3
+
+    cur_port = None
+    cur_ip = None
+    pool_total = 0
+    pool_good = 0
+    try:
+        mapping = P.start_multi()
+        pool_total = len(mapping or [])
+        if mapping:
+            ports = P.probe_ports(mapping)
+            pool_good = sum(1 for v in ports.values() if v.get("ok"))
+            cur_port = int(P.proxy_url().split(":")[-1])
+            cur_ip, _ = P.probe_egress(quiet=True, port=cur_port)
+            if not cur_ip:
+                cur_ip, _ = P.probe_egress(quiet=True)
+    except Exception as e:
+        _print(f"⚠️ 端口池状态读取异常：{e}")
+
+    cur_in_wl = (cur_ip in wl_set) if cur_ip else None
+    _print(f"🔌 本项目代理：端口 {cur_port or '未知'}｜出口 {cur_ip or '未测出'}"
+           f"（{'在' if cur_in_wl else '不在' if cur_in_wl is False else '?'}白名单）"
+           f"｜池内可用端口 {pool_good}/{pool_total}")
+
+    _op_hint = (
+        f"【加白步骤】老虎开发者信息页 → 额外配置 → IP 白名单：先【清空】已有全部"
+        f"白名单 IP，再一次性粘贴以下【全部可用 IP】（{len(all_ips)} 个、\";\" 分隔）："
+        f"\n{all_str}\n\n（旧 IP 不清会逐步占满白名单数量上限——先清空再全量加入"
+        f"才不会撞上限。）")
+
+    # ── 分支 A：JMS 池里有 IP 不在白名单（含当前出口不在）→ 提醒 + 池内换端口 ─────
+    if missing:
         if not in_cooldown("drift"):
-            ring()
-            _op_hint = (
-                f"【加白步骤】老虎开发者信息页 → 额外配置 → IP 白名单：先【清空】已有全部"
-                f"白名单 IP，再一次性粘贴以下【全部可用 IP】（{len(all_ips)} 个、\";\" 分隔）："
-                f"\n{all_str}\n\n（旧 IP 不清会逐步占满白名单数量上限——先清空再全量加入"
-                f"才不会撞上限。）")
-            if in_wl:
-                remind(all_ips,
-                       f"⚠️ 代理节点 IP 已变化：当前节点出口 {cur_ip} 不在老虎 IP 白名单，"
-                       f"老虎 API 已被拒（access forbidden）。\n\n"
-                       f"正在自动切换到白名单内节点恢复服务（结果见终端 / proxy_guard.log）。\n\n"
-                       f"{_op_hint}",
-                       dry_run=dry_run)
+            if not dry_run:
+                ring()   # dry-run 不响铃（排查时不该打扰用户）
+            if cur_in_wl is False:
+                msg = (f"🚨 当前代理出口 {cur_ip} 不在老虎 IP 白名单——老虎 API 已被拒"
+                       f"（access forbidden）。\n\n"
+                       f"JMS 池共 {len(jms_ips)} 个 IP，其中 {len(missing)} 个尚未加白。\n\n"
+                       f"正在本项目端口池内换一个白名单内的端口恢复服务"
+                       f"（不重启进程、不碰 xpilot，结果见终端 / proxy_guard.log）。\n\n{_op_hint}")
+                title = "DayTradingAgent · 当前出口被拒"
             else:
-                remind(all_ips,
-                       f"🚨 全部 代理节点 IP 都不在老虎 IP 白名单——自动切换无可用目标，"
-                       f"老虎 API 保持中断。\n\n必须人工处理。\n\n{_op_hint}\n\n"
-                       f"加白后本守护下轮检测自动恢复。",
-                       title="DayTradingAgent · 白名单全漂出警报", dry_run=dry_run)
-            mark_notified("drift")
-            log_event(f"漂移提醒：当前 {default_id} 出口 {cur_ip} 不在白名单；"
-                      f"面板给全量可用清单 {len(all_ips)} IP")
-        if not in_wl:
-            _print(f"🚨 无白名单内节点可切（{len(drifted)}/{len(nodes)} 节点漂出）——"
-                  f"需人工去老虎页清空重配（全量清单 {len(all_ips)} IP 见面板提醒）")
-            return 2
-        # 自动切换：优先选 vless 节点（ss 节点 2026-08-17 实测有不通的先例），再验证连通。
-        # 总预算 90s（SWITCH_BUDGET_SECONDS）：preflight 挂接后单条 Bash < harness 120s。
-        candidates = sorted(in_wl.keys(),
-                            key=lambda n: (nodes[n].get("protocol") != "vless", n))
-        budget_end = time.time() + SWITCH_BUDGET_SECONDS
-        for cand in candidates:
-            if not dry_run and time.time() > budget_end:
-                _print("⏱️ 自动切换重试预算用尽（90s）——停止尝试，需人工检查")
-                log_event("自动切换预算用尽（90s），候选未试完")
-                return 2
-            _print(f"🔄 自动切换：{default_id}（{cur_ip} 漂出白名单）→ {cand}"
-                  f"（{nodes[cand]['address']}）")
-            if not switch_node(cand, dry_run=dry_run):
-                _print(f"  ❌ 切换失败，试下一个候选")
-                continue
-            if dry_run:
-                _print(f"  [dry-run] 跳过连通性验证")
-                return 0
-            ok = test_node_connectivity()
-            if ok:
-                _print(f"  ✅ 已切换并验证连通（generate_204 经代理 OK）——老虎 API 出口恢复白名单内")
-                log_event(f"自动切换：{default_id}({cur_ip}) → {cand}({nodes[cand]['address']}），连通 OK")
-                return 0
-            _print(f"  ⚠️ 切换后连通性验证未过（{ok}），试下一个候选")
-        _print("❌ 白名单内候选节点全部切换失败——需人工检查（xpilot test -a 全节点实测）")
-        log_event(f"自动切换失败：候选 {len(candidates)} 个全部未过连通验证")
-        return 2
+                msg = (f"ℹ️ JMS 订阅池里有 {len(missing)}/{len(jms_ips)} 个 IP 不在老虎白名单"
+                       f"（当前出口 {cur_ip or '未测出'} 仍可用、服务无影响）。\n\n"
+                       f"建议按下面步骤全量重配，否则那些节点日后无法作为备选；"
+                       f"且旧 IP 不清会逐步占满白名单数量上限。\n\n{_op_hint}\n\n"
+                       f"👉 点下方【复制全部 IP】按钮即可一键复制上面这串（⌘⇧C 同效）。")
+                title = "DayTradingAgent · 白名单待更新"
+            if stale:
+                msg += (f"\n\n另：白名单里有 {len(stale)} 个 IP 已不在 JMS 池内"
+                        f"（拉不到的旧 IP），全量重配时会自然清掉。")
+            remind(all_ips, msg, title=title, dry_run=dry_run)
+            if not dry_run:
+                mark_notified("drift")
+            log_event(f"白名单待更新：JMS {len(jms_ips)} IP 中 {len(missing)} 个未加白；"
+                      f"当前出口 {cur_ip} {'不在' if cur_in_wl is False else '在'}白名单")
 
-    # ── 分支 2：当前节点正常，但存在漂移节点 → 低频提醒全量重配（不切不动）───────
-    if drifted:
+        # 当前出口被拒 → 在自有端口池内换端口（毫秒级、不重启进程、不碰 xpilot）
+        if cur_in_wl is False:
+            if dry_run:
+                _print("  [dry-run] 跳过池内换端口")
+                return 0
+            port, eg, _nid = P.fast_switch(exclude_port=cur_port, force_probe=True)
+            tried = 0
+            while port and tried < 5:
+                tried += 1
+                _print(f"  🔄 池内换端口：{cur_port} → {port}（预期出口 {eg}）")
+                if eg in wl_set:
+                    _print(f"  ✅ 已换到端口 {port}（出口 {eg} 在白名单内）——"
+                           f"交易脚本下次启动即走该端口")
+                    log_event(f"池内换端口恢复：{cur_port} → {port}（出口 {eg}）")
+                    return 0
+                cur_port = port
+                port, eg, _nid = P.fast_switch(exclude_port=cur_port, force_probe=True)
+            _print("🚨 本项目端口池内没有出口在白名单内的端口——"
+                   "必须人工去老虎开发者页为 JMS 池的 IP 加白（见面板清单）")
+            log_event("池内换端口失败：无白名单内可用端口")
+            return 2
+        return 0
+
+    # ── 分支 B：JMS 池全部已加白，但白名单里有拉不到的旧 IP → 低频提醒清理 ──────
+    if stale:
         if not in_cooldown("suggest"):
-            ring()
+            if not dry_run:
+                ring()
             remind(all_ips,
-                   f"ℹ️ 检测到 代理节点 IP 变化（当前节点正常、服务无影响）："
-                   f"{len(drifted)}/{len(nodes)} 个节点 IP 不在老虎白名单。\n\n"
-                   f"建议全量重配（老虎开发者信息页 → 额外配置 → IP 白名单）：先【清空】"
-                   f"已有白名单，再一次性粘贴以下【全部可用 IP】（{len(all_ips)} 个、"
-                   f"\";\" 分隔）：\n{all_str}\n\n"
-                   f"👉 点下方【复制全部 IP】按钮即可一键复制上面这串（⌘⇧C 同效），"
-                   f"不用手动选中文字（清单会自动折行，手选容易漏字符 / 带进换行）。\n\n"
-                   f"不处理风险：当前节点日后漂移时，新 IP 节点无法作为切换备选；旧 IP "
-                   f"不清会逐步占满白名单数量上限。",
-                   title="DayTradingAgent · 节点 IP 变化提醒", dry_run=dry_run)
-            mark_notified("suggest")
-            log_event(f"建议全量重配：{len(drifted)}/{len(nodes)} 节点漂移，"
-                      f"面板给全量可用清单 {len(all_ips)} IP")
-        _print(f"ℹ️ 当前节点出口在白名单内 ✅；另有 {len(drifted)}/{len(nodes)} 节点 IP 未加白"
-              f"（已提醒，冷却 5 分钟；全量清单 {len(all_ips)} IP 见面板）")
-    else:
-        _print(f"✅ 节点 IP 全景与白名单一致（{len(nodes)} 节点全部在白名单）")
+                   f"ℹ️ 老虎白名单里有 {len(stale)} 个 IP 已不在 JMS 订阅池内（拉不到的旧 IP）。"
+                   f"\n\n建议按下面步骤全量重配，把这些旧 IP 清掉"
+                   f"（旧 IP 会逐步占满白名单数量上限，日后新 IP 就加不进去了）：\n\n{_op_hint}",
+                   title="DayTradingAgent · 白名单含失效 IP", dry_run=dry_run)
+            if not dry_run:
+                mark_notified("suggest")
+            log_event(f"建议全量重配：白名单含 {len(stale)} 个已失效 IP")
+        _print(f"ℹ️ JMS 池已全部加白 ✅；另有 {len(stale)} 个白名单 IP 已失效"
+               f"（已提醒，冷却 5 分钟）")
+        return 0
+
+    # ── 分支 C：完全一致 ────────────────────────────────────────────────────
+    _print(f"✅ JMS 池与老虎白名单完全一致（{len(jms_ips)} IP），"
+           f"当前出口 {cur_ip or '未测出'} 在白名单内")
     return 0
 
 

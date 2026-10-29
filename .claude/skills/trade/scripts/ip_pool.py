@@ -28,7 +28,7 @@ IP 可能被 JMS 更新成了不在老虎白名单里面的 IP，这个时候来
    **好处**：本地白名单镜像（config.tiger_whitelist）靠「用户点已添加」同步，可能滞后于
    老虎页的真实配置——只按镜像判定会在镜像滞后时**误切节点**（白白断网几秒），而按网关
    探针判定永远跟着老虎的真实态度走。
-2. **实测出口 IP**（诊断 + 记录）：经 xpilot HTTP 入站打外部 IP 查询服务，拿到当前真实
+2. **实测出口 IP**（诊断 + 记录）：经本项目自己的代理端口打外部 IP 查询服务，拿到当前真实
    出口。必须实测，不能读 nodes.json 的 address——address 是订阅写的入口地址，实际出口
    可能因服务商侧 NAT / 多入口 / 负载均衡而不同，而老虎按「实际出口 IP」判白名单。
 3. **本地白名单镜像**（只用来「挑候选」）：池内候选 = `config.tiger_whitelist` 里有对应
@@ -37,19 +37,19 @@ IP 可能被 JMS 更新成了不在老虎白名单里面的 IP，这个时候来
 ## pool（池）的定义
 
 池 = `config.json` 的 `proxy.tiger_whitelist`（老虎页白名单的本地镜像，6 个 IP 量级）。
-池内每个 IP 需要能对应到一个 xpilot 节点（`xpilot node list` 实查的 address），才能
+池内每个 IP 需要能对应到一个 JMS 订阅节点（订阅里写的 address），才能
 「切过去」。没有节点对应的 IP 是死 IP（老虎认、但本机没有节点落在那），不能作为切换目标。
 
 ## 对外接口
 
     ensure(account='paper', quiet=False, allow_switch=True, budget=45) -> dict
         保证老虎链路可用。正常情况约 0.3~0.5s（一次网关探针 + 一次出口实测）；
-        需要切换时 5~15s（xpilot switch 会重启 xray、断网 1~3s）。
+        切换在本项目自己的端口池内换端口，毫秒级、不重启进程。
         返回 {ok, action, egress, in_pool, ...}；ok=False 时 reason 说明原因。
 
     CLI: python3 ip_pool.py [--quiet] [--json] [--no-switch] [--account paper|live]
 
-退出码：0 = 可用（原生可用或已切换恢复）；2 = 池内没有可用节点（需人工加白 / 排查 xpilot）；
+退出码：0 = 可用；2 = 池内没有可用端口（需人工去老虎页加白）；
 3 = 配置缺失（白名单或节点清单取不到）。
 """
 import json
@@ -80,7 +80,7 @@ EGRESS_SOURCES = [
 ]
 EGRESS_TIMEOUT = 5        # 单个源超时（秒）
 PROBE_TIMEOUT = 8         # 网关探针超时（秒）
-SWITCH_TIMEOUT = 25       # 单次 xpilot switch 超时（秒；ensure 场景比默认 60 收紧，下单不能等太久）
+SWITCH_TIMEOUT = 25       # 保留（历史常量，当前流程不再有「重启式切换」；勿删以免外部引用报错）
 SWITCH_SETTLE = 1.5       # 切换后等 xray 就绪（秒）——立刻探测会打到还没起来的端口
 ENSURE_BUDGET = 45        # ensure 总预算（秒）：下单前置可接受的最长等待；超预算即停下报失败
 POOL_LOG = os.path.join(TMP_DIR, 'ip_pool.log')
@@ -102,7 +102,7 @@ def _log(line):
 
 
 def proxy_url():
-    """读 config.json 的 proxy.http_proxy（默认本机 xpilot HTTP 入站口）。"""
+    """读 config.json 的 proxy.http_proxy（本项目自己代理池的首个端口，默认 10871）。"""
     try:
         with open(G.CONFIG_PATH) as f:
             return json.load(f).get('proxy', {}).get('http_proxy', 'http://127.0.0.1:1087')
@@ -267,6 +267,11 @@ def ensure(account='paper', quiet=False, allow_switch=True, budget=ENSURE_BUDGET
     except Exception:
         pass
     out['proxy_port'] = cur_port
+    # 当前端口对应哪个 JMS 节点（端口→节点映射由本项目自己的池固定）
+    for _p, _nid in mapping:
+        if cur_port is not None and int(_p) == int(cur_port):
+            out['node'] = _nid
+            break
 
     if not quiet:
         G._print(f'🌐 IP 池检查：出口 {egress or "未测出"}'
@@ -378,7 +383,7 @@ def main(argv=None):
                      f'｜节点 {res["node"]}｜耗时 {res["elapsed"]}s')
         else:
             G._print(f'❌ IP 池不可用：{res["reason"]}｜出口 {res["egress"]}')
-            G._print('   → 需人工处理：老虎开发者页加白当前出口 IP，或 xpilot update 同步订阅'
+            G._print('   → 需人工处理：老虎开发者页加白当前出口 IP（本项目的 JMS 订阅会自动更新池子'
                      '后重跑本脚本')
     return 0 if res['ok'] else (3 if 'no_whitelist' in (res['reason'] or '') or
                                 'no_nodes' in (res['reason'] or '') else 2)
@@ -442,59 +447,6 @@ def _wait_proxy_port(timeout=PORT_WAIT_TIMEOUT):
     return None
 
 
-def switch_next(quiet=True, exclude=None):
-    """切到池内下一个候选节点（轮换），只等端口就绪、不做出口/网关验证。
-
-    用于「请求被拒 → 立刻换 IP 重发」的快速路径：切换后由调用方直接重发真实请求，
-    请求成功即恢复。返回 (ok, node_id, elapsed_seconds)。
-    """
-    t0 = time.time()
-    whitelist = G.load_whitelist() or []
-    default_id, nodes = G.fetch_nodes_live()
-    if not nodes:
-        default_id, nodes = G.load_nodes()
-    if not nodes or not whitelist:
-        return False, None, round(time.time() - t0, 2)
-
-    cands = pool_candidates(whitelist, nodes, exclude=set(exclude or ()))
-    ordered = [c for c in cands if c != default_id]
-    if not ordered:
-        return False, None, round(time.time() - t0, 2)
-
-    # 轮换：从「上次切过的节点」的下一个开始，避免连续失败反复试同一个
-    last = _load_rotate()
-    if last in ordered:
-        i = ordered.index(last)
-        ordered = ordered[i + 1:] + ordered[:i + 1]
-
-    for cand in ordered:
-        try:
-            r = G.subprocess.run(['xpilot', 'switch', cand], capture_output=True,
-                                 text=True, timeout=SWITCH_TIMEOUT)
-            if r.returncode != 0:
-                if not quiet:
-                    G._print(f'  ❌ switch {cand} 失败: {(r.stderr or "")[:100]}')
-                continue
-        except Exception as e:
-            if not quiet:
-                G._print(f'  ❌ switch {cand} 异常: {e}')
-            continue
-        waited = _wait_proxy_port()
-        if waited is None:
-            _log(f'switch_next：节点 {cand} 端口未就绪（>{PORT_WAIT_TIMEOUT}s）')
-            continue
-        time.sleep(PORT_SETTLE)
-        _save_rotate(cand)
-        elapsed = round(time.time() - t0, 2)
-        _log(f'switch_next：切到 {cand}（端口就绪 {waited:.2f}s，总计 {elapsed}s），由真实请求验证')
-        if not quiet:
-            G._print(f'  🔄 已切到 {cand}（{elapsed}s），重发请求验证')
-        return True, cand, elapsed
-
-    _log('switch_next：池内候选全部切换失败')
-    return False, None, round(time.time() - t0, 2)
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # 多端口并行池（2026-10-29 用户立，把「换 IP」从秒级压到毫秒级）
 #
@@ -512,7 +464,7 @@ def switch_next(quiet=True, exclude=None):
 #        ProxyManager → 重发。缓存 TTL 内不重新探活（探活要 6 个 curl，约 2s）。
 #
 # 降级：多端口池起不来（xray 缺失 / 配置生成失败 / 进程起不来）时，自动回退到
-# switch_next()（慢路径、重启 xpilot），功能不丢、只是慢。
+# 无可用端口时如实报错（不再有「重启代理进程」这类兜底——与 xpilot 解耦）。
 # ══════════════════════════════════════════════════════════════════════════════
 
 MULTI_BASE_PORT = 10871          # 多端口池 http 起始端口（10871..10871+N-1）
@@ -521,7 +473,6 @@ MULTI_CONFIG = os.path.join(TMP_DIR, 'ip_pool_xray.json')   # 生成的 xray 配
 MULTI_PID = os.path.join(TMP_DIR, 'ip_pool_xray.pid')
 MULTI_LOG = os.path.join(TMP_DIR, 'ip_pool_xray.log')
 MULTI_PORTS = os.path.join(TMP_DIR, 'ip_pool_ports.json')
-NODES_PATH_RAW = os.path.expanduser('~/.config/xpilot/nodes.json')   # 含凭证的原始节点数据（只读、只在内存用）
 MULTI_PROBE_TTL = 300            # 端口出口探活缓存有效期（秒）
 MULTI_START_TIMEOUT = 8.0        # 等全部端口 accept 的上限
 
@@ -543,7 +494,7 @@ def _xray_bin():
 
 
 def _node_outbound(node):
-    """把一个 xpilot 节点配置转成 xray outbound（vless + reality / tls）。"""
+    """把一个 JMS 订阅节点配置转成 xray outbound（vless + reality / tls）。"""
     stream = {'network': node.get('network', 'tcp'), 'security': node.get('security', 'none')}
     if node.get('security') == 'reality':
         stream['realitySettings'] = {
@@ -569,21 +520,6 @@ def _node_outbound(node):
                            'users': [user]}]}
     return {'protocol': proto, 'settings': settings, 'streamSettings': stream}
 
-
-
-def load_nodes_raw():
-    """读 nodes.json 的**原始**节点数据（含 uuid / reality 凭证等全部字段）。
-
-    为什么不复用 G.load_nodes()：那个只取 address / name / protocol 三个字段（够白名单比对
-    用），而生成 xray outbound 必须要有 uuid、reality_public_key、servername 等凭证字段。
-    注意：这些字段属敏感类，只在内存里用、只写 tmp/ 下 0600 的运行时配置，不进仓库。
-    """
-    try:
-        with open(NODES_PATH_RAW) as f:
-            data = json.load(f)
-        return data.get('default_node'), (data.get('nodes') or {})
-    except Exception:
-        return None, {}
 
 
 def build_multi_config(nodes=None):
@@ -870,12 +806,13 @@ def fast_switch(exclude_port=None, force_probe=False):
     #    一旦真出过问题，缓存就建立起来了，后续都走实测数据）。
     if not cands and force_probe is False and not os.path.exists(MULTI_PORTS):
         try:
+            import jms_pool as _J
+            _r = _J.refresh()
             wl = set(G.load_whitelist() or [])
-            _, raw_nodes = load_nodes_raw()
             for port, nid in mapping:
                 if exclude_port is not None and int(port) == int(exclude_port):
                     continue
-                addr = (raw_nodes.get(nid) or {}).get('address')
+                addr = ((_r.get('nodes') or {}).get(nid) or {}).get('address')
                 if addr and addr in wl:
                     return port, addr, nid
         except Exception:

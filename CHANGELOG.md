@@ -16,6 +16,24 @@
 - **回归风险**：无——纯新增模块，尚未被任何现有脚本调用（接线要等订阅链接到位、实测通过后再做）。
 - **边界**：本模块只管「拉取 / 解析 / 比对 / 提醒」；真正把代理配置换成 JMS 节点、以及删掉 `xpilot switch` / `test` 调用，属下一步。
 
+### 变更（守护侧 `proxy_guard.py` 重写：删掉全部 xpilot 调用，改为「比对 JMS 池 ↔ 白名单 + 自有端口池内换端口」，2026-10-29 16:50）
+
+- **为什么改**：主链路解耦后，`proxy_guard.py`（587 行，被 `preflight` 与 `monitor_watcher` 每 10 秒调用）仍在调 `xpilot node list` / `xpilot switch` / `xpilot test`、仍读 `~/.config/xpilot/nodes.json`，与用户「本项目不该和 xpilot 有任何关系」的定位冲突；且它的判定方式（`xpilot test` 只看能不能上网、不校验出口是否在白名单）本就有假阳性问题（T176）。
+- **改了什么**：
+  - **删除** `fetch_nodes_live()`（`xpilot node list`）、`load_nodes()`（读 nodes.json）、`switch_node()`（`xpilot switch`）、`test_node_connectivity()`（`xpilot test --current`）、`NODES_PATH` 常量。
+  - **`main()` 重写**为三个分支：A) JMS 池里有 IP 不在白名单（含当前出口不在）→ 响铃 + 面板给全量 IP 清单 + **在自有端口池内换端口**；B) 白名单里有已失效的旧 IP（JMS 已拉不到）→ 低频提醒建议清空重配；C) 完全一致 → 什么都不做。
+  - **数据源**改为 `jms_pool.refresh()`（本项目自己拉的订阅）；**当前出口**改为「本项目代理池当前端口的实测出口」；**自愈**改为 `ip_pool.fast_switch()` 换端口（毫秒级、不重启进程）。
+  - **`--dry-run` 改为完全无副作用**：原先仍会 `ring()` 响铃并写冷却状态，排查时会打扰用户；现在不响铃、不弹窗、不写冷却。
+  - 顶部文档整体重写，明确「监护者」定位与「明确不做」清单；保留被外部 import 的纯工具接口（`load_whitelist()` / `log_event()` / `_print()` / `PROJECT_ROOT` / `TMP_DIR` / `CONFIG_PATH`）。
+  - **顺带清掉 `ip_pool.py` 的残留**：删除已无调用者的 `switch_next()`（含 `xpilot switch`）、`load_nodes_raw()` 与 `NODES_PATH_RAW`（最后两处读 xpilot 文件的代码）；`fast_switch()` 的「首次 address 推断」路径改用 `jms_pool` 节点；改正过时注释措辞。`ensure()` 补上 `node` 字段（端口→JMS 节点映射）。
+- **实测**：
+  - 正常态：`✅ JMS 池与老虎白名单完全一致（6 IP），当前出口在白名单内`，池内 5/5 端口可用
+  - 异常态（临时把白名单改成 2 个假 IP）：正确报告「待加白 6 / 可清除 2」、弹窗内容含全量 6 个 IP 清单与「先清空再全量粘贴」步骤；`--dry-run` 下不响铃
+  - `ensure()` 返回完整字段：`ok/action/proxy_port/egress/node/whitelist_gap(in_sync=True, 6/6)`
+  - `monitor_watcher` 无参数调用：returncode 0、无 stderr
+- **回归风险**：中。这是守护逻辑的整体替换（判定口径、切换方式、提醒文案都变了），但分支行为已逐一实测；对外接口（无参数调用 / `--dry-run` / `--test-alert` / `--await-confirm`）与被 import 的工具函数保持不变，`preflight` 与 `monitor_watcher` 无需修改。
+- **未做**：`accounts.md` 等文档里描述「xpilot 节点」的运维口径段落还没同步改（纯文档，下一步）；本项属 `refactor`，是否发版待按 commit 流程判定。
+
 ### 变更（主链路与 xpilot 彻底解耦：数据源改 JMS 订阅、代理口改自有端口，2026-10-29 16:30）
 
 - **为什么改**：用户定位纠正后，用户明确两点选择——① JMS IP 池由**本项目自己拉订阅链接解析**；② **连代理口也不用 xpilot 的**，本项目自己起独立代理。原实现虽已自起 xray，但节点数据仍读 `~/.config/xpilot/nodes.json`、交易脚本代理口仍指 xpilot 的 1087、`ensure()` 失败时仍调 `xpilot switch`。
