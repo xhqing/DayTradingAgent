@@ -517,12 +517,19 @@ MULTI_START_TIMEOUT = 8.0        # 等全部端口 accept 的上限
 
 
 def _xray_bin():
-    """从 xpilot 的 settings.json 读 xray 可执行文件路径（复用同一个二进制，不另装）。"""
-    try:
-        with open(os.path.expanduser('~/.config/xpilot/settings.json')) as f:
-            return json.load(f).get('xray_bin')
-    except Exception:
-        return None
+    """xray 可执行文件路径 —— **本项目自己的，与 xpilot 无关**（2026-10-29 用户定）。
+
+    为什么用 Homebrew 的：一条命令安装、有校验、升级方便；装完 `brew pin xray` 锁住版本，
+    避免哪天 `brew upgrade` 顺手升级导致配置不兼容、交易链路突然挂掉。它与 xpilot 自己
+    那份 `~/.local/bin/xray` 是两个完全独立的二进制，互不影响。
+    """
+    import shutil
+    for p in ('/opt/homebrew/bin/xray',      # Apple Silicon 的 brew prefix
+              '/usr/local/bin/xray',          # Intel Mac 的 brew prefix
+              '/usr/bin/xray'):
+        if os.path.exists(p):
+            return p
+    return shutil.which('xray')              # 兜底：PATH 里的任意 xray
 
 
 def _node_outbound(node):

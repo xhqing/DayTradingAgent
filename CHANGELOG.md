@@ -2,6 +2,18 @@
 
 本文件记录 DayTradingAgent 每个版本的主要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased]
+
+### 变更（xray 二进制改为本项目自带，不再借 xpilot 的；架构定位纠正为「独立于 xpilot」，2026-10-29 16:05）
+
+- **为什么改（用户定位纠正，原话要点）**：「本项目不应该和 xpilot 有任何关系，xpilot 是另外一个独立的项目，唯一共同点是都用到 JMS 提供的 IP 池（目前 6 个 IP）。本项目是监测到 JMS 的最新 IP 池和本项目的老虎 IP 白名单 IP 池不一致的时候提供更新老虎白名单 IP 池的提醒，并实时同步本项目的可用 IP 池和老虎白名单 IP 池一致。」进一步确认两点：① JMS IP 池改由**本项目自己拉订阅链接解析**（不经 xpilot）；② **连代理口也不用 xpilot 的**，本项目自己起独立代理。
+- **改了什么（本次只做二进制解耦）**：`ip_pool.py` 的 `_xray_bin()` 从「读 `~/.config/xpilot/settings.json` 的 xray_bin」改为「按 `/opt/homebrew/bin/xray` → `/usr/local/bin/xray` → `/usr/bin/xray` → PATH 顺序查找本项目自己的 xray」。
+- **选型理由（用户委托决定）**：用 **Homebrew 安装 + `brew pin xray` 锁版本**。比「手动下载二进制塞进项目」省心（一条命令、有校验、想升级也方便），比「借 xpilot 那份」干净（两个完全独立的二进制）；pin 住可防止 `brew upgrade` 顺手升级导致配置不兼容、交易链路突然挂掉。当前版本 **Xray 26.10.21**（arm64）。
+- **实测**：新二进制跑现有 5 端口池配置，格式完全兼容、无报错；5/5 端口探活出口全在白名单内（IP 具体的实值见本机 config，本文件不转录清单）；进程实跑路径 `/opt/homebrew/Cellar/xray/26.10.21/libexec/xray`（= brew 的符号链接目标）。
+- **仍未解耦的部分（待用户提供 JMS 订阅链接后一次改完）**：① 节点数据仍来自 `~/.config/xpilot/nodes.json`，待换成 JMS 订阅解析；② `config.proxy.http_proxy` 仍是 `127.0.0.1:1087`（xpilot 的口），待改成本项目自己的端口；③ `ip_pool.py` / `proxy_guard.py` 里的 `xpilot switch` / `xpilot test` 调用待删。
+- **回归风险**：低。只换二进制的来源路径，配置生成逻辑与端口分配未变；已验证新旧二进制对同一配置的行为一致。降级路径不变（找不到 xray 时仍回退单实例切换）。
+- **边界**：不动 xpilot 自身（不卸载、不改其配置、不碰它那份 `~/.local/bin/xray`）。
+
 ## [0.7.2] - 2026-10-29
 
 ### 修复（v0.7.1 的多端口池实际未生效——反复重启 + 探活打在重启窗口，实测降级成 5.36s 慢路径，2026-10-29 15:35）
