@@ -329,6 +329,29 @@ def main(argv=None):
     quiet = '--quiet' in argv
     as_json = '--json' in argv
     no_switch = '--no-switch' in argv
+
+    # ── 多端口并行池的运维入口（2026-10-29）：排查 / 手动预热 ──────────────
+    if '--multi-status' in argv or '--multi-start' in argv or '--multi-stop' in argv:
+        if '--multi-stop' in argv:
+            stop_multi()
+            G._print('已停止多端口池进程')
+            return 0
+        mapping = start_multi(force='--multi-start' in argv)
+        if not mapping:
+            G._print('❌ 多端口池不可用（xray 缺失或配置生成失败），将回退单实例切换')
+            return 2
+        ports = probe_ports(mapping, force='--multi-start' in argv)
+        rows = sorted(ports.items(), key=lambda kv: int(kv[0]))
+        if as_json:
+            print(json.dumps(ports, ensure_ascii=False))
+        else:
+            G._print(f'多端口池：进程 {"运行中" if multi_running() else "未运行"}，'
+                     f'{sum(1 for v in ports.values() if v.get("ok"))}/{len(rows)} 个端口可用')
+            for port, v in rows:
+                mark = '✅' if v.get('ok') else '❌'
+                G._print(f'  {mark} 端口 {port} 出口 {v.get("egress") or "不可用"}'
+                         f'（节点 {v.get("node") or "?"}）')
+        return 0 if any(v.get('ok') for v in ports.values()) else 2
     account = 'paper'
     for i, a in enumerate(argv):
         if a == '--account' and i + 1 < len(argv):
@@ -350,6 +373,440 @@ def main(argv=None):
                      '后重跑本脚本')
     return 0 if res['ok'] else (3 if 'no_whitelist' in (res['reason'] or '') or
                                 'no_nodes' in (res['reason'] or '') else 2)
+
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 请求级快速切换（2026-10-29 用户立，要求把「被拒→恢复」从 9s 压下来）
+#
+# 用户原话：「9秒太久了，请求被拒直接切池子里的另一个 IP 重新请求。」
+#
+# 所以这里**刻意不做**出口实测 / 网关探针那两道验证（那是 ensure() 的「事前体检」口径，
+# 适合巡检）；请求级恢复走最短链路：
+#     真实请求被拒（access forbidden）→ switch 到池内下一个节点 → 等代理端口就绪 → 直接重发
+# 重发成功即视为恢复（真实请求本身就是最强的验证），失败才继续切下一个。
+# 省掉的是「切换后再跑两次 curl 探测」的 3~4s 固定开销。
+# ══════════════════════════════════════════════════════════════════════════════
+
+ROTATE_PATH = os.path.join(TMP_DIR, 'ip_pool_rotate.json')
+PORT_WAIT_TIMEOUT = 6.0     # 等代理端口就绪上限（xray 重启后从 0 到能 accept 约 0.3~2s）
+PORT_SETTLE = 0.25          # 端口就绪后再给 xray 一点握手时间，避免首个请求打在「刚 accept 还没通」的瞬间
+
+
+def _load_rotate():
+    """读「上次切过的节点」（轮换基准），让连续失败时不会反复试同一个。"""
+    try:
+        with open(ROTATE_PATH) as f:
+            return json.load(f).get('last_node')
+    except Exception:
+        return None
+
+
+def _save_rotate(node_id):
+    try:
+        os.makedirs(TMP_DIR, exist_ok=True)
+        with open(ROTATE_PATH, 'w') as f:
+            json.dump({'last_node': node_id, 'at': time.time()}, f)
+    except Exception:
+        pass
+
+
+def _wait_proxy_port(timeout=PORT_WAIT_TIMEOUT):
+    """等代理端口能 accept（轮询，不 sleep 固定时长）。返回就绪耗时或 None。
+
+    为什么轮询而不是固定 sleep：xray 重启后端口就绪时间不固定（实测 0.3~2s），固定 sleep
+    要么白等、要么抢跑。轮询 + 极短间隔能把这一步压到 ~0.3s。
+    """
+    import socket
+    px = proxy_url()
+    host_port = px.split('//')[-1]
+    host, port = host_port.split(':')[0], int(host_port.split(':')[1])
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        try:
+            s = socket.create_connection((host, port), timeout=0.4)
+            s.close()
+            return time.time() - t0
+        except OSError:
+            time.sleep(0.1)
+    return None
+
+
+def switch_next(quiet=True, exclude=None):
+    """切到池内下一个候选节点（轮换），只等端口就绪、不做出口/网关验证。
+
+    用于「请求被拒 → 立刻换 IP 重发」的快速路径：切换后由调用方直接重发真实请求，
+    请求成功即恢复。返回 (ok, node_id, elapsed_seconds)。
+    """
+    t0 = time.time()
+    whitelist = G.load_whitelist() or []
+    default_id, nodes = G.fetch_nodes_live()
+    if not nodes:
+        default_id, nodes = G.load_nodes()
+    if not nodes or not whitelist:
+        return False, None, round(time.time() - t0, 2)
+
+    cands = pool_candidates(whitelist, nodes, exclude=set(exclude or ()))
+    ordered = [c for c in cands if c != default_id]
+    if not ordered:
+        return False, None, round(time.time() - t0, 2)
+
+    # 轮换：从「上次切过的节点」的下一个开始，避免连续失败反复试同一个
+    last = _load_rotate()
+    if last in ordered:
+        i = ordered.index(last)
+        ordered = ordered[i + 1:] + ordered[:i + 1]
+
+    for cand in ordered:
+        try:
+            r = G.subprocess.run(['xpilot', 'switch', cand], capture_output=True,
+                                 text=True, timeout=SWITCH_TIMEOUT)
+            if r.returncode != 0:
+                if not quiet:
+                    G._print(f'  ❌ switch {cand} 失败: {(r.stderr or "")[:100]}')
+                continue
+        except Exception as e:
+            if not quiet:
+                G._print(f'  ❌ switch {cand} 异常: {e}')
+            continue
+        waited = _wait_proxy_port()
+        if waited is None:
+            _log(f'switch_next：节点 {cand} 端口未就绪（>{PORT_WAIT_TIMEOUT}s）')
+            continue
+        time.sleep(PORT_SETTLE)
+        _save_rotate(cand)
+        elapsed = round(time.time() - t0, 2)
+        _log(f'switch_next：切到 {cand}（端口就绪 {waited:.2f}s，总计 {elapsed}s），由真实请求验证')
+        if not quiet:
+            G._print(f'  🔄 已切到 {cand}（{elapsed}s），重发请求验证')
+        return True, cand, elapsed
+
+    _log('switch_next：池内候选全部切换失败')
+    return False, None, round(time.time() - t0, 2)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 多端口并行池（2026-10-29 用户立，把「换 IP」从秒级压到毫秒级）
+#
+# 动机：`xpilot switch` 是 stop + start（重启 xray），实测 2~6s——这是**单实例的物理
+# 下限**，用户明确嫌慢（「9秒太久了，请求被拒直接切池子里的另一个 IP 重新请求」）。
+#
+# 做法：自己起一个独立的 xray 进程（不干扰 xpilot 的 1080/1087），配置里放**多个
+# inbound 端口**（每个端口固定走池内一个节点，由 routing 规则分流）。被白名单拒时，
+# 只需把老虎 SDK 的 ProxyManager 指向**另一个端口**——不重启任何进程，毫秒级。
+#
+# 三层结构：
+#   端口 10871..10876  ← 每个端口 = 一个池内节点
+#   tmp/ip_pool_ports.json = {port: {node, egress, ok, at}}（探活缓存）
+#   被拒 → fast_switch() 从「egress 在白名单内」的端口里挑一个（避开刚失败的）→ 换
+#        ProxyManager → 重发。缓存 TTL 内不重新探活（探活要 6 个 curl，约 2s）。
+#
+# 降级：多端口池起不来（xray 缺失 / 配置生成失败 / 进程起不来）时，自动回退到
+# switch_next()（慢路径、重启 xpilot），功能不丢、只是慢。
+# ══════════════════════════════════════════════════════════════════════════════
+
+MULTI_BASE_PORT = 10871          # 多端口池起始端口（10871..10871+N-1），避开 xpilot 的 1080/1087
+MULTI_CONFIG = os.path.join(TMP_DIR, 'ip_pool_xray.json')   # 生成的 xray 配置（含节点凭证 → 必须留在 tmp/）
+MULTI_PID = os.path.join(TMP_DIR, 'ip_pool_xray.pid')
+MULTI_LOG = os.path.join(TMP_DIR, 'ip_pool_xray.log')
+MULTI_PORTS = os.path.join(TMP_DIR, 'ip_pool_ports.json')
+NODES_PATH_RAW = os.path.expanduser('~/.config/xpilot/nodes.json')   # 含凭证的原始节点数据（只读、只在内存用）
+MULTI_PROBE_TTL = 300            # 端口出口探活缓存有效期（秒）
+MULTI_START_TIMEOUT = 8.0        # 等全部端口 accept 的上限
+
+
+def _xray_bin():
+    """从 xpilot 的 settings.json 读 xray 可执行文件路径（复用同一个二进制，不另装）。"""
+    try:
+        with open(os.path.expanduser('~/.config/xpilot/settings.json')) as f:
+            return json.load(f).get('xray_bin')
+    except Exception:
+        return None
+
+
+def _node_outbound(node):
+    """把一个 xpilot 节点配置转成 xray outbound（vless + reality / tls）。"""
+    stream = {'network': node.get('network', 'tcp'), 'security': node.get('security', 'none')}
+    if node.get('security') == 'reality':
+        stream['realitySettings'] = {
+            'serverName': node.get('servername', ''),
+            'publicKey': node.get('reality_public_key', ''),
+            'shortId': node.get('reality_short_id', ''),
+            'fingerprint': node.get('fingerprint', 'chrome'),
+        }
+    elif node.get('tls'):
+        stream['tlsSettings'] = {'serverName': node.get('servername', ''),
+                                 'fingerprint': node.get('fingerprint', 'chrome')}
+    user = {'id': node.get('uuid') or node.get('id'), 'encryption': 'none'}
+    if node.get('flow'):
+        user['flow'] = node['flow']
+    proto = node.get('protocol', 'vless')
+    if proto != 'vless':
+        # 只编 vless 节点（2026-10-29 实测）：ss 节点在 nodes.json 里 security 字段存的是
+        # 加密方式（aes-256-gcm），与 vless 的 security（reality/tls）语义冲突，直接编进去
+        # 会让 xray 报 Unknown security 起不来；而 c56s1 那个 ss 节点只是备选、白名单内
+        # 还有 5 个 vless 节点，跳过它即可（池容量 5 个足够）。
+        return None
+    settings = {'vnext': [{'address': node.get('address'), 'port': int(node.get('port', 443)),
+                           'users': [user]}]}
+    return {'protocol': proto, 'settings': settings, 'streamSettings': stream}
+
+
+
+def load_nodes_raw():
+    """读 nodes.json 的**原始**节点数据（含 uuid / reality 凭证等全部字段）。
+
+    为什么不复用 G.load_nodes()：那个只取 address / name / protocol 三个字段（够白名单比对
+    用），而生成 xray outbound 必须要有 uuid、reality_public_key、servername 等凭证字段。
+    注意：这些字段属敏感类，只在内存里用、只写 tmp/ 下 0600 的运行时配置，不进仓库。
+    """
+    try:
+        with open(NODES_PATH_RAW) as f:
+            data = json.load(f)
+        return data.get('default_node'), (data.get('nodes') or {})
+    except Exception:
+        return None, {}
+
+
+def build_multi_config(nodes=None):
+    """生成多端口 xray 配置（每个池内节点一个 inbound 端口 + 一一对应的 routing 规则）。
+
+    返回 [(port, node_id), ...]；失败返回 []。
+    """
+    whitelist = G.load_whitelist() or []
+    if not whitelist:
+        return []
+    # 必须用 nodes.json 原始数据：实查清单不含 uuid / reality 凭证，生成 outbound 会因
+    # UUID 为空直接起不来（2026-10-29 实测报 "invalid UUID"）。
+    default_id, nodes = load_nodes_raw()
+    if not nodes:
+        return []
+
+    # 优先用「address 在白名单内」的节点（实测该服务商 address == 出口 IP）；剩下的也编进去，
+    # 反正后面探活会按「实测出口 ∈ 白名单」筛选，编多不亏。
+    wl = set(whitelist)
+    ordered = sorted(nodes.items(),
+                     key=lambda kv: (kv[1].get('address') not in wl,
+                                     kv[1].get('protocol') != 'vless', kv[0]))
+    inbounds, outbounds, rules, mapping = [], [], [], []
+    for i, (nid, node) in enumerate(ordered):
+        if not node.get('address'):
+            continue
+        port = MULTI_BASE_PORT + i
+        in_tag, out_tag = f'ip-in-{i}', f'ip-out-{i}'
+        inbounds.append({'tag': in_tag, 'listen': '127.0.0.1', 'port': port,
+                         'protocol': 'http', 'settings': {}})
+        ob = _node_outbound(node)
+        if ob is None:          # 非 vless 节点跳过（见 _node_outbound 注释）
+            continue
+        ob['tag'] = out_tag
+        outbounds.append(ob)
+        rules.append({'type': 'field', 'inboundTag': [in_tag], 'outboundTag': out_tag})
+        mapping.append((port, nid))
+
+    if not mapping:
+        return []
+    cfg = {'log': {'loglevel': 'warning'},
+           'inbounds': inbounds,
+           'outbounds': outbounds + [{'tag': 'direct', 'protocol': 'freedom'},
+                                    {'tag': 'block', 'protocol': 'blackhole'}],
+           'routing': {'domainStrategy': 'AsIs', 'rules': rules}}
+    try:
+        os.makedirs(TMP_DIR, exist_ok=True)
+        with open(MULTI_CONFIG, 'w') as f:
+            json.dump(cfg, f, indent=1)
+        os.chmod(MULTI_CONFIG, 0o600)   # 含节点凭证，仅本用户可读
+    except Exception as e:
+        _log(f'多端口池：生成配置失败 {e}')
+        return []
+    return mapping
+
+
+def _pid_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except Exception:
+        return False
+
+
+def multi_running():
+    """多端口池 xray 进程是否在跑。"""
+    try:
+        with open(MULTI_PID) as f:
+            pid = f.read().strip()
+        return _pid_alive(pid)
+    except Exception:
+        return False
+
+
+def stop_multi():
+    """停掉多端口池进程（换配置 / 排查时用）。"""
+    try:
+        with open(MULTI_PID) as f:
+            pid = int(f.read().strip())
+        if _pid_alive(pid):
+            os.kill(pid, 15)
+    except Exception:
+        pass
+    try:
+        os.remove(MULTI_PID)
+    except Exception:
+        pass
+
+
+def start_multi(force=False):
+    """确保多端口池进程在跑且配置最新。返回 [(port, node_id)] 或 []。
+
+    懒加载设计：只在真正需要（fast_switch / 启动时）才拉起，不常驻 cron。
+    配置按 nodes.json 的 mtime 判断是否过期（订阅更新 → 重新生成 + 重启）。
+    """
+    mapping = build_multi_config()
+    if not mapping:
+        return []
+    xray = _xray_bin()
+    if not xray or not os.path.exists(xray):
+        _log('多端口池：找不到 xray 可执行文件，回退单实例切换')
+        return []
+
+    need_restart = force or not multi_running()
+    if not need_restart:
+        # 配置比进程新（订阅更新过）→ 重启吃新配置
+        try:
+            if os.path.getmtime(MULTI_CONFIG) > os.path.getmtime(MULTI_PID):
+                need_restart = True
+        except Exception:
+            need_restart = True
+
+    if need_restart:
+        stop_multi()
+        try:
+            import subprocess as sp
+            f = open(MULTI_LOG, 'a')
+            proc = sp.Popen([xray, 'run', '-c', MULTI_CONFIG],
+                            stdout=f, stderr=f, start_new_session=True)
+            with open(MULTI_PID, 'w') as pf:
+                pf.write(str(proc.pid))
+            # 等所有端口 accept
+            t0 = time.time()
+            pending = {p for p, _ in mapping}
+            while pending and time.time() - t0 < MULTI_START_TIMEOUT:
+                for p in list(pending):
+                    try:
+                        s = socket_create((p))
+                        s.close()
+                        pending.discard(p)
+                    except Exception:
+                        pass
+                if pending:
+                    time.sleep(0.1)
+            if pending:
+                _log(f'多端口池：端口未就绪 {sorted(pending)}')
+            _log(f'多端口池：进程 {proc.pid} 已启动，端口 {[p for p, _ in mapping]}')
+        except Exception as e:
+            _log(f'多端口池：启动失败 {e}')
+            return []
+    return mapping
+
+
+def socket_create(port, host='127.0.0.1', timeout=0.3):
+    """建一个 TCP 连接（探端口用）。"""
+    import socket as _s
+    return _s.create_connection((host, port), timeout=timeout)
+
+
+def probe_ports(mapping=None, force=False, timeout=EGRESS_TIMEOUT):
+    """并行探活每个端口的实测出口 IP，落缓存 tmp/ip_pool_ports.json。
+
+    返回 {port: {node, egress, ok, at}}。缓存未过期且非 force 时直接返回缓存。
+    """
+    if not force:
+        try:
+            with open(MULTI_PORTS) as f:
+                cache = json.load(f)
+            if cache and time.time() - max(v.get('at', 0) for v in cache.values()) < MULTI_PROBE_TTL:
+                return cache
+        except Exception:
+            pass
+
+    if mapping is None:
+        mapping = _port_node_map()
+    if not mapping:
+        return {}
+
+    from concurrent.futures import ThreadPoolExecutor
+    wl = set(G.load_whitelist() or [])
+
+    def _one(item):
+        port, nid = item
+        try:
+            r = G.subprocess.run(['curl', '-s', '--max-time', str(timeout),
+                                  '--proxy', f'http://127.0.0.1:{port}',
+                                  EGRESS_SOURCES[0]],
+                                 capture_output=True, text=True, timeout=timeout + 2)
+            body = (r.stdout or '').strip()
+            eg = body if (r.returncode == 0 and body and len(body) <= 64 and ' ' not in body) else None
+        except Exception:
+            eg = None
+        return port, {'node': nid, 'egress': eg, 'ok': bool(eg and eg in wl), 'at': time.time()}
+
+    out = {}
+    with ThreadPoolExecutor(max_workers=min(8, len(mapping))) as ex:
+        for port, info in ex.map(_one, mapping):
+            out[str(port)] = info
+    try:
+        with open(MULTI_PORTS, 'w') as f:
+            json.dump(out, f, indent=1)
+    except Exception:
+        pass
+    good = sum(1 for v in out.values() if v.get('ok'))
+    _log(f'多端口池探活：{good}/{len(out)} 个端口出口在白名单内')
+    return out
+
+
+def _port_node_map():
+    """从生成的配置反推 [(port, node_id)]（进程重启后仍能对齐）。"""
+    try:
+        with open(MULTI_CONFIG) as f:
+            cfg = json.load(f)
+        default_id, nodes = load_nodes_raw()
+        by_addr = {}
+        for nid, n in (nodes or {}).items():
+            by_addr[(n.get('address'), int(n.get('port', 443)))] = nid
+        out = []
+        for ib, ob in zip(cfg.get('inbounds', []), cfg.get('outbounds', [])):
+            vnext = (ob.get('settings') or {}).get('vnext') or []
+            if not vnext:
+                continue
+            key = (vnext[0].get('address'), int(vnext[0].get('port', 443)))
+            nid = by_addr.get(key)
+            if nid:
+                out.append((ib['port'], nid))
+        return out
+    except Exception:
+        return []
+
+
+def fast_switch(exclude_port=None, force_probe=False):
+    """毫秒级换端口：从「实测出口在白名单内」的端口里挑一个（避开 exclude_port）。
+
+    返回 (port, egress, node_id) 或 (None, None, None)。纯内存挑选（探活走缓存），
+    只有缓存缺失 / 过期 / 全部不可用时才真去探活（约 2s）。
+    """
+    mapping = start_multi()
+    if not mapping:
+        return None, None, None
+    ports = probe_ports(mapping, force=force_probe)
+    cands = [(int(p), v) for p, v in ports.items()
+             if v.get('ok') and v.get('egress') and (exclude_port is None or int(p) != int(exclude_port))]
+    if not cands:
+        if not force_probe:
+            return fast_switch(exclude_port=exclude_port, force_probe=True)
+        return None, None, None
+    cands.sort(key=lambda kv: kv[0])
+    port, info = cands[0]
+    return port, info.get('egress'), info.get('node')
 
 
 if __name__ == '__main__':

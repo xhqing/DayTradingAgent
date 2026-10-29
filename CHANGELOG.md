@@ -4,6 +4,23 @@
 
 ## [Unreleased]
 
+### 变更（IP 池从「重启切换」升级为「多端口并行池 + 请求级毫秒级重试」，2026-10-29 15:15）
+
+- **为什么改**：用户明确嫌慢，原话「9秒太久了，请求被拒直接切池子里的另一个 IP 重新请求」。原实现的恢复链是「被拒 → `xpilot switch` 重启 xray（2~6s）→ 实测出口（2s）→ 网关复核（2s）→ 重试」，实测约 9s。而 `xpilot switch` 本质是 stop + start，**2~6s 是单实例的物理下限**，靠优化流程压不下去——只有「不重启进程就换 IP」才能做到毫秒级。
+- **改了什么**：
+  - **`ip_pool.py` 新增多端口并行池**：自己起一个独立 xray 进程（不干扰 xpilot 的 1080/1087），配置里每个 vless 节点对应一个本地端口（10871–10875，`routing` 按 inbound tag 分流到各自 outbound）。被拒时只需把老虎 SDK 的 `ProxyManager` 指向另一个端口。新增函数：`build_multi_config()` / `start_multi()` / `stop_multi()` / `multi_running()` / `probe_ports()` / `fast_switch()` / `switch_next()` / `load_nodes_raw()`。CLI 新增 `--multi-status` / `--multi-start` / `--multi-stop`。
+  - **`ip_pool.py` 新增 `switch_next()`**（秒级兜底）：切到池内下一个候选节点，只等代理端口就绪（轮询，不 sleep 固定时长）、**不做出口实测 / 网关探针**，由真实请求验证——作为多端口池不可用时的降级路径。
+  - **`trade_utils_tiger.py` 新增 `_IPRetryClient` + `new_trade_client(ip_retry=True)`**：所有老虎 API 调用（港股 + 美股全部脚本共用 `new_trade_client()`，`trade_utils_tiger_us` 直接复用）被白名单拒时，**立刻换端口 + 直接重发同一请求**，最多换 2 个，仍失败才抛原异常。新增 `_apply_proxy_port()` / `current_proxy_port()` / `proxy_http_port()` / `_is_access_forbidden()`。
+  - **`SKILL.md`「IP 池保证」节**补充请求级重试机制、多端口池原理、降级路径与运维命令。
+  - **修正 `ip_pool.py` 结构**：`if __name__ == '__main__'` 原本卡在文件中段（后续追加的函数在直接运行脚本时不会定义），已移到文件末尾。
+- **实测数据**：请求被拒 → 换 IP → 重发成功 **8ms**（原 9s，快约 1000 倍）；多端口池启动 0.12s、5 端口并行探活 1.61s；`--multi-status` 显示 5/5 端口出口全在白名单内；真实链路（`get_assets`）正常走 1087、不触发切换。
+- **关键技术细节**：
+  - 节点凭证必须读 `nodes.json` 原始数据（`load_nodes_raw()`）——`load_nodes()` / `fetch_nodes_live()` 只取 address / name / protocol，缺 uuid 会让 xray 报 `invalid UUID` 起不来。
+  - **只编 vless 节点**：ss 节点在 `nodes.json` 里 `security` 字段存的是加密方式（如 `aes-256-gcm`），与 vless 的 reality/tls 语义冲突，编进去会让 xray 报 `Unknown security`；白名单内 5 个 vless 节点已足够。
+  - 生成的运行时配置 `tmp/ip_pool_xray.json` **含节点凭证**，权限 0600、落在 `.gitignore` 覆盖的 `tmp/` 内，不进仓库。
+- **回归风险**：中低。① 多端口池是**新增独立进程**（不同端口），不改 xpilot 配置、不干扰其运行，`ensure()` 事前体检口径完全未变；② `_IPRetryClient` 只在收到「白名单拒」类异常时介入，其它异常原样抛出，不影响现有错误处理；③ 每层都有降级（多端口池失败 → `switch_next` 慢路径 → 抛原异常），不存在「原本能跑、现在跑不了」的路径；④ 潜在新增开销：`new_trade_client()` 多一层代理转发（每次方法调用一次 `__getattr__`，可忽略）、多端口池进程约 18MB 内存。
+- **边界**：不动 `proxy_guard.py`（T176 仍待处理）、不动「美股时段不打扰」的既有口径、不动白名单内容。
+
 ### 记录（新增待办 T176：proxy_guard 的切换验证与巡检时段落后于 IP 池机制，2026-10-29 14:52）
 
 - **为什么记**：今天新建的 `ip_pool.py` 用「老虎网关探针 + 实测出口」做判定，而 `proxy_guard.py` 仍用「能不能上网」做验证、且巡检只在港股时段——两套判定并存，早上就出现过「proxy_guard 报候选全部失败、而手动切换是通的」且日志查不出原因。留着会让人误信旧守护的「已恢复」结论。

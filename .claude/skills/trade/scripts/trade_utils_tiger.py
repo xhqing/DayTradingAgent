@@ -373,10 +373,138 @@ def print_masked_live_account():
     }))
 
 
-def new_trade_client(config=None):
-    """创建老虎 TradeClient（下单 / 持仓 / 资产 / 订单查询）。"""
+# 当前 SDK 代理所指向的本地端口（1087 = xpilot 主实例；10871+ = 多端口池端口）。
+# 用于「请求被拒 → 换端口重发」时知道该避开哪个端口。
+_CURRENT_PROXY_PORT = None
+
+
+def proxy_http_port():
+    """xpilot 主实例的 HTTP 入站端口（从 config.json 的 proxy.http_proxy 解析，默认 1087）。"""
+    try:
+        import json as _j
+        _p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.json')
+        with open(_p) as f:
+            url = _j.load(f).get('proxy', {}).get('http_proxy', 'http://127.0.0.1:1087')
+        return int(str(url).split(':')[-1])
+    except Exception:
+        return 1087
+
+
+def _apply_proxy_port(port):
+    """把老虎 SDK 的 REST + WS 代理都指向本地某个端口（毫秒级，不重启任何进程）。
+
+    这是「多端口并行池」的落点：池里每个端口固定走一个白名单内节点，被白名单拒时只需换
+    端口（重建 ProxyManager），比 `xpilot switch` 重启 xray 快两个数量级（实测 109ms vs 6s）。
+    """
+    global _CURRENT_PROXY_PORT
+    url = f'http://127.0.0.1:{port}'
+    import urllib3
+    from tigeropen.common.util import web_utils
+    web_utils.http_pool = urllib3.ProxyManager(url)
+    apply_socket_proxy(url)
+    _CURRENT_PROXY_PORT = int(port)
+    return url
+
+
+def current_proxy_port():
+    """当前 SDK 代理端口（int 或 None）。从实际 PoolManager 反查，避免多处赋值不同步。"""
+    if _CURRENT_PROXY_PORT is not None:
+        return _CURRENT_PROXY_PORT
+    try:
+        from tigeropen.common.util import web_utils
+        p = getattr(web_utils.http_pool, 'proxy', None)
+        if p:
+            return int(str(p).split(':')[-1])
+    except Exception:
+        pass
+    return None
+
+
+def _is_access_forbidden(exc):
+    """异常是否为「IP 不在白名单」类拒绝（老虎网关在连接层就拦，报文固定含这两个短语）。"""
+    msg = str(exc).lower()
+    return ('access forbidden' in msg) or ('not in ip whitelist' in msg)
+
+
+class _IPRetryClient:
+    """老虎 TradeClient 的 IP 池重试代理（2026-10-29 用户立）。
+
+    用户原话：「9秒太久了，请求被拒直接切池子里的另一个 IP 重新请求。」
+
+    做法：给 client 的每个方法套一层——调用被「白名单拒」时，立刻切到池内下一个节点
+    （`ip_pool.switch_next()`，只等端口就绪、不做探测验证），然后**直接重发同一个调用**；
+    重发成功即恢复（真实请求本身就是最强验证）。最多换 2 个节点，仍失败则抛原异常，
+    由脚本按正常失败路径报错（不吞错、不静默重试成大坑）。
+
+    为什么包在 client 层而不是改 8 个下单脚本：`new_trade_client()` 是港股 / 美股全部
+    交易脚本的唯一入口（`trade_utils_tiger_us` 直接 `new_trade_client = T.new_trade_client`），
+    在这里包一层，开仓 / 平仓 / 移损 / 移盈 / 查持仓 / 查订单**全部自动获得该能力**，
+    且规则只有单一源。
+    """
+
+    MAX_SWITCHES = 2
+
+    def __init__(self, client):
+        object.__setattr__(self, '_client', client)
+
+    def __getattr__(self, name):
+        attr = getattr(object.__getattribute__(self, '_client'), name)
+        if not callable(attr):
+            return attr
+
+        def _wrapped(*args, **kwargs):
+            try:
+                return attr(*args, **kwargs)
+            except Exception as e:
+                if not _is_access_forbidden(e):
+                    raise
+                last_exc = e
+                for _ in range(type(self).MAX_SWITCHES):
+                    try:
+                        import ip_pool as _pool
+                    except Exception:
+                        raise last_exc
+                    cur = current_proxy_port()
+                    # ① 快路径（毫秒级）：多端口并行池里换一个端口
+                    port, eg, node = _pool.fast_switch(exclude_port=cur)
+                    if port:
+                        _apply_proxy_port(port)
+                        print(f"🔄 IP 池：请求被白名单拒 → 换到端口 {port}"
+                              f"（出口 {eg}），重发请求", file=sys.stderr)
+                    else:
+                        # ② 慢路径（秒级兜底）：多端口池不可用时重启 xpilot 切节点
+                        ok, node2, cost = _pool.switch_next(quiet=True)
+                        if not ok:
+                            print("🚨 IP 池：当前出口被白名单拒，且池内节点全部切换失败 —— "
+                                  "需人工加白（老虎开发者页）或 xpilot update 同步订阅",
+                                  file=sys.stderr)
+                            raise last_exc
+                        _apply_proxy_port(proxy_http_port())
+                        print(f"🔄 IP 池：请求被白名单拒 → 已重启 xpilot 切到 {node2}"
+                              f"（{cost}s），重发请求", file=sys.stderr)
+                    try:
+                        return attr(*args, **kwargs)
+                    except Exception as e2:
+                        if not _is_access_forbidden(e2):
+                            raise
+                        last_exc = e2
+                raise last_exc
+
+        return _wrapped
+
+    def __setattr__(self, name, value):
+        setattr(object.__getattribute__(self, '_client'), name, value)
+
+
+def new_trade_client(config=None, ip_retry=True):
+    """创建老虎 TradeClient（下单 / 持仓 / 资产 / 订单查询）。
+
+    `ip_retry=True`（默认）时返回带「被白名单拒 → 换池内 IP 重发」能力的代理对象；
+    传 False 可取到裸 client（排查 / 需要精确观察原始异常时用）。
+    """
     from tigeropen.trade.trade_client import TradeClient
-    return TradeClient(config if config is not None else load_config())
+    tc = TradeClient(config if config is not None else load_config())
+    return _IPRetryClient(tc) if ip_retry else tc
 
 
 def new_quote_client(config=None):
