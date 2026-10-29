@@ -576,12 +576,12 @@ def build_multi_config(nodes=None):
     """
     whitelist = G.load_whitelist() or []
     if not whitelist:
-        return []
+        return [], False
     # 必须用 nodes.json 原始数据：实查清单不含 uuid / reality 凭证，生成 outbound 会因
     # UUID 为空直接起不来（2026-10-29 实测报 "invalid UUID"）。
     default_id, nodes = load_nodes_raw()
     if not nodes:
-        return []
+        return [], False
 
     # 优先用「address 在白名单内」的节点（实测该服务商 address == 出口 IP）；剩下的也编进去，
     # 反正后面探活会按「实测出口 ∈ 白名单」筛选，编多不亏。
@@ -606,21 +606,33 @@ def build_multi_config(nodes=None):
         mapping.append((port, nid))
 
     if not mapping:
-        return []
+        return [], False
     cfg = {'log': {'loglevel': 'warning'},
            'inbounds': inbounds,
            'outbounds': outbounds + [{'tag': 'direct', 'protocol': 'freedom'},
                                     {'tag': 'block', 'protocol': 'blackhole'}],
            'routing': {'domainStrategy': 'AsIs', 'rules': rules}}
+    txt = json.dumps(cfg, indent=1)
+    # 关键（2026-10-29 修）：**内容没变就不要重写文件**。原先每次调用都写一遍，
+    # mtime 随之刷新，于是 start_multi 的「配置文件比进程新 → 重启」判断永远为真，
+    # 造成每次 fast_switch 都重启一次 xray、探活全打在重启窗口里返回 0/5，
+    # 最后白白降级成秒级慢路径（实测 5.36s 而不是毫秒级）。
+    changed = True
     try:
-        os.makedirs(TMP_DIR, exist_ok=True)
-        with open(MULTI_CONFIG, 'w') as f:
-            json.dump(cfg, f, indent=1)
-        os.chmod(MULTI_CONFIG, 0o600)   # 含节点凭证，仅本用户可读
-    except Exception as e:
-        _log(f'多端口池：生成配置失败 {e}')
-        return []
-    return mapping
+        with open(MULTI_CONFIG) as f:
+            changed = (f.read() != txt)
+    except Exception:
+        changed = True
+    if changed:
+        try:
+            os.makedirs(TMP_DIR, exist_ok=True)
+            with open(MULTI_CONFIG, 'w') as f:
+                f.write(txt)
+            os.chmod(MULTI_CONFIG, 0o600)   # 含节点凭证，仅本用户可读
+        except Exception as e:
+            _log(f'多端口池：写配置失败 {e}')
+            return [], False
+    return mapping, changed
 
 
 def _pid_alive(pid):
@@ -662,7 +674,7 @@ def start_multi(force=False):
     懒加载设计：只在真正需要（fast_switch / 启动时）才拉起，不常驻 cron。
     配置按 nodes.json 的 mtime 判断是否过期（订阅更新 → 重新生成 + 重启）。
     """
-    mapping = build_multi_config()
+    mapping, changed = build_multi_config()
     if not mapping:
         return []
     xray = _xray_bin()
@@ -670,14 +682,9 @@ def start_multi(force=False):
         _log('多端口池：找不到 xray 可执行文件，回退单实例切换')
         return []
 
-    need_restart = force or not multi_running()
-    if not need_restart:
-        # 配置比进程新（订阅更新过）→ 重启吃新配置
-        try:
-            if os.path.getmtime(MULTI_CONFIG) > os.path.getmtime(MULTI_PID):
-                need_restart = True
-        except Exception:
-            need_restart = True
+    # 只在「进程没在跑」或「配置内容真的变了」时才重启——判断依据是配置内容是否变化
+    # （build_multi_config 的 changed 返回值），不是 mtime（见那里关于 2026-10-29 bug 的注释）。
+    need_restart = force or changed or not multi_running()
 
     if need_restart:
         stop_multi()
@@ -738,17 +745,25 @@ def probe_ports(mapping=None, force=False, timeout=EGRESS_TIMEOUT):
     from concurrent.futures import ThreadPoolExecutor
     wl = set(G.load_whitelist() or [])
 
-    def _one(item):
-        port, nid = item
+    def _probe_once(port, timeout):
         try:
             r = G.subprocess.run(['curl', '-s', '--max-time', str(timeout),
                                   '--proxy', f'http://127.0.0.1:{port}',
                                   EGRESS_SOURCES[0]],
                                  capture_output=True, text=True, timeout=timeout + 2)
             body = (r.stdout or '').strip()
-            eg = body if (r.returncode == 0 and body and len(body) <= 64 and ' ' not in body) else None
+            return body if (r.returncode == 0 and body and len(body) <= 64 and ' ' not in body) else None
         except Exception:
-            eg = None
+            return None
+
+    def _one(item):
+        port, nid = item
+        eg = _probe_once(port, timeout)
+        if not eg:
+            # 首次失败再试一次（xray 刚重启完、与节点握手尚未就绪时容易空返）；
+            # 只重试一次、间隔 0.4s，避免把探活拖成秒级。
+            time.sleep(0.4)
+            eg = _probe_once(port, timeout)
         return port, {'node': nid, 'egress': eg, 'ok': bool(eg and eg in wl), 'at': time.time()}
 
     out = {}
@@ -797,12 +812,49 @@ def fast_switch(exclude_port=None, force_probe=False):
     mapping = start_multi()
     if not mapping:
         return None, None, None
-    ports = probe_ports(mapping, force=force_probe)
+
+    # ① 纯缓存优先（毫秒级）：只要之前探过、且不是刚失败的那个端口，直接返回。
+    #    刻意**不在这里判断 TTL**——探活要 1.6s，而端口→节点映射是固定的，缓存里的
+    #    「该端口出口在白名单内」大概率仍成立；真不成立时重发会被拒，下一轮自然会
+    #    排除它并强制重探，代价是一次失败的请求，远小于每次都等 1.6s。
+    ports = {}
+    try:
+        with open(MULTI_PORTS) as f:
+            ports = json.load(f)
+    except Exception:
+        ports = {}
+
     cands = [(int(p), v) for p, v in ports.items()
              if v.get('ok') and v.get('egress') and (exclude_port is None or int(p) != int(exclude_port))]
+
+    # ② 从没探过（缓存文件不存在）→ 按「端口对应节点的 address 在白名单内」推断，
+    #    仍然毫秒级返回。依据：该服务商的节点入口地址与实测出口 IP 一致（本文件
+    #    「判定三层」第 2 条已说明必须实测，这里的推断只是**首次**的临时兜底，
+    #    一旦真出过问题，缓存就建立起来了，后续都走实测数据）。
+    if not cands and force_probe is False and not os.path.exists(MULTI_PORTS):
+        try:
+            wl = set(G.load_whitelist() or [])
+            _, raw_nodes = load_nodes_raw()
+            for port, nid in mapping:
+                if exclude_port is not None and int(port) == int(exclude_port):
+                    continue
+                addr = (raw_nodes.get(nid) or {}).get('address')
+                if addr and addr in wl:
+                    return port, addr, nid
+        except Exception:
+            pass
     if not cands:
         if not force_probe:
-            return fast_switch(exclude_port=exclude_port, force_probe=True)
+            # 强制重探一次（缓存过期 / 全部端口都失败过 / 刚从 assume 失败回来）。
+            # 注意这里**不再进 start_multi**，避免在重启窗口里重复探活——2026-10-29 实测过这个坑。
+            ports = probe_ports(mapping, force=True)
+            cands = [(int(p), v) for p, v in ports.items()
+                     if v.get('ok') and v.get('egress')
+                     and (exclude_port is None or int(p) != int(exclude_port))]
+            if cands:
+                cands.sort(key=lambda kv: kv[0])
+                port, info = cands[0]
+                return port, info.get('egress'), info.get('node')
         return None, None, None
     cands.sort(key=lambda kv: kv[0])
     port, info = cands[0]
