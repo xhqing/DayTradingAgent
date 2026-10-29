@@ -110,13 +110,15 @@ def proxy_url():
         return 'http://127.0.0.1:1087'
 
 
-def probe_egress(quiet=True):
+def probe_egress(quiet=True, port=None):
     """实测当前代理出口 IP。返回 (ip_or_None, detail)。
 
-    为什么必须实测：老虎按「实际出口 IP」判白名单；nodes.json 的 address 只是订阅里写的
-    入口地址，实际出口可能因服务商 NAT / 多入口 / 负载均衡而不同。实测值才是判定依据。
+    为什么必须实测：老虎按「实际出口 IP」判白名单；订阅里的 address 只是入口地址，实际
+    出口可能因服务商 NAT / 多入口 / 负载均衡而不同。实测值才是判定依据。
+
+    `port` 指定时按该本地端口实测（换端口后用它验证新端口），默认用 config 配置的端口。
     """
-    px = proxy_url()
+    px = f'http://127.0.0.1:{port}' if port else proxy_url()
     for src in EGRESS_SOURCES:
         try:
             r = G.subprocess.run(
@@ -192,23 +194,33 @@ def _save_state(res):
 
 
 def ensure(account='paper', quiet=False, allow_switch=True, budget=ENSURE_BUDGET,
-           quick=False):
-    """保证老虎链路可用：出口 IP 落在白名单池内、且老虎网关放行；不可用则池内切换。
+           quick=False, apply_port=None):
+    """保证老虎链路可用：出口 IP 落在老虎白名单池内、且老虎网关放行；不可用则换端口。
+
+    **2026-10-29 重构（用户定位纠正）**：与 xpilot 彻底解耦——
+      - IP 池来自本项目自己拉的 JMS 订阅（`jms_pool`），不读 xpilot 的 nodes.json；
+      - 「切换」= 在**本项目自己起**的多端口池里换一个本地端口（10871+），毫秒级，
+        不重启任何进程、不调 `xpilot switch`、不碰 xpilot 的任何配置；
+      - 换完端口后由 `apply_port` 回调把老虎 SDK 的 ProxyManager 指过去（调用方注入，
+        这样本模块不必知道 SDK 的存在）。
 
     返回 dict：
       ok        = True/False（True = 现在可以正常调老虎 API）
-      action    = 'native'（本来就可用）/ 'switched'（已切到池内另一节点）/ 'noop' / 'failed'
+      action    = 'native' / 'switched'（已换到池内另一端口）/ 'cached' / 'failed'
       egress    = 实测出口 IP（可能 None）
       in_pool   = 出口是否在本地白名单镜像内（None = 没测出来）
-      node      = 当前节点 id（切换后为新节点）
-      reason    = 失败原因（ok=False 时）
-      tried     = 已尝试的候选节点
+      proxy_port= 建议使用的本地代理端口（调用方应把 SDK 指到这个端口）
+      node      = 当前节点 id
+      whitelist_gap = 与 JMS 订阅池比对的结果（in_sync / missing_in_whitelist 等），
+                  这是本项目的核心监护职责：不一致就提醒用户去老虎页加白
+      reason    = 失败原因
+      tried     = 已尝试的端口
       elapsed   = 耗时（秒）
-      mirror_stale = True 表示「老虎认、但本地镜像里没有这个 IP」→ 该去补镜像（不是故障）
+      mirror_stale = True 表示「老虎认、但本地镜像里没有这个 IP」→ 该去补镜像
     """
     t0 = time.time()
 
-    # 快速路径：TTL 内缓存且 ok → 直接放行（下单前置走这条，省掉 3~5s 实检）
+    # 快速路径：TTL 内缓存且 ok → 直接放行（下单前置走这条，省掉实检）
     if quick:
         st = _load_state(QUICK_TTL)
         if st and st.get('ok'):
@@ -217,7 +229,8 @@ def ensure(account='paper', quiet=False, allow_switch=True, budget=ENSURE_BUDGET
             return st
 
     out = {'ok': False, 'action': 'failed', 'egress': None, 'in_pool': None,
-           'node': None, 'reason': None, 'tried': [], 'elapsed': 0.0, 'mirror_stale': False}
+           'proxy_port': None, 'node': None, 'whitelist_gap': None, 'reason': None,
+           'tried': [], 'elapsed': 0.0, 'mirror_stale': False}
 
     whitelist = G.load_whitelist()
     if not whitelist:
@@ -226,99 +239,95 @@ def ensure(account='paper', quiet=False, allow_switch=True, budget=ENSURE_BUDGET
         return out
     wl_set = set(whitelist)
 
-    default_id, nodes = G.fetch_nodes_live()
-    if not nodes:
-        default_id, nodes = G.load_nodes()
-    if not nodes:
-        out['reason'] = 'no_nodes（xpilot node list 与 nodes.json 都取不到）'
+    # ① 确保本项目自己的端口池在跑（节点源 = JMS 订阅），并做一次「JMS 池 ↔ 白名单」比对
+    try:
+        import jms_pool as _J
+        _jms = _J.refresh()
+        if _jms.get('ok') and _jms.get('ips'):
+            out['whitelist_gap'] = _J.compare(_jms['ips'], whitelist)
+    except Exception:
+        pass
+
+    mapping = start_multi()
+    if not mapping:
+        out['reason'] = ('no_proxy_pool（xray 不可用或 JMS 订阅取不到节点）——'
+                         '交易链路无法建立境外出口')
+        _log('ensure 失败：' + out['reason'])
         out['elapsed'] = round(time.time() - t0, 2)
         return out
-    out['node'] = default_id
 
-    egress, eg_detail = probe_egress()
+    # ② 实测当前出口 + 老虎网关
+    egress, _eg_detail = probe_egress()
     state, detail = probe_tiger(account)
     out['egress'] = egress
     out['in_pool'] = (egress in wl_set) if egress else None
+    cur_port = None
+    try:
+        cur_port = int(proxy_url().split(':')[-1])
+    except Exception:
+        pass
+    out['proxy_port'] = cur_port
 
     if not quiet:
-        G._print(f'🌐 IP 池检查：当前出口 {egress or "未测出"}'
-                 f'（{"在" if out["in_pool"] else "不在"}池内）| 老虎网关 {state}')
+        G._print(f'🌐 IP 池检查：出口 {egress or "未测出"}'
+                 f'（{"在" if out["in_pool"] else "不在"}白名单）| 老虎网关 {state}')
 
-    # ── 情况 A：老虎放行 → 可用，不需要动（哪怕本地镜像里没有这个 IP）──────────────
-    # 本地白名单镜像是「用户点已添加」同步来的，可能滞后于老虎页真实配置；此时切节点纯属
-    # 自伤（白白断网几秒）。所以以网关探针为最终真相，镜像滞后只做提示。
+    # ── 情况 A：老虎放行 → 可用（哪怕本地镜像滞后）──────────────────────────
     if state == 'ok':
         out['ok'] = True
         out['action'] = 'native'
         if out['in_pool'] is False:
             out['mirror_stale'] = True
-            _log(f'老虎放行但本地镜像无此 IP（出口 {egress}）—— 镜像滞后，不切节点；'
+            _log(f'老虎放行但本地镜像无此 IP（出口 {egress}）—— 镜像滞后，不换端口；'
                  f'建议补 tiger_whitelist 镜像')
             if not quiet:
-                G._print('  ℹ️ 老虎实际放行（本地白名单镜像滞后），保持当前节点不切换')
+                G._print('  ℹ️ 老虎实际放行（本地白名单镜像滞后），保持当前端口不切换')
         out['elapsed'] = round(time.time() - t0, 2)
         _save_state(out)
         return out
 
-    # ── 情况 B：被白名单拒 / 连不通 → 池内切换 ───────────────────────────────
+    # ── 情况 B：被拒 / 连不通 → 在本项目端口池内换端口 ──────────────────────
     if not allow_switch:
         out['reason'] = f'tiger={state}（{detail}）；allow_switch=False 不切换'
         out['elapsed'] = round(time.time() - t0, 2)
         return out
 
-    cands = pool_candidates(whitelist, nodes, exclude={default_id} if default_id else set())
-    if not cands:
-        out['reason'] = (f'tiger={state}；池内无可切节点（白名单 {len(wl_set)} IP 里'
-                         f'没有能对应节点的）')
-        _log(f'ensure 失败：{out["reason"]}')
-        out['elapsed'] = round(time.time() - t0, 2)
-        return out
-
     deadline = t0 + budget
-    for cand in cands:
-        if time.time() > deadline:
-            out['reason'] = f'预算用尽（{budget}s）—— 已试 {len(out["tried"])}/{len(cands)} 个候选'
+    while time.time() < deadline:
+        port, eg, nid = fast_switch(exclude_port=cur_port,
+                                    force_probe=bool(out['tried']))
+        if not port:
             break
-        addr = (nodes.get(cand) or {}).get('address')
-        out['tried'].append(cand)
+        out['tried'].append(port)
         if not quiet:
-            G._print(f'  🔄 池内切换：{default_id} → {cand}（{addr}）')
-        ok_switch = False
-        try:
-            r = G.subprocess.run(['xpilot', 'switch', cand], capture_output=True,
-                                 text=True, timeout=SWITCH_TIMEOUT)
-            ok_switch = (r.returncode == 0)
-            if not ok_switch and not quiet:
-                G._print(f'    ❌ switch 返回 {r.returncode}: {(r.stderr or "")[:120]}')
-        except Exception as e:
-            if not quiet:
-                G._print(f'    ❌ switch 异常: {e}')
-        if not ok_switch:
-            continue
-
-        time.sleep(SWITCH_SETTLE)
-        e2, _ = probe_egress()
+            G._print(f'  🔄 池内换端口：{cur_port} → {port}（预期出口 {eg or "待测"}）')
+        if apply_port:
+            apply_port(port)
+        out['proxy_port'] = port
+        out['node'] = nid
+        e2, _ = probe_egress(port=port)
         st2, d2 = probe_tiger(account)
         out['egress'] = e2
         out['in_pool'] = (e2 in wl_set) if e2 else None
         if st2 == 'ok':
             out['ok'] = True
             out['action'] = 'switched'
-            out['node'] = cand
             if out['in_pool'] is False:
                 out['mirror_stale'] = True
-            _log(f'ensure 已恢复：切到 {cand}（{addr}），实测出口 {e2}，网关 ok')
+            _log(f'ensure 已恢复：换到端口 {port}（节点 {nid}），实测出口 {e2}，网关 ok')
             if not quiet:
-                G._print(f'    ✅ 已切换并验证：出口 {e2}，老虎网关放行')
+                G._print(f'    ✅ 已换到端口 {port} 并验证：出口 {e2}，老虎网关放行')
             out['elapsed'] = round(time.time() - t0, 2)
             _save_state(out)
             return out
         if not quiet:
-            G._print(f'    ⚠️ 切换后仍不可用：出口 {e2}，网关 {st2}（{d2[:80]}）')
+            G._print(f'    ⚠️ 该端口仍不可用：出口 {e2}，网关 {st2}（{d2[:80]}）')
+        cur_port = port
 
     out['ok'] = False
     out['action'] = 'failed'
-    out['reason'] = out['reason'] or (f'池内候选全部失败（试了 {len(out["tried"])} 个）')
+    out['reason'] = out['reason'] or (f'池内端口全部失败（试了 {len(out["tried"])} 个）——'
+                                      f'很可能 JMS 池里有 IP 尚未在老虎白名单内')
     _log(f'ensure 失败：{out["reason"]}；最后出口 {out["egress"]}')
     out['elapsed'] = round(time.time() - t0, 2)
     return out
@@ -506,7 +515,8 @@ def switch_next(quiet=True, exclude=None):
 # switch_next()（慢路径、重启 xpilot），功能不丢、只是慢。
 # ══════════════════════════════════════════════════════════════════════════════
 
-MULTI_BASE_PORT = 10871          # 多端口池起始端口（10871..10871+N-1），避开 xpilot 的 1080/1087
+MULTI_BASE_PORT = 10871          # 多端口池 http 起始端口（10871..10871+N-1）
+SOCKS_PORT_OFFSET = 10           # socks 端口 = http 端口 + 10（10881..10885），同节点同出口
 MULTI_CONFIG = os.path.join(TMP_DIR, 'ip_pool_xray.json')   # 生成的 xray 配置（含节点凭证 → 必须留在 tmp/）
 MULTI_PID = os.path.join(TMP_DIR, 'ip_pool_xray.pid')
 MULTI_LOG = os.path.join(TMP_DIR, 'ip_pool_xray.log')
@@ -584,10 +594,18 @@ def build_multi_config(nodes=None):
     whitelist = G.load_whitelist() or []
     if not whitelist:
         return [], False
-    # 必须用 nodes.json 原始数据：实查清单不含 uuid / reality 凭证，生成 outbound 会因
-    # UUID 为空直接起不来（2026-10-29 实测报 "invalid UUID"）。
-    default_id, nodes = load_nodes_raw()
+    # 节点源 = 本项目自己拉取的 JMS 订阅（2026-10-29 用户定：与 xpilot 彻底解耦）。
+    # 订阅里的字段（protocol/address/port/uuid/flow/security/servername/reality_*）
+    # 与 _node_outbound() 期望的完全一致，所以代理配置生成逻辑不用改。
+    try:
+        import jms_pool as _J
+        _r = _J.refresh()
+        nodes = _r['nodes'] if _r.get('ok') else {}
+        default_id = None
+    except Exception:
+        nodes, default_id = {}, None
     if not nodes:
+        _log('多端口池：JMS 订阅取不到节点（详见 jms_pool.py 输出）')
         return [], False
 
     # 优先用「address 在白名单内」的节点（实测该服务商 address == 出口 IP）；剩下的也编进去，
@@ -601,15 +619,22 @@ def build_multi_config(nodes=None):
         if not node.get('address'):
             continue
         port = MULTI_BASE_PORT + i
+        socks_port = port + SOCKS_PORT_OFFSET
         in_tag, out_tag = f'ip-in-{i}', f'ip-out-{i}'
+        # 每个节点开**两个**入站：http（REST 用，urllib3 ProxyManager）与 socks5
+        # （WS 用，socket.create_connection 被 monkeypatch 成走 socks）。原先只有 http，
+        # 导致 WS 链路按「http 端口−7」推导出不存在的 socks 端口而退回直连 → 白名单下被拒。
         inbounds.append({'tag': in_tag, 'listen': '127.0.0.1', 'port': port,
                          'protocol': 'http', 'settings': {}})
+        inbounds.append({'tag': f'{in_tag}-socks', 'listen': '127.0.0.1', 'port': socks_port,
+                         'protocol': 'socks', 'settings': {'auth': 'noauth', 'udp': False}})
         ob = _node_outbound(node)
         if ob is None:          # 非 vless 节点跳过（见 _node_outbound 注释）
             continue
         ob['tag'] = out_tag
         outbounds.append(ob)
-        rules.append({'type': 'field', 'inboundTag': [in_tag], 'outboundTag': out_tag})
+        rules.append({'type': 'field', 'inboundTag': [in_tag, f'{in_tag}-socks'],
+                      'outboundTag': out_tag})
         mapping.append((port, nid))
 
     if not mapping:
@@ -792,7 +817,12 @@ def _port_node_map():
     try:
         with open(MULTI_CONFIG) as f:
             cfg = json.load(f)
-        default_id, nodes = load_nodes_raw()
+        try:
+            import jms_pool as _J
+            _r = _J.refresh()
+            nodes = _r['nodes'] if _r.get('ok') else {}
+        except Exception:
+            nodes = {}
         by_addr = {}
         for nid, n in (nodes or {}).items():
             by_addr[(n.get('address'), int(n.get('port', 443)))] = nid

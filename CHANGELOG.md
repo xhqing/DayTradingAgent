@@ -16,6 +16,25 @@
 - **回归风险**：无——纯新增模块，尚未被任何现有脚本调用（接线要等订阅链接到位、实测通过后再做）。
 - **边界**：本模块只管「拉取 / 解析 / 比对 / 提醒」；真正把代理配置换成 JMS 节点、以及删掉 `xpilot switch` / `test` 调用，属下一步。
 
+### 变更（主链路与 xpilot 彻底解耦：数据源改 JMS 订阅、代理口改自有端口，2026-10-29 16:30）
+
+- **为什么改**：用户定位纠正后，用户明确两点选择——① JMS IP 池由**本项目自己拉订阅链接解析**；② **连代理口也不用 xpilot 的**，本项目自己起独立代理。原实现虽已自起 xray，但节点数据仍读 `~/.config/xpilot/nodes.json`、交易脚本代理口仍指 xpilot 的 1087、`ensure()` 失败时仍调 `xpilot switch`。
+- **改了什么**：
+  - **数据源**：`ip_pool.build_multi_config()` / `_port_node_map()` 的节点来源从 `load_nodes_raw()`（xpilot nodes.json）改为 `jms_pool.refresh()`（本项目自己拉的 JMS 订阅）。
+  - **代理口**：`config.json` / `config.example.json` 的 `proxy.http_proxy` 由 `127.0.0.1:1087`（xpidot 的）改为 `127.0.0.1:10871`（本项目自己的池首端口）。
+  - **WS 链路**：多端口池每个节点由「只开 http 入站」改为「**http + socks5 双入站**」（socks 端口 = http + 10，即 10881–10885，同一节点同一出口）；`_apply_proxy_port()` 同时把 SDK 的 REST（`ProxyManager`）与 WS（`socket.create_connection`）指到对应端口。原先 WS 会按「http 端口 −7」的 xpilot 老约定推导出不存在的 10864 而退回直连（白名单下必被拒）。
+  - **`ensure()` 重写**：去掉全部 `xpilot` 调用；切换方式从「`xpilot switch` 重启 xray（秒级）」改为「在本项目端口池内换一个本地端口（毫秒级）」；新增 `apply_port` 回调参数（由调用方注入，使本模块不必知道 SDK 存在）；新增 `whitelist_gap` 返回字段——即「JMS 池 ↔ 老虎白名单」比对结果，这是本项目的核心监护职责。
+  - **`trade_utils_tiger.apply_proxy()`**：先 `start_multi()` 拉起本项目端口池 → `fast_switch()` 选一个端口 → 让 SDK 指过去；不再使用 xpilot 的 1087。`_IPRetryClient` 的慢路径（重启 xpilot）删除，池内无可用端口时如实报错并提示去老虎页加白。新增「JMS 池与白名单不一致」的提醒输出（待加白几个 / 可清除几个，不打印 IP 原文）。
+  - **`apply_socket_proxy()`**：支持动态更新目标 socks 地址（原先闭包写死端口，换端口后 WS 仍走旧端口）；探测新 socks 端口时改用**未被 patch 的**原始 `create_connection`（用 patch 过的等于拿 socks 连本地 socks 端口，必然失败）。
+  - **`jms_pool.refresh()`**：加 TTL 缓存（600s）——`build_multi_config()` 每次切端口都会调它，不缓存会把切换从 1ms 拖到秒级；实测 JMS 订阅有 **429 限流**，缓存同时充当限流保护与故障兜底。
+- **实测（真实老虎网关，非 mock）**：
+  - 订阅拉取：6 节点 / 6 个 IP，与老虎白名单镜像**完全一致**（协议构成 5 vless+reality + 1 ss）
+  - 用 JMS 订阅重建池：5/5 端口出口全在白名单内、socks 端口（10881/10883/10885）同样可出网
+  - 端到端：REST 走 10871（真实 `get_assets` 1.77s 成功）、WS 走 socks5 10881，无任何警告
+  - 「被拒 → 换端口 → 重发」：换到 10872 且 **WS 目标同步换到 10882**，重发成功，耗时 2.3s（≈ 一次正常请求的固有耗时）
+- **回归风险**：中。改动面覆盖配置、端口约定、WS 链路与 ensure 逻辑，但每层均已端到端实测；HTTP/WS 端口映射用常量 `SOCKS_PORT_OFFSET` 单点定义，避免两处写死不一致。
+- **仍未清理**：`proxy_guard.py`（587 行，被 `monitor_watcher` 在盯盘时调用）仍含 `xpilot node list` / `switch` / `test` 调用与 nodes.json 依赖，属**守护侧**待改造（下一步）。
+
 ### 变更（xray 二进制改为本项目自带，不再借 xpilot 的；架构定位纠正为「独立于 xpilot」，2026-10-29 16:05）
 
 - **为什么改（用户定位纠正，原话要点）**：「本项目不应该和 xpilot 有任何关系，xpilot 是另外一个独立的项目，唯一共同点是都用到 JMS 提供的 IP 池（目前 6 个 IP）。本项目是监测到 JMS 的最新 IP 池和本项目的老虎 IP 白名单 IP 池不一致的时候提供更新老虎白名单 IP 池的提醒，并实时同步本项目的可用 IP 池和老虎白名单 IP 池一致。」进一步确认两点：① JMS IP 池改由**本项目自己拉订阅链接解析**（不经 xpilot）；② **连代理口也不用 xpilot 的**，本项目自己起独立代理。

@@ -195,7 +195,14 @@ def apply_proxy(config):
         # 上线后 WS 直连出口（本地出口）被拒「code=4 access forbidden」（2026-08-17 实录：
         # 白名单 13:05 上线、13:28 后 ws_segment 全部连不上）。此处把 socket.create_connection
         # socks 化，让本进程后续建的 WS 连接也走代理出口（白名单内 IP）。
-        apply_socket_proxy(proxy_url)
+        # WS 链路必须走 socks5：本项目端口池的 socks 端口 = http 端口 + 10
+        # （ip_pool.SOCKS_PORT_OFFSET）。别再传 http:// 让 apply_socket_proxy 去按
+        # 「http−7」xpilot 老约定推导——那条规则在本项目已经不存在了。
+        try:
+            _hp = int(str(proxy_url).split(':')[-1])
+            apply_socket_proxy(f'socks5://127.0.0.1:{_hp + 10}')
+        except Exception:
+            apply_socket_proxy(proxy_url)
     except Exception as e:
         print(f"⚠️ 老虎 SDK 代理启用失败（回退直连；本地直连实盘开仓会被监管类错误码拒）: {e}",
               file=sys.stderr)
@@ -212,23 +219,50 @@ def apply_proxy(config):
     try:
         import ip_pool as _pool
         acct_kind = 'live' if _is_live_account(config) else 'paper'
-        _res = _pool.ensure(account=acct_kind, quiet=True, quick=True)
+
+        # 先把本项目自己的端口池拉起来（节点源 = JMS 订阅），再让 SDK 指到池内一个端口。
+        # 这一步同时替代了原「走 xpilot 的 1087」——本项目与 xpilot 不再有任何关系。
+        mapping = _pool.start_multi()
+        if mapping:
+            port0, _eg, _nid = _pool.fast_switch()
+            if port0:
+                _apply_proxy_port(port0)
+        else:
+            print("🚨 本项目自己的代理池起不来（xray 不可用 / JMS 订阅取不到节点）——"
+                  "交易链路无法建立境外出口。手查：python3 .claude/skills/trade/scripts/"
+                  "ip_pool.py --multi-status", file=sys.stderr)
+
+        _res = _pool.ensure(account=acct_kind, quiet=True, quick=True, apply_port=_apply_proxy_port)
         if not _res.get('ok'):
             print(f"🚨 IP 池不可用（{_res.get('reason')}）→ 正在尝试池内恢复…", file=sys.stderr)
-            _res = _pool.ensure(account=acct_kind, quiet=False, quick=False)
+            _res = _pool.ensure(account=acct_kind, quiet=False, quick=False,
+                                apply_port=_apply_proxy_port)
         _IP_POOL_RESULT = _res
+
+        # 核心监护职责：JMS 最新池 vs 老虎白名单池不一致 → 提醒用户去老虎页加白
+        gap = _res.get('whitelist_gap') or {}
+        if gap and not gap.get('in_sync'):
+            if gap.get('missing_in_whitelist'):
+                print(f"⚠️ JMS 池里有 {len(gap['missing_in_whitelist'])} 个 IP 不在老虎白名单内"
+                      f"（这些节点当前用不了）—— 请去老虎开发者页加白；加白后点面板「已添加」"
+                      f"可同步本地镜像。手查：python3 .claude/skills/trade/scripts/jms_pool.py",
+                      file=sys.stderr)
+            if gap.get('stale_in_whitelist'):
+                print(f"ℹ️ 老虎白名单里有 {len(gap['stale_in_whitelist'])} 个 IP 已不在 JMS 池内"
+                      f"（拉不到的旧 IP），建议从老虎页清掉", file=sys.stderr)
+
         if _res.get('ok'):
             if _res.get('action') == 'switched':
-                print(f"🔄 IP 池：已自动切到池内节点 {_res.get('node')}（出口 {_res.get('egress')}）",
-                      file=sys.stderr)
+                print(f"🔄 IP 池：已在池内换到端口 {_res.get('proxy_port')}"
+                      f"（出口 {_res.get('egress')}）", file=sys.stderr)
             if _res.get('mirror_stale'):
                 print("ℹ️ 老虎实际放行但本地白名单镜像缺这个 IP——建议补 config.tiger_whitelist 镜像"
                       "（老虎页加白后点面板「已添加」可自动同步）", file=sys.stderr)
         else:
             print(f"🚨 IP 池不可用：{_res.get('reason')}｜出口 {_res.get('egress')} —— "
                   f"老虎 API 极可能被白名单拒（下单 / 平仓 / 查持仓都会失败）。"
-                  f"处置：老虎开发者页加白该 IP，或 xpilot update 同步订阅后重试；"
-                  f"手查 python3 .claude/skills/trade/scripts/ip_pool.py", file=sys.stderr)
+                  f"处置：去老虎开发者页把 JMS 池里的 IP 全部加白，然后重试；"
+                  f"手查 python3 .claude/skills/trade/scripts/jms_pool.py", file=sys.stderr)
     except Exception as e:
         print(f"⚠️ IP 池检查异常（不阻断，但下单可能被白名单拒）: {e}", file=sys.stderr)
 
@@ -264,7 +298,25 @@ def apply_socket_proxy(proxy_url='http://127.0.0.1:1087'):
     已 patch 过则幂等跳过（重复调用不叠加包装）。
     """
     import socket as _socket
+    # 已 patch 过则只**更新目标代理地址**（换端口时必须能改，否则换了 http 端口 WS 还走旧端口）。
+    # 更新前先探一下新 socks 端口，不通就不动——把全局 socket 指到死端口会连累所有连接。
     if getattr(_socket.create_connection, '_tiger_proxy_patched', False):
+        # 探测本地 socks 端口必须用**未被 patch** 的原始 create_connection——用 patch 过的
+        # 那个等于拿 socks 去连本地 socks 端口，必然连接失败（2026-10-29 实测踩到）。
+        _raw = getattr(_socket.create_connection, '_tiger_orig_create', None) or _socket.socket
+        try:
+            hp = proxy_url.split('//')[-1]
+            if _raw is _socket.socket:
+                c = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+                c.settimeout(1.5)
+                c.connect((hp.split(':')[0], int(hp.split(':')[-1])))
+            else:
+                c = _raw((hp.split(':')[0], int(hp.split(':')[-1])), timeout=1.5)
+            c.close()
+            _socket.create_connection._tiger_proxy_target = proxy_url
+        except Exception:
+            print(f"⚠️ 新 socks 端口不通，WS 代理保持原目标（HTTP 已切）: {proxy_url}",
+                  file=sys.stderr)
         return
     import socks
     # 解析 socks 端口
@@ -282,13 +334,20 @@ def apply_socket_proxy(proxy_url='http://127.0.0.1:1087'):
     _orig_create = _socket.create_connection
 
     def _proxied_create(address, timeout=None, source_address=None):
+        # 目标 socks 从函数自身属性动态读取——换端口时 _apply_proxy_port 会更新它，
+        # 闭包写死端口的话「换了 http 端口、WS 还走旧端口」（2026-10-29 修）。
+        tgt = getattr(_proxied_create, '_tiger_proxy_target', f'socks5://{phost}:{socks_port}')
+        th = tgt.split('//')[-1].split(':')[0]
+        tp = int(tgt.split(':')[-1])
         s = socks.socksocket(_socket.AF_INET, _socket.SOCK_STREAM)
-        s.set_proxy(socks.SOCKS5, phost, socks_port)
+        s.set_proxy(socks.SOCKS5, th, tp)
         if timeout:
             s.settimeout(timeout)
         s.connect(address)
         return s
     _proxied_create._tiger_proxy_patched = True
+    _proxied_create._tiger_proxy_target = proxy_url
+    _proxied_create._tiger_orig_create = _orig_create   # 供后续「探测本地 socks 端口」用
     _socket.create_connection = _proxied_create
     print(f"✅ 老虎 WS 链路代理已启用: socks5 {phost}:{socks_port}（socket.create_connection 已 socks 化）",
           file=sys.stderr)
@@ -401,7 +460,9 @@ def _apply_proxy_port(port):
     import urllib3
     from tigeropen.common.util import web_utils
     web_utils.http_pool = urllib3.ProxyManager(url)
-    apply_socket_proxy(url)
+    # WS 链路走 socks5：本项目端口池给每个节点同时开了 socks 入站，端口 = http + 10
+    # （见 ip_pool.SOCKS_PORT_OFFSET）。不能再走 apply_socket_proxy 的「http−7」xpilot 老约定。
+    apply_socket_proxy(f'socks5://127.0.0.1:{int(port) + 10}')
     _CURRENT_PROXY_PORT = int(port)
     return url
 
@@ -472,16 +533,13 @@ class _IPRetryClient:
                         print(f"🔄 IP 池：请求被白名单拒 → 换到端口 {port}"
                               f"（出口 {eg}），重发请求", file=sys.stderr)
                     else:
-                        # ② 慢路径（秒级兜底）：多端口池不可用时重启 xpilot 切节点
-                        ok, node2, cost = _pool.switch_next(quiet=True)
-                        if not ok:
-                            print("🚨 IP 池：当前出口被白名单拒，且池内节点全部切换失败 —— "
-                                  "需人工加白（老虎开发者页）或 xpilot update 同步订阅",
-                                  file=sys.stderr)
-                            raise last_exc
-                        _apply_proxy_port(proxy_http_port())
-                        print(f"🔄 IP 池：请求被白名单拒 → 已重启 xpilot 切到 {node2}"
-                              f"（{cost}s），重发请求", file=sys.stderr)
+                        # 本项目自己的端口池里没有可用端口了 —— 不再有「重启 xpilot」这种
+                        # 兜底（与 xpilot 彻底解耦，2026-10-29）。直接如实报错。
+                        print("🚨 IP 池：当前出口被白名单拒，且本项目端口池内无可用端口 —— "
+                              "请去老虎开发者页为 JMS 池里的 IP 加白；"
+                              "手查 python3 .claude/skills/trade/scripts/jms_pool.py",
+                              file=sys.stderr)
+                        raise last_exc
                     try:
                         return attr(*args, **kwargs)
                     except Exception as e2:

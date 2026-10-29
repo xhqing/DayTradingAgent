@@ -33,6 +33,7 @@
 
 import base64
 import json
+import time
 import os
 import re
 import sys
@@ -390,12 +391,29 @@ def compare(jms_ips=None, whitelist=None):
     }
 
 
-def refresh(cache=True):
+def refresh(cache=True, ttl=600, force=False):
     """一次完整刷新：拉订阅 → 解析 → 返回 {ok, nodes, ips, reason}。
 
-    结果缓存到 `tmp/jms_subscription.cache`（含节点凭证，0600、已 gitignore），
-    拉取失败时用缓存兜底（标记 stale=True），避免订阅源临时不可用导致整条链路瘫痪。
+    结果缓存到 `tmp/jms_subscription.cache`（含节点凭证，0600、已 gitignore）。
+
+    两级缓存策略（2026-10-29 补，性能必需）：
+      ① **TTL 内直接用缓存、不发请求**——`ip_pool.build_multi_config()` 会在每次切端口时
+         调本函数，若每次都拉订阅，切换延迟会从 1ms 涨到秒级。
+      ② 拉取失败时用**过期缓存兜底**（标记 stale=True），避免订阅源临时不可用就让整条
+         交易链路瘫痪。
+
+    `force=True` 强制真拉取（运维排查 / 用户手工刷新时用）。
     """
+    if cache and not force and ttl:
+        cached = _read_cache()
+        if cached:
+            try:
+                age = time.time() - os.path.getmtime(CACHE_PATH)
+            except Exception:
+                age = ttl + 1
+            if age < ttl:
+                return {'ok': True, 'nodes': cached, 'ips': ip_pool_from_nodes(cached),
+                        'reason': f'cache({age:.0f}s)', 'stale': False}
     ok, text, reason = fetch_subscription()
     nodes = parse_subscription(text) if ok else {}
     if nodes:

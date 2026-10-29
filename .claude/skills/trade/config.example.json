@@ -35,8 +35,8 @@
   "proxy": {
     "enabled": true,
     "_comment_enabled": "老虎 SDK 代理总开关(2026-08-14 立;2026-08-23 注释中性化)。老虎 SDK 用 urllib3.PoolManager 发请求、不读 HTTP(S)_PROXY 环境变量,须代码层把 web_utils.http_pool 换成 ProxyManager 才能走代理。背景:券商按指令发出网络环境判定下单是否受理,不合规地域出口下实盘开仓被监管类错误码拒,合规出口实测正常受理(2026-08-14 验证)。代理出口=本机 xpilot(Xray)HTTP 入站口。用途详见本机配置说明。",
-    "http_proxy": "http://127.0.0.1:1087",
-    "_comment_http_proxy": "代理地址,默认本机代理的 HTTP 入站口(如 xpilot/Xray/Clash 的 http 端口)。改端口须与代理软件配置一致。",
+    "http_proxy": "http://127.0.0.1:10871",
+    "_comment_http_proxy": "本项目自己的代理池首个端口(10871-10875,由项目自己的 xray 进程提供)。2026-10-29 起不再使用 xpilot 的 1087。",
     "apply_scope": "live_only",
     "_comment_apply_scope": "代理应用范围: live_only=仅实盘账户走代理(模拟盘无监管限制、直连更快); all=全部走代理; off=全部直连。默认 live_only。",
     "accounts_live_required": false,
