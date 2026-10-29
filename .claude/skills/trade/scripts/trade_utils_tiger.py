@@ -106,6 +106,10 @@ def load_config(props_path=None, account=None):
     return config
 
 
+# IP 池检查结果（apply_proxy 写入、ip_pool_status() 读取）：None = 未检查（直连路径 / 未启用代理）。
+_IP_POOL_RESULT = None
+
+
 def apply_proxy(config):
     """按 skill config.json 的 proxy 节给老虎 SDK 挂代理（2026-08-14 立；2026-08-21 加实盘
     解锁闸——实盘误开防护「会话级解锁 + 网络层物理拒单」的网络层检查点）。
@@ -195,6 +199,52 @@ def apply_proxy(config):
     except Exception as e:
         print(f"⚠️ 老虎 SDK 代理启用失败（回退直连；本地直连实盘开仓会被监管类错误码拒）: {e}",
               file=sys.stderr)
+        return
+
+    # ── IP 池保证（2026-10-29 用户立）──────────────────────────────────────────
+    # 设计口径：「盯盘下单需要自己维护一个可用 IP 池，池里的 IP 就是白名单里的所有 IP；
+    # 池里当前 IP 失效就在池内换，**不能跟着 xpilot 当前节点走**——xpilot 的当前节点随时
+    # 可能被订阅商换成不在白名单的新 IP，人工加白来不及。」
+    # 做法：挂代理后先读缓存快检（--quick，命中缓存 ~0.04s）；不可用再跑完整恢复（含池内
+    # 切换，最多 45s）。以「老虎网关探针」为最终真相、本地白名单镜像只用来挑候选节点。
+    # 失败不阻断脚本（查询类照常跑），但 stderr 明确告知「下不了单」。
+    global _IP_POOL_RESULT
+    try:
+        import ip_pool as _pool
+        acct_kind = 'live' if _is_live_account(config) else 'paper'
+        _res = _pool.ensure(account=acct_kind, quiet=True, quick=True)
+        if not _res.get('ok'):
+            print(f"🚨 IP 池不可用（{_res.get('reason')}）→ 正在尝试池内恢复…", file=sys.stderr)
+            _res = _pool.ensure(account=acct_kind, quiet=False, quick=False)
+        _IP_POOL_RESULT = _res
+        if _res.get('ok'):
+            if _res.get('action') == 'switched':
+                print(f"🔄 IP 池：已自动切到池内节点 {_res.get('node')}（出口 {_res.get('egress')}）",
+                      file=sys.stderr)
+            if _res.get('mirror_stale'):
+                print("ℹ️ 老虎实际放行但本地白名单镜像缺这个 IP——建议补 config.tiger_whitelist 镜像"
+                      "（老虎页加白后点面板「已添加」可自动同步）", file=sys.stderr)
+        else:
+            print(f"🚨 IP 池不可用：{_res.get('reason')}｜出口 {_res.get('egress')} —— "
+                  f"老虎 API 极可能被白名单拒（下单 / 平仓 / 查持仓都会失败）。"
+                  f"处置：老虎开发者页加白该 IP，或 xpilot update 同步订阅后重试；"
+                  f"手查 python3 .claude/skills/trade/scripts/ip_pool.py", file=sys.stderr)
+    except Exception as e:
+        print(f"⚠️ IP 池检查异常（不阻断，但下单可能被白名单拒）: {e}", file=sys.stderr)
+
+
+def _is_live_account(config):
+    """当前 config.account 是否 == accounts.json 的 tiger.account_live。"""
+    try:
+        live_acct = _read_accounts_json_field('tiger', 'account_live')
+        return live_acct is not None and str(config.account) == str(live_acct)
+    except Exception:
+        return False
+
+
+def ip_pool_status():
+    """最近一次 apply_proxy 里 IP 池检查的结果（dict 或 None）——供下单脚本做硬校。"""
+    return _IP_POOL_RESULT
 
 
 def apply_socket_proxy(proxy_url='http://127.0.0.1:1087'):
