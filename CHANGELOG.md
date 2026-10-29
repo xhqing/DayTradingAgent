@@ -2,7 +2,7 @@
 
 本文件记录 DayTradingAgent 每个版本的主要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [Unreleased]
+## [0.7.2] - 2026-10-29
 
 ### 修复（v0.7.1 的多端口池实际未生效——反复重启 + 探活打在重启窗口，实测降级成 5.36s 慢路径，2026-10-29 15:35）
 
