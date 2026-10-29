@@ -104,13 +104,13 @@
 - **工具强制评估**：本条规定无法加脚本硬拦（属认知判断类：建议是否「有统计基础」依赖对建议内容的评估，无机械化判据），按「文档规定必须尽可能配工具强制」第③层「决策时刻工具在场打印」落地——trading-strategy.md「护栏的统计依据与撤销」节已固化该原则，复盘 / 决策时读该节即触发提醒。
 - **边界**：本条管「交易逻辑建议」的提出；数据获取、行情分析、执行类操作（是否在盘中执行某个既定信号）不受此限——后者按既有护栏判断。单笔事故复盘仍有价值（触发规则假设），只是不构成规则长期成立的依据。
 
-## 子项目清单（智能体专属文件归属，2026-10-17 修订）
+## 子项目清单（智能体专属文件归属，2026-10-30 修订）
 
-本项目（Victor）负责维护的子项目如下（与全局 `~/.pi/agent/docs/agents-registry.md`「智能体专属文件归属与子项目映射（2026-10-17 修订）」节的子项目映射表保持一致）：
+本项目（Victor）负责维护的子项目如下（与全局 `~/.pi/agent/docs/agents-registry.md`「智能体专属文件归属与子项目映射（2026-10-30 修订）」节的子项目映射表保持一致）：
 
 - **TradingProofs**（`/Users/xhq/Developer/TradingProofs`）：交易数学的 Lean 4 + Mathlib 机器可验证证明——从 `notes/cumulative-return-derivation.md` 的固定比例下注推导开始，逐步覆盖累计收益率公式、强数定律下的指数增长率、凯利最优 `f*` 与「两倍凯利」边界；与实盘执行完全隔离（不产出信号、不接证券账户）。2026-10-11 立项，负责人 Victor。
-- **（已移交）NewsScoreStudy**：面试实操题研究仓库，2026-10-26 由用户决定**改由 Mark（QuantStrategistAgent）负责**，已从本清单移除并登记到该项目名下（仓库仍在 `/Users/xhq/Developer/NewsScoreStudy`，两条软链接已改指 `../QuantStrategistAgent/`）。
-- **智能体专属文件归属（2026-10-17 用户修订，取代 2026-10-12 的「子项目一律不得存在」）**：`CLAUDE.md` / `AGENTS.md` / `.claude/` / 项目级 `.pi/` 这类「会话启动时按工作目录加载、表征智能体身份」的项目级文件的**实体只在本项目（Agent 项目）**；**子项目 TradingProofs 根目录挂两条指回本项目的软链接**——`AGENTS.md → ../DayTradingAgent/AGENTS.md`、`.pi → ../DayTradingAgent/.pi`（随仓库提交）——在子项目目录开会话即继承 Victor 的身份与规则（Agent 进驻子项目；TradingProofs 的 README「形式化纪律」节保持不变）。子项目的工作（读文件、跑命令、开发、提交）在本项目的会话里按路径跨目录操作（如 `git -C /Users/xhq/Developer/TradingProofs`）；通过 intercom / `agent_call` / `agent_wake` 为后台 pi 会话指定工作目录时，仍只能以本项目根目录为准（工具按注册表校验），不得指向子项目目录。
+- **（已移交）NewsScoreStudy**：面试实操题研究仓库，2026-10-26 由用户决定**改由 Mark（QuantStrategistAgent）负责**，已从本清单移除并登记到该项目名下（仓库仍在 `/Users/xhq/Developer/NewsScoreStudy`，其 `AGENTS.md` 软链接已改指 `../QuantStrategistAgent/`）。
+- **智能体专属文件归属（2026-10-30 用户修订，取代 2026-10-17 的「`.pi` 也挂软链接」）**：`CLAUDE.md` / `AGENTS.md` / `AGENTS.override.md` / `.claude/` / 项目级 `.pi/` 这类「会话启动时按工作目录加载、表征智能体身份」的项目级文件的**实体只在本项目（Agent 项目）**，子项目不得放实体副本、也不得复制内容进去。**子项目 TradingProofs 根目录按两层处理**：① **身份层——`AGENTS.md → ../DayTradingAgent/AGENTS.md` 软链接**（保持不变；pi 的上下文文件没有 include 机制，超集只能靠复制、复制必然漂移，且子项目里开会话仍是同一个 agent，身份本不该分叉）；② **能力层——真实 `.pi/` 目录**（不再是软链接），其 `.pi/settings.json` 用路径引用本项目的四个资源目录（`extensions` / `skills` / `prompts` / `themes`），本地独有内容放子项目自己的 `./extensions`、`./skills` 等目录，子项目专属规则用 `.pi/APPEND_SYSTEM.md` 追加（不得用 `.pi/SYSTEM.md`，那是整体替换）。**一条纪律**：子项目 `.pi` 只允许追加、不允许重述或覆盖基座规则。**为什么要改**：旧做法下子项目往 `.pi` 写任何东西都直接落进本项目、污染全部兄弟子项目并进本仓库的 git 历史；改为目录引用后，本项目的资源照样自动带过去（新增技能 / 扩展零同步），子项目写自己的目录又不会回流。两条（软链接与 `settings.json`）随子项目仓库提交，在本项目仓库里看不到。**验证**：2026-10-29 在 TradingProofs 目录跑 `pi --approve -p`，技能（`trade` 等）与项目级扩展（`AskUserQuestion`）均从本项目目录加载成功。子项目的工作（读文件、跑命令、开发、提交）在本项目的会话里按路径跨目录操作（如 `git -C /Users/xhq/Developer/TradingProofs`）；通过 intercom / `agent_call` / `agent_wake` 为后台 pi 会话指定工作目录时，仍只能以本项目根目录为准（工具按注册表校验），不得指向子项目目录。
 
 ## commit skill 检测缓存
 
