@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### 新增（`jms_pool.py`：本项目自己的 JMS 订阅拉取与 IP 池比对，2026-10-29 16:20）
+
+- **为什么改**：按用户定位纠正，本项目的 IP 池数据源必须**自己从 JMS 订阅拿**，不再读 xpilot 的 `nodes.json`。同时把「监护者」职责落地：比对 JMS 最新池 ↔ 老虎白名单池，不一致就给提醒。
+- **改了什么**：
+  - 新增 `.claude/skills/trade/scripts/jms_pool.py`：读本机 `config.json` 的 `jms.subscription_url` → 拉取 → 自动探测并解析四种订阅格式（base64 链接列表 / 明文链接列表 / Clash YAML / Xray JSON）→ 统一成与 `ip_pool._node_outbound()` 同字段的内部结构 → 提供 `ip_pool_from_nodes()` / `compare()` / `refresh()`。
+  - `config.example.json`（入库）新增 `jms.subscription_url` 占位符 `<JMS_SUBSCRIPTION_URL>`；`config.json`（本机、已 gitignore）新增同名空占位。
+- **安全约定（重点）**：订阅链接含 token、解析结果含 IP 清单，两者都属敏感类——本模块**不打印链接、不打印 IP 原文**，CLI 默认只输出「几个节点 / 几个 IP / 待加白几个 / 可清除几个」；只有显式 `--verbose` 才在本机终端列 IP 供人工核对。节点凭证只进内存和 `tmp/jms_subscription.cache`（0600、已 gitignore）。用户因此**不需要把订阅链接发到会话里**（会话记录会落盘、且与 macmini 全量镜像同步），自己在编辑器里填进本机 config 即可。
+- **验证（用构造的假数据，未碰真实订阅）**：base64 链接列表 → 3 节点、reality/pbk/sni/flow 字段解析正确；明文链接列表 → 3 节点；Xray JSON → 1 节点；`compare()` 差异分类正确（待加白 2、可清除 1）。
+- **容错设计**：拉取时优先经本项目自己的代理池端口出去（避免直连被拦），池不可用退回直连；拉取失败时用 `tmp/jms_subscription.cache` 兜底并标记 `stale`，避免订阅源临时不可用就整条链路瘫掉。
+- **回归风险**：无——纯新增模块，尚未被任何现有脚本调用（接线要等订阅链接到位、实测通过后再做）。
+- **边界**：本模块只管「拉取 / 解析 / 比对 / 提醒」；真正把代理配置换成 JMS 节点、以及删掉 `xpilot switch` / `test` 调用，属下一步。
+
 ### 变更（xray 二进制改为本项目自带，不再借 xpilot 的；架构定位纠正为「独立于 xpilot」，2026-10-29 16:05）
 
 - **为什么改（用户定位纠正，原话要点）**：「本项目不应该和 xpilot 有任何关系，xpilot 是另外一个独立的项目，唯一共同点是都用到 JMS 提供的 IP 池（目前 6 个 IP）。本项目是监测到 JMS 的最新 IP 池和本项目的老虎 IP 白名单 IP 池不一致的时候提供更新老虎白名单 IP 池的提醒，并实时同步本项目的可用 IP 池和老虎白名单 IP 池一致。」进一步确认两点：① JMS IP 池改由**本项目自己拉订阅链接解析**（不经 xpilot）；② **连代理口也不用 xpilot 的**，本项目自己起独立代理。
