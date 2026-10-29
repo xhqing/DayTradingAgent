@@ -2,6 +2,16 @@
 
 本文件记录 DayTradingAgent 每个版本的主要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased]
+
+### 新增（停盯收尾标记工具 `mark_stop_done.py`，修掉「手工标记漏会话标识→反复误报」，2026-10-29 15:30）
+
+- **为什么改**：monitor_guard 反复提醒「2026-10-28（美东交易日）有成交记录但缺停盯收尾标记」。实查发现**收尾本身早已完成**（飞书业务版已发 `message_id om_x100b6111dc86d0a4c0bcf1892de776f`、券商侧复核已于 10-29 14:35 通过），根因是当时 `stop_summary.py` 因代理出口 IP 漂出老虎白名单跑失败、改人工汇总时**把标记文件名漏写了会话标识后缀 `_<sid8>`**（写成 `stop_done_us_2026-10-28.txt`，应为 `stop_done_us_2026-10-28_01a182ba.txt`）。而 `monitor_guard._stop_done_reminder()` 在「本会话在该交易日有交易记录」时只认带本会话 sid8 的标记（多会话隔离设计），于是永远失配、误报跨越了多天。
+- **改了什么**：新增 `.claude/skills/trade/scripts/mark_stop_done.py`——`stop_summary.py` 失败时用它补标记，自动取 `PI_SESSION_ID` / `CLAUDE_CODE_SESSION_ID` 前 8 位拼正确文件名、写与 `stop_summary.py` 同结构的 JSON 标记，**拿不到会话标识时直接报错不写**（写了检查器也认不了，等于没写），写完自检 `actions/` 里的会话归属并提示匹配口径。同时用该工具把 2026-10-28 的标记重写为合规版本（券商口径净额 -393.60、复核结论、飞书 id、空仓确认），旧的无 sid 标记保留作历史痕迹。
+- **验证**：`python3 .claude/hooks/monitor_guard.py stop` 带 `session_id=01a182ba` 跑，输出为空（不再提醒）；工具 `--help` 正常、无会话标识时正确拒绝写入（exit 2）。开发中修掉自身一个路径 bug：`project_root()` 少算一层、误写到 `.claude/tmp/`，已改为与 `stop_summary.project_root()` 一致的四层上溯，误写目录已清理。
+- **回归风险**：无——新增独立脚本，不修改 `stop_summary.py` / `monitor_guard.py` 任何逻辑；标记文件在 `tmp/`（已 gitignore）。
+- **边界**：本条只解决「手工补标记的文件名规范」；`stop_summary.py` 自身跑失败的上游原因（出口 IP 漂移）由 IP 池机制与 T176 负责。
+
 ## [0.7.1] - 2026-10-29
 
 ### 变更（IP 池从「重启切换」升级为「多端口并行池 + 请求级毫秒级重试」，2026-10-29 15:15）
