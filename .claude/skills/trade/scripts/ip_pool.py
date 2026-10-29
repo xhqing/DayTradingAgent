@@ -510,12 +510,22 @@ def _node_outbound(node):
     if node.get('flow'):
         user['flow'] = node['flow']
     proto = node.get('protocol', 'vless')
+    if proto in ('ss', 'shadowsocks'):
+        # Shadowsocks 节点：JMS 订阅里 6 个节点中有 1 个是 ss（2026-10-29 实测）。
+        # 注意三点（早期跳过它就是因为踩了这些坑）：
+        #   ① xray 里协议名是 `shadowsocks`，不是 `ss`；
+        #   ② `method`（如 aes-256-gcm）是**加密方式**，必须放 settings，绝不能塞进
+        #      streamSettings.security —— 那会让 xray 报 "Unknown security" 直接起不来；
+        #   ③ ss 不需要 streamSettings（默认 tcp 直连），整块省略最稳。
+        return {'protocol': 'shadowsocks',
+                'settings': {'servers': [{
+                    'address': node.get('address'),
+                    'port': int(node.get('port', 443)),
+                    'method': node.get('method') or node.get('security') or '',
+                    'password': node.get('password') or node.get('uuid') or '',
+                }]}}
     if proto != 'vless':
-        # 只编 vless 节点（2026-10-29 实测）：ss 节点在 nodes.json 里 security 字段存的是
-        # 加密方式（aes-256-gcm），与 vless 的 security（reality/tls）语义冲突，直接编进去
-        # 会让 xray 报 Unknown security 起不来；而 c56s1 那个 ss 节点只是备选、白名单内
-        # 还有 5 个 vless 节点，跳过它即可（池容量 5 个足够）。
-        return None
+        return None      # 其它未支持的协议仍跳过（当前订阅只有 vless 与 ss）
     settings = {'vnext': [{'address': node.get('address'), 'port': int(node.get('port', 443)),
                            'users': [user]}]}
     return {'protocol': proto, 'settings': settings, 'streamSettings': stream}
