@@ -33,6 +33,7 @@
   - `monitor_watcher` 无参数调用：returncode 0、无 stderr
 - **回归风险**：中。这是守护逻辑的整体替换（判定口径、切换方式、提醒文案都变了），但分支行为已逐一实测；对外接口（无参数调用 / `--dry-run` / `--test-alert` / `--await-confirm`）与被 import 的工具函数保持不变，`preflight` 与 `monitor_watcher` 无需修改。
 - **未做**：`accounts.md` 等文档里描述「xpilot 节点」的运维口径段落还没同步改（纯文档，下一步）；本项属 `refactor`，是否发版待按 commit 流程判定。
+- **补记（同一批）**：清理两条过时常量注释（原写「xpilot test --current 约 15s」「xpilot node list 实查」），改为说明这些常量已无对应流程、仅为外部引用兼容而保留。
 
 ### 变更（主链路与 xpilot 彻底解耦：数据源改 JMS 订阅、代理口改自有端口，2026-10-29 16:30）
 

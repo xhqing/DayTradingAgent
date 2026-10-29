@@ -56,7 +56,7 @@ PENDING_PATH = os.path.join(TMP_DIR, "proxy_guard_pending.json")
 # NOTIFY_COOLDOWN_SECONDS = 300）。
 NOTIFY_COOLDOWN_SECONDS = 300
 
-# 节点连通性验证超时（秒）：xpilot test --current 真实流量实测约 15s 内，给 45s 余量。
+# 保留（历史常量；当前已无「重启式切换 + 连通验证」流程，勿删以免外部引用报错）。
 TEST_TIMEOUT = 45
 
 # 提醒面板（2026-09-01 T128）：AppKit 可最小化面板，源码 scripts/alert_panel.swift、
@@ -65,7 +65,7 @@ PANEL_SRC = os.path.join(SCRIPT_DIR, "alert_panel.swift")
 PANEL_BIN = os.path.join(TMP_DIR, "alert_panel")
 PANEL_RESULT = os.path.join(TMP_DIR, "proxy_guard_panel_result.json")   # 面板点击结果（await 轮询）
 
-# xpilot node list 实查超时（2026-09-01 T133：节点全景以实查为准，失败回退 nodes.json）。
+# 保留（历史常量；节点全景现在来自 jms_pool 订阅解析）。
 NODE_LIST_TIMEOUT = 30
 
 # 自动切换重试总预算（秒）：preflight 挂接后单条 Bash 须 < harness 120s——多候选重试
