@@ -2,7 +2,7 @@
 
 本文件记录 DayTradingAgent 每个版本的主要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [Unreleased]
+## [0.7.1] - 2026-10-29
 
 ### 变更（IP 池从「重启切换」升级为「多端口并行池 + 请求级毫秒级重试」，2026-10-29 15:15）
 
