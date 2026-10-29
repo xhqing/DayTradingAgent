@@ -424,6 +424,9 @@ def main():
 
     missing = [ip for ip in jms_ips if ip not in wl_set]        # JMS 有、白名单没有 → 待加白
     stale = [ip for ip in whitelist if ip not in set(jms_ips)]  # 白名单有、JMS 没有 → 可清
+    # 「全部失效」= 白名单里**一个 IP 都不在** JMS 池里（零重叠）。这不是正常的换 IP 残留，
+    # 而通常意味着 JMS 侧整套换了节点或订阅异常，要先排查 JMS、而不是急着按清单加白（2026-10-29 用户定）。
+    all_stale = bool(whitelist) and len(stale) == len(whitelist)
 
     _print(f"🌐 JMS 池 {len(nodes)} 节点 / {len(jms_ips)} IP"
            f"（订阅缓存 {_jms.get('reason')}）| 白名单镜像 {len(wl_set)} IP"
@@ -483,9 +486,15 @@ def main():
                        f"且旧 IP 不清会逐步占满白名单数量上限。\n\n{_op_hint}\n\n"
                        f"👉 点下方【复制全部 IP】按钮即可一键复制上面这串（⌘⇧C 同效）。")
                 title = "DayTradingAgent · 白名单待更新"
-            if stale:
-                msg += (f"\n\n另：白名单里有 {len(stale)} 个 IP 已不在 JMS 池内"
-                        f"（拉不到的旧 IP），全量重配时会自然清掉。")
+            if all_stale:
+                msg += (f"\n\n⚠️ 另外注意：白名单里现有的 {len(whitelist)} 个 IP **全部**不在 "
+                        f"JMS 池内（零重叠）。这通常不是正常的节点换 IP 残留，而更可能是 "
+                        f"JMS 侧整套更换了节点、或订阅本身异常 —— 建议**先排查 JMS 订阅是否正常**"
+                        f"（`python3 .claude/skills/trade/scripts/jms_pool.py`），确认 JMS 没问题后"
+                        f"再按上面清单重配白名单。")
+            elif stale:
+                msg += (f"\n\n（白名单里另有 {len(stale)} 个 IP 已不在 JMS 池内，"
+                        f"属正常残留、全量重配时会自然清掉，本次不单独提醒。）")
             remind(all_ips, msg, title=title, dry_run=dry_run)
             if not dry_run:
                 mark_notified("drift")
@@ -515,21 +524,17 @@ def main():
             return 2
         return 0
 
-    # ── 分支 B：JMS 池全部已加白，但白名单里有拉不到的旧 IP → 低频提醒清理 ──────
+    # ── 分支 B：JMS 池全部已加白，但白名单里残留部分失效旧 IP ──
+    # 2026-10-29 用户定：**这种情况不提醒**——订阅商偶尔换掉个别节点、白名单里留下拉不到的
+    # 旧 IP 属正常现象，为它弹窗纯属打扰；旧 IP 会占白名单数量上限，但等下次真需要加白时
+    # （分支 A）反正要「先清空再全量粘贴」，届时自然清掉。
+    # 「全部失效」是不一样的信号（白名单与 JMS 池零重叠 → 大概率 JMS 侧出问题），
+    # 那种情况一定伴随分支 A，排查提示已合并到 A 的文案里，这里不需要重复。
     if stale:
-        if not in_cooldown("suggest"):
-            if not dry_run:
-                ring()
-            remind(all_ips,
-                   f"ℹ️ 老虎白名单里有 {len(stale)} 个 IP 已不在 JMS 订阅池内（拉不到的旧 IP）。"
-                   f"\n\n建议按下面步骤全量重配，把这些旧 IP 清掉"
-                   f"（旧 IP 会逐步占满白名单数量上限，日后新 IP 就加不进去了）：\n\n{_op_hint}",
-                   title="DayTradingAgent · 白名单含失效 IP", dry_run=dry_run)
-            if not dry_run:
-                mark_notified("suggest")
-            log_event(f"建议全量重配：白名单含 {len(stale)} 个已失效 IP")
-        _print(f"ℹ️ JMS 池已全部加白 ✅；另有 {len(stale)} 个白名单 IP 已失效"
-               f"（已提醒，冷却 5 分钟）")
+        log_event(f"白名单含 {len(stale)} 个已失效旧 IP（JMS 池已无）——按规则不提醒，"
+                  f"下次加白时随全量重配清掉")
+        _print(f"ℹ️ JMS 池已全部加白 ✅；白名单另有 {len(stale)} 个残留失效 IP"
+               f"（正常现象，不提醒；下次加白时全量重配会自然清掉）")
         return 0
 
     # ── 分支 C：完全一致 ────────────────────────────────────────────────────

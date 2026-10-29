@@ -713,11 +713,10 @@ def probe_ports(mapping=None, force=False, timeout=EGRESS_TIMEOUT):
     from concurrent.futures import ThreadPoolExecutor
     wl = set(G.load_whitelist() or [])
 
-    def _probe_once(port, timeout):
+    def _probe_once(port, src, timeout):
         try:
             r = G.subprocess.run(['curl', '-s', '--max-time', str(timeout),
-                                  '--proxy', f'http://127.0.0.1:{port}',
-                                  EGRESS_SOURCES[0]],
+                                  '--proxy', f'http://127.0.0.1:{port}', src],
                                  capture_output=True, text=True, timeout=timeout + 2)
             body = (r.stdout or '').strip()
             return body if (r.returncode == 0 and body and len(body) <= 64 and ' ' not in body) else None
@@ -725,18 +724,22 @@ def probe_ports(mapping=None, force=False, timeout=EGRESS_TIMEOUT):
             return None
 
     def _one(item):
-        port, nid = item
-        eg = _probe_once(port, timeout)
-        if not eg:
-            # 首次失败再试一次（xray 刚重启完、与节点握手尚未就绪时容易空返）；
-            # 只重试一次、间隔 0.4s，避免把探活拖成秒级。
-            time.sleep(0.4)
-            eg = _probe_once(port, timeout)
+        idx, (port, nid) = item
+        # 关键（2026-10-29 修）：**每个端口错开用不同的 IP 查询源**，且失败换源重试。
+        # 原先 6 个端口并发都打 api.ipify.org，实测被限流 → 整批假失败报「0/5 可用」，
+        # 进而让 fast_switch 以为池里没可用端口、误报「需加白」。这是会误导决策的假警报。
+        srcs = EGRESS_SOURCES[idx % len(EGRESS_SOURCES):] + EGRESS_SOURCES[:idx % len(EGRESS_SOURCES)]
+        eg = None
+        for attempt, src in enumerate(srcs[:2]):     # 最多试 2 个不同的源
+            eg = _probe_once(port, src, timeout)
+            if eg:
+                break
+            time.sleep(0.25 * (attempt + 1))
         return port, {'node': nid, 'egress': eg, 'ok': bool(eg and eg in wl), 'at': time.time()}
 
     out = {}
-    with ThreadPoolExecutor(max_workers=min(8, len(mapping))) as ex:
-        for port, info in ex.map(_one, mapping):
+    with ThreadPoolExecutor(max_workers=min(3, len(mapping))) as ex:
+        for port, info in ex.map(_one, enumerate(mapping)):
             out[str(port)] = info
     try:
         with open(MULTI_PORTS, 'w') as f:
