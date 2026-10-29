@@ -2,7 +2,7 @@
 
 本文件记录 DayTradingAgent 每个版本的主要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [Unreleased]
+## [0.7.0] - 2026-10-29
 
 ### 记录（2026-10-28 ET 盯盘 6 笔 + 收尾降级；新增待办 T175，2026-10-29 04:30）
 
