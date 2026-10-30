@@ -1,56 +1,44 @@
 #!/usr/bin/env python3
-"""可用 IP 池保证（2026-10-29 用户立）。
+"""本地可用 IP 池（2026-10-29 立，2026-10-30 按用户口径重构为「无白名单」版本）。
 
-## 为什么要有这个东西（用户原话要点）
+## 现在的口径（2026-10-30 用户立，取代此前的白名单体系）
 
-「盯盘下单需要自己维护一个可用 IP 池，这个 IP 池里面的 IP 就是白名单里面的所有 IP，
-如果池里面的 IP 突然失效应该在池里面切换，不能用 xpilot 的 IP，因为 xpilot 的当前使用
-IP 可能被 JMS 更新成了不在老虎白名单里面的 IP，这个时候来不急手动添加，手动添加没那么
-及时。」
+1. **没有老虎白名单这回事了**：老虎开发者页的 IP 白名单已全部删除、不再维护、也不再提示
+   加白。判定「能不能调老虎 API」只看一件事——**老虎网关放不放行**（网关探针）。
+2. **池 = JMS 订阅里的全部节点**：本地 IP 池的 IP 全部来自 JMS 订阅（缓存
+   `tmp/jms_subscription.cache`），不存在「本地白名单」这个第二数据源。
+3. **盘中不拉订阅**：港/美可交易时段内禁止拉取 JMS 订阅（`jms_pool.fetch_subscription`
+   直接返回 `blocked_intraday`，工具强制）。盘中只在本地池内做 fallback：某个 IP 的请求
+   失败就换池内另一个端口重发。
+4. **只在两个窗口刷新池**：
+   - ① 收到盯盘指令时（`preflight.py` 启动，`allow_intraday=True`）；
+   - ② 收盘后写总结之前（`stop_summary.py`，`allow_intraday=True`）。
+5. **盘中池内全不可用 = JMS 代理服务稳定性问题**：归因到服务商，解法是换更稳定的代理服务；
+   不在盘中反复重拉订阅（那只会更糟），也不存在「加白」这条出路。
 
-翻译成设计口径：
+## 判定手段
 
-- **真相是「白名单 IP 池」，不是「xpilot 当前选了哪个节点」**。xpilot 判断节点的唯一
-  依据是「这个节点连不连得通」，它完全不知道老虎白名单的存在；订阅商（JMS）随时可能把
-  某个节点的入口 IP 换成新的、能上网、但老虎不认的 IP。跟着 xpilot 走 = 随时可能在盘中
-  失去下单能力，而人工去老虎开发者页加白根本来不及（盘中几分钟就够亏一笔）。
-- **失效就换**：池里当前那个 IP 一旦失效（老虎网关拒 / 连不通），立刻在池内换一个能用的，
-  不需要用户介入、不需要等加白。
-- **加白是「扩池」，不是「救急」**：用户去老虎页加白的行为等价于往池里加新 IP；加白之前，
-  守护要能在旧池内自我恢复。
+- **老虎网关探针**（最终真相）：无签名的无害请求，放行时回业务/参数类错误码，被判无权时回
+  `access forbidden`。不需要凭证、约 200ms~2s。
+- **实测出口 IP**：经本项目的代理端口打外部 IP 查询服务。必须实测——订阅里的 address 只是
+  入口地址，实际出口可能因服务商 NAT / 多入口而不同。
+- 端口可用性缓存（`tmp/ip_pool_ports.json`）：每个端口探一次「出口 + 网关放行」，供
+  `fast_switch` 毫秒级挑端口。
 
-## 判定真相的三层（按可靠性排序）
+## 切换计数（2026-10-30 用户立）
 
-1. **老虎网关探针**（最终真相）：向老虎网关发一个**无签名的无害请求**——网络层通过时它
-   回 `{"code":1000,"message":"common param error(request url is invalid)"}`；被白名单拒
-   时才回 `{"code":4,"message":"access forbidden: request ip ... is not in ip whitelist"}`。
-   不需要凭证、不需要 SDK、约 200ms，用它判定「老虎此刻认不认我这个出口」最准。
-   **好处**：本地白名单镜像（config.tiger_whitelist）靠「用户点已添加」同步，可能滞后于
-   老虎页的真实配置——只按镜像判定会在镜像滞后时**误切节点**（白白断网几秒），而按网关
-   探针判定永远跟着老虎的真实态度走。
-2. **实测出口 IP**（诊断 + 记录）：经本项目自己的代理端口打外部 IP 查询服务，拿到当前真实
-   出口。必须实测，不能读 nodes.json 的 address——address 是订阅写的入口地址，实际出口
-   可能因服务商侧 NAT / 多入口 / 负载均衡而不同，而老虎按「实际出口 IP」判白名单。
-3. **本地白名单镜像**（只用来「挑候选」）：池内候选 = `config.tiger_whitelist` 里有对应
-   节点的那些 IP。它决定「可以切到哪几个节点」，不决定「现在是否可用」。
-
-## pool（池）的定义
-
-池 = `config.json` 的 `proxy.tiger_whitelist`（老虎页白名单的本地镜像，6 个 IP 量级）。
-池内每个 IP 需要能对应到一个 JMS 订阅节点（订阅里写的 address），才能
-「切过去」。没有节点对应的 IP 是死 IP（老虎认、但本机没有节点落在那），不能作为切换目标。
+每次真实换端口都写一行到 `reviews/ip-switch-log.csv`（`log_switch()`），停盯总结据此报
+「本场切换 IP N 次」，长期用来评估代理服务稳定性。
 
 ## 对外接口
 
     ensure(account='paper', quiet=False, allow_switch=True, budget=45) -> dict
         保证老虎链路可用。正常情况约 0.3~0.5s（一次网关探针 + 一次出口实测）；
         切换在本项目自己的端口池内换端口，毫秒级、不重启进程。
-        返回 {ok, action, egress, in_pool, ...}；ok=False 时 reason 说明原因。
 
     CLI: python3 ip_pool.py [--quiet] [--json] [--no-switch] [--account paper|live]
 
-退出码：0 = 可用；2 = 池内没有可用端口（需人工去老虎页加白）；
-3 = 配置缺失（白名单或节点清单取不到）。
+退出码：0 = 可用；2 = 池内没有可用端口（归因 JMS 稳定性）；3 = 节点清单取不到。
 """
 import json
 import os
@@ -59,7 +47,8 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import proxy_guard as G   # 复用：白名单读取、节点清单、switch、日志、打印
+import proxy_guard as G   # 只复用公共设施（_print / subprocess / PROJECT_ROOT / TMP_DIR）；
+                          # 该模块的白名单检测已停用（2026-10-30）
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = G.PROJECT_ROOT
@@ -89,6 +78,75 @@ POOL_LOG = os.path.join(TMP_DIR, 'ip_pool.log')
 # TTL 取 30s：出口 IP 漂移不是秒级事件（实测单节点漂移以分钟计），30s 足够新。
 STATE_PATH = os.path.join(TMP_DIR, 'ip_pool_state.json')
 QUICK_TTL = 30
+
+# ──────────────────────────────────────────────────────────────────────────────
+# IP 切换计数与持久化（2026-10-30 用户立）
+#
+# 目的：把「切换 IP」变成可统计的运行数据，用来评估**代理服务（JMS）的稳定性**。
+# 每次真实换端口都追加一行到 `reviews/ip-switch-log.csv`（入库、append-only）：
+#   · source=retry  → 请求级：某个 IP 请求失败，立刻换端口重发（_IPRetryClient，8ms 级）
+#   · source=ensure_switch           → 体检级：ensure() 发现当前出口被拒/不通，池内换端口
+#   · source=ensure_switch_after_resub → 池内全失败后重拉订阅、重建池再换（最后手段）
+# 停盯总结按「会话 + 市场交易日」统计本场次数（stop_summary.py），可看出代理稳不稳。
+# 写盘失败一律静默——计数是观察数据，绝不得影响交易链路。
+# ──────────────────────────────────────────────────────────────────────────────
+SWITCH_LOG = os.path.join(PROJECT_ROOT, 'reviews', 'ip-switch-log.csv')
+SWITCH_LOG_HEADER = ('timestamp_utc,timestamp_hkt,timestamp_et,market,session_id,'
+                     'source,from_port,to_port,from_node,to_node,reason')
+
+
+def _session_id_short():
+    """会话 id 前 8 位（与 actions 记录 / stop_summary 口径一致）。"""
+    sid = (os.environ.get('CLAUDE_CODE_SESSION_ID')
+           or os.environ.get('PI_SESSION_ID') or '')
+    return sid[:8] if sid else ''
+
+
+def _market_now():
+    """当前时段对应的市场：hk / us / off（按 Beijing 时间粗判，只用于归类统计）。"""
+    lt = time.localtime()
+    hm = lt.tm_hour * 60 + lt.tm_min
+    if lt.tm_wday >= 5:
+        return 'off'
+    if 9 * 60 + 30 <= hm < 12 * 60 or 13 * 60 <= hm < 16 * 60:
+        return 'hk'
+    # 美股：夏令时北京 16:00-次日 04:00 / 冬令时 17:00-次日 05:00（粗归，不影响交易）
+    is_dst = time.localtime().tm_isdst if hasattr(time.localtime(), 'tm_isdst') else 0
+    if hm >= (16 * 60 if is_dst else 17 * 60) or hm < (4 * 60 if is_dst else 5 * 60):
+        return 'us'
+    return 'off'
+
+
+def log_switch(from_port, to_port, from_node, to_node, reason='', market=None, source=None):
+    """追加一条 IP 切换记录（失败静默）。
+
+    source 默认根据 reason 推：'retry' = 请求级换端口；其余归为体检级 ensure。
+    """
+    try:
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone.utc)
+        src = source or ('retry' if reason in ('retry', 'request_retry') else 'ensure')
+        row = [
+            now.strftime('%Y-%m-%d %H:%M:%S'),
+            now.astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S'),
+            now.astimezone(timezone(timedelta(hours=-4))).strftime('%Y-%m-%d %H:%M:%S'),
+            market or _market_now(),
+            _session_id_short(),
+            src,
+            '' if from_port is None else int(from_port),
+            '' if to_port is None else int(to_port),
+            from_node or '',
+            to_node or '',
+            reason or '',
+        ]
+        os.makedirs(os.path.dirname(SWITCH_LOG), exist_ok=True)
+        new = not os.path.exists(SWITCH_LOG)
+        with open(SWITCH_LOG, 'a') as f:
+            if new:
+                f.write(SWITCH_LOG_HEADER + '\n')
+            f.write(','.join(str(x) for x in row) + '\n')
+    except Exception as e:
+        _log(f'切换记录写盘失败（已忽略）: {e}')
 
 
 def _log(line):
@@ -134,16 +192,20 @@ def probe_egress(quiet=True, port=None):
     return None, 'all_sources_failed'
 
 
-def probe_tiger(account='paper', quiet=True):
-    """老虎网关探针（判定「老虎此刻认不认当前出口」，无需凭证）。
+def probe_tiger(account='paper', quiet=True, port=None):
+    """老虎网关探针（判定「这个出口到底能不能调老虎 API」，无需凭证）。
+
+    `port` 指定时按该本地端口探（探活池内每个端口用），不传则用当前代理端口。
 
     返回 (state, detail)：
-      'ok'        = 网络层通过（网关回了业务/参数类错误码，说明 IP 已被放行）
-      'forbidden' = 被 IP 白名单拒（access forbidden / not in ip whitelist）
-      'unknown'   = 连不上 / 超时（代理挂了、节点挂了、断网——与白名单无关的另一类故障）
+      'ok'        = 网络层通过（网关回了业务/参数类错误码，说明请求被受理）
+      'forbidden' = 被网关拒（access forbidden / not in ip whitelist）——
+                    历史遗留：老虎侧白名单已于 2026-10-30 清空，现在基本不会再出现，
+                    但保留识别以防服务方政策回调
+      'unknown'   = 连不上 / 超时（代理挂了、节点挂了、断网）
     """
     url = TIGER_PROBE.get(account, TIGER_PROBE['paper'])
-    px = proxy_url()
+    px = f'http://127.0.0.1:{port}' if port else proxy_url()
     try:
         r = G.subprocess.run(
             ['curl', '-s', '--max-time', str(PROBE_TIMEOUT), '--proxy', px, url],
@@ -161,11 +223,13 @@ def probe_tiger(account='paper', quiet=True):
         return 'unknown', str(e)[:160]
 
 
-def pool_candidates(whitelist, nodes, exclude=()):
-    """池内候选节点：address ∈ 白名单（且不在 exclude 里）。vless 优先（ss 节点有过不通先例）。"""
-    wl = set(whitelist or [])
-    cands = [nid for nid, v in (nodes or {}).items()
-             if v.get('address') in wl and nid not in exclude]
+def pool_candidates(nodes, exclude=()):
+    """池内候选节点：全部 JMS 节点（不在 exclude 里就都算候选），vless 优先。
+
+    2026-10-30 改：原先按「address ∈ 老虎白名单」筛候选，白名单功能已移除
+    （老虎侧已清空白名单），候选就是 JMS 给的全部节点。
+    """
+    cands = [nid for nid in (nodes or {}) if nid not in exclude]
     return sorted(cands, key=lambda n: ((nodes[n].get('protocol') != 'vless'), n))
 
 
@@ -211,8 +275,6 @@ def ensure(account='paper', quiet=False, allow_switch=True, budget=ENSURE_BUDGET
       in_pool   = 出口是否在本地白名单镜像内（None = 没测出来）
       proxy_port= 建议使用的本地代理端口（调用方应把 SDK 指到这个端口）
       node      = 当前节点 id
-      whitelist_gap = 与 JMS 订阅池比对的结果（in_sync / missing_in_whitelist 等），
-                  这是本项目的核心监护职责：不一致就提醒用户去老虎页加白
       reason    = 失败原因
       tried     = 已尝试的端口
       elapsed   = 耗时（秒）
@@ -232,21 +294,7 @@ def ensure(account='paper', quiet=False, allow_switch=True, budget=ENSURE_BUDGET
            'proxy_port': None, 'node': None, 'whitelist_gap': None, 'reason': None,
            'tried': [], 'elapsed': 0.0, 'mirror_stale': False}
 
-    whitelist = G.load_whitelist()
-    if not whitelist:
-        out['reason'] = 'no_whitelist（config.json 缺 proxy.tiger_whitelist）'
-        out['elapsed'] = round(time.time() - t0, 2)
-        return out
-    wl_set = set(whitelist)
-
-    # ① 确保本项目自己的端口池在跑（节点源 = JMS 订阅），并做一次「JMS 池 ↔ 白名单」比对
-    try:
-        import jms_pool as _J
-        _jms = _J.refresh(network=False)
-        if _jms.get('ok') and _jms.get('ips'):
-            out['whitelist_gap'] = _J.compare(_jms['ips'], whitelist)
-    except Exception:
-        pass
+    # ① 确保本地端口池在跑（节点源 = JMS 缓存；热路径绝不联网——2026-10-30 用户立）
 
     mapping = start_multi()
     if not mapping:
@@ -260,7 +308,7 @@ def ensure(account='paper', quiet=False, allow_switch=True, budget=ENSURE_BUDGET
     egress, _eg_detail = probe_egress()
     state, detail = probe_tiger(account)
     out['egress'] = egress
-    out['in_pool'] = (egress in wl_set) if egress else None
+    out['in_pool'] = None
     cur_port = None
     try:
         cur_port = int(proxy_url().split(':')[-1])
@@ -274,19 +322,12 @@ def ensure(account='paper', quiet=False, allow_switch=True, budget=ENSURE_BUDGET
             break
 
     if not quiet:
-        G._print(f'🌐 IP 池检查：出口 {egress or "未测出"}'
-                 f'（{"在" if out["in_pool"] else "不在"}白名单）| 老虎网关 {state}')
+        G._print(f'🌐 IP 池检查：出口 {egress or "未测出"} | 老虎网关 {state}')
 
-    # ── 情况 A：老虎放行 → 可用（哪怕本地镜像滞后）──────────────────────────
+    # ── 情况 A：老虎网关放行 → 可用（2026-10-30 起不再有白名单概念）──────────
     if state == 'ok':
         out['ok'] = True
         out['action'] = 'native'
-        if out['in_pool'] is False:
-            out['mirror_stale'] = True
-            _log(f'老虎放行但本地镜像无此 IP（出口 {egress}）—— 镜像滞后，不换端口；'
-                 f'建议补 tiger_whitelist 镜像')
-            if not quiet:
-                G._print('  ℹ️ 老虎实际放行（本地白名单镜像滞后），保持当前端口不切换')
         out['elapsed'] = round(time.time() - t0, 2)
         _save_state(out)
         return out
@@ -311,14 +352,13 @@ def ensure(account='paper', quiet=False, allow_switch=True, budget=ENSURE_BUDGET
         out['proxy_port'] = port
         out['node'] = nid
         e2, _ = probe_egress(port=port)
-        st2, d2 = probe_tiger(account)
+        st2, d2 = probe_tiger(account, port=port)
         out['egress'] = e2
-        out['in_pool'] = (e2 in wl_set) if e2 else None
+        out['in_pool'] = None
         if st2 == 'ok':
             out['ok'] = True
             out['action'] = 'switched'
-            if out['in_pool'] is False:
-                out['mirror_stale'] = True
+            log_switch(cur_port, port, None, nid, 'ensure_switch', source='ensure')
             _log(f'ensure 已恢复：换到端口 {port}（节点 {nid}），实测出口 {e2}，网关 ok')
             if not quiet:
                 G._print(f'    ✅ 已换到端口 {port} 并验证：出口 {e2}，老虎网关放行')
@@ -343,13 +383,15 @@ def ensure(account='paper', quiet=False, allow_switch=True, budget=ENSURE_BUDGET
                     if apply_port:
                         apply_port(port)
                     e2, _ = probe_egress(port=port)
-                    st2, d2 = probe_tiger(account)
+                    st2, d2 = probe_tiger(account, port=port)
                     out['proxy_port'], out['node'] = port, nid
                     out['egress'] = e2
-                    out['in_pool'] = (e2 in wl_set) if e2 else None
+                    out['in_pool'] = None
                     if st2 == 'ok':
                         out['ok'] = True
                         out['action'] = 'switched_after_resub'
+                        log_switch(None, port, None, nid,
+                                   'ensure_switch_after_resub', source='ensure')
                         _log(f'ensure 重拉订阅后恢复：端口 {port}（节点 {nid}）出口 {e2}')
                         if not quiet:
                             G._print(f'    ✅ 重拉订阅后已恢复：端口 {port}，出口 {e2}')
@@ -413,10 +455,9 @@ def main(argv=None):
                      f'｜节点 {res["node"]}｜耗时 {res["elapsed"]}s')
         else:
             G._print(f'❌ IP 池不可用：{res["reason"]}｜出口 {res["egress"]}')
-            G._print('   → 需人工处理：老虎开发者页加白当前出口 IP（本项目的 JMS 订阅会自动更新池子'
-                     '后重跑本脚本')
-    return 0 if res['ok'] else (3 if 'no_whitelist' in (res['reason'] or '') or
-                                'no_nodes' in (res['reason'] or '') else 2)
+            G._print('   → 归因：JMS 代理服务的稳定性问题（不是老虎侧、也不需要加白）——'
+                     '等下一窗口刷新订阅，或考虑更换更稳定的代理服务')
+    return 0 if res['ok'] else (3 if 'no_nodes' in (res['reason'] or '') else 2)
 
 
 
@@ -567,9 +608,7 @@ def build_multi_config(nodes=None):
 
     返回 [(port, node_id), ...]；失败返回 []。
     """
-    whitelist = G.load_whitelist() or []
-    if not whitelist:
-        return [], False
+    # 2026-10-30：白名单功能已移除，池就是 JMS 给的全部节点（不再按白名单过滤/排序）
     # 节点源 = 本项目自己拉取的 JMS 订阅（2026-10-29 用户定：与 xpilot 彻底解耦）。
     # 订阅里的字段（protocol/address/port/uuid/flow/security/servername/reality_*）
     # 与 _node_outbound() 期望的完全一致，所以代理配置生成逻辑不用改。
@@ -584,12 +623,10 @@ def build_multi_config(nodes=None):
         _log('多端口池：JMS 订阅取不到节点（详见 jms_pool.py 输出）')
         return [], False
 
-    # 优先用「address 在白名单内」的节点（实测该服务商 address == 出口 IP）；剩下的也编进去，
-    # 反正后面探活会按「实测出口 ∈ 白名单」筛选，编多不亏。
-    wl = set(whitelist)
+    # 排序：vless 优先（ss 节点有过不通先例），其余按 id。全部节点都编进池，
+    # 实际用哪个由探活（网关探针）实时决定。
     ordered = sorted(nodes.items(),
-                     key=lambda kv: (kv[1].get('address') not in wl,
-                                     kv[1].get('protocol') != 'vless', kv[0]))
+                     key=lambda kv: (kv[1].get('protocol') != 'vless', kv[0]))
     inbounds, outbounds, rules, mapping = [], [], [], []
     for i, (nid, node) in enumerate(ordered):
         if not node.get('address'):
@@ -751,7 +788,6 @@ def probe_ports(mapping=None, force=False, timeout=EGRESS_TIMEOUT):
         return {}
 
     from concurrent.futures import ThreadPoolExecutor
-    wl = set(G.load_whitelist() or [])
 
     def _probe_once(port, src, timeout):
         try:
@@ -775,7 +811,16 @@ def probe_ports(mapping=None, force=False, timeout=EGRESS_TIMEOUT):
             if eg:
                 break
             time.sleep(0.25 * (attempt + 1))
-        return port, {'node': nid, 'egress': eg, 'ok': bool(eg and eg in wl), 'at': time.time()}
+        # ok 的判据（2026-10-30 改）：出口测得出来 **且** 经该端口打老虎网关被放行。
+        # 旧口径是「出口 IP ∈ 本地白名单镜像」，白名单已废，改为直接问网关（最终真相）。
+        ok = False
+        if eg:
+            try:
+                st, _d = probe_tiger(port=port)
+                ok = (st == 'ok')
+            except Exception:
+                ok = False
+        return port, {'node': nid, 'egress': eg, 'ok': ok, 'at': time.time()}
 
     out = {}
     with ThreadPoolExecutor(max_workers=min(3, len(mapping))) as ex:
@@ -787,7 +832,7 @@ def probe_ports(mapping=None, force=False, timeout=EGRESS_TIMEOUT):
     except Exception:
         pass
     good = sum(1 for v in out.values() if v.get('ok'))
-    _log(f'多端口池探活：{good}/{len(out)} 个端口出口在白名单内')
+    _log(f'多端口池探活：{good}/{len(out)} 个端口可用（老虎网关放行）')
     return out
 
 
@@ -848,18 +893,12 @@ def fast_switch(exclude_port=None, force_probe=False):
     #    「判定三层」第 2 条已说明必须实测，这里的推断只是**首次**的临时兜底，
     #    一旦真出过问题，缓存就建立起来了，后续都走实测数据）。
     if not cands and force_probe is False and not os.path.exists(MULTI_PORTS):
-        try:
-            import jms_pool as _J
-            _r = _J.refresh(network=False)
-            wl = set(G.load_whitelist() or [])
-            for port, nid in mapping:
-                if exclude_port is not None and int(port) == int(exclude_port):
-                    continue
-                addr = ((_r.get('nodes') or {}).get(nid) or {}).get('address')
-                if addr and addr in wl:
-                    return port, addr, nid
-        except Exception:
-            pass
+        # 2026-10-30：无白名单可参照 → 首次直接拿池内第一个端口试（真不行会被网关拒，
+        # 下一轮 probe_ports 就会把它标成 ok=False，代价只是一次失败请求）。
+        for port, nid in mapping:
+            if exclude_port is not None and int(port) == int(exclude_port):
+                continue
+            return port, None, nid
     if not cands:
         if not force_probe:
             # 强制重探一次（缓存过期 / 全部端口都失败过 / 刚从 assume 失败回来）。

@@ -4,6 +4,23 @@
 
 ## [Unreleased]
 
+### 变更（老虎白名单整体弃用 + 盘中禁拉订阅 + 只在两个窗口刷新 IP 池 + 切换次数入总结，2026-10-30 16:55）
+
+> 来源：用户 2026-10-30 两条连续指令。原话要点：「我已经把老虎平台的白名单 IP 全部删除了，以后不需要这个加白动作」；「盘中为交易时段，工具强制盘中禁止拉取 JMS 订阅信息，盘中只在本地 IP 池中做 fallback……只在两个特定时间段拉取 JMS 最新可用 IP 信息并更新本地可用 IP 池，这两个时间段分别是收到用户盯盘指令的时候和收盘后汇报总结之前……中间交易时段不更新 IP 池，如果发生中间交易时段所有 IP 都不可用，那么问题归因应该是 JMS 的代理服务稳定性问题」；「以后每次盯盘总结要多汇报一项数据，切换 IP 的次数，并且这个数据要持久化存储下来，用来评估代理服务的稳定性」。
+
+- **为什么改**：① 老虎侧白名单已清空，本地「出口 IP ∈ 白名单镜像」这套判定失去意义，而且它会把「本地镜像与老虎页不一致」变成一堆无法执行的提示（提示用户去加白，但用户已经不维护白名单了）；② 昨天（10-29）已经证明「每轮采样路到订阅」会把交易链拖死，根本原因是**本地 6 个 IP 本来就够用、交易时根本不需要重拉订阅**；③ 切换 IP 是代理服务质量的直接指纹，需要累积数据才能判断「要不要换服务商」。
+- **改了什么**：
+  - **判定口径**：`ip_pool.ensure()` 从「出口 IP ∈ 本地白名单镜像」改为**只看老虎网关放不放行**（`probe_tiger()` 无签名探针）；`probe_ports()` 的端口 `ok` 改成「出口测得出来 + 经该端口打网关被放行」；`build_multi_config()` / `fast_switch()` / `pool_candidates()` 全部去掉白名单依赖（池 = JMS 给的全部节点）。`probe_tiger(port=...)` 新增端口参数（逐端口探活用）。
+  - **盘中禁拉订阅（工具强制两层）**：① 代码层 `jms_pool.fetch_subscription(allow_intraday=False)` 在港/美交易时段直接返回 `blocked_intraday`、**一个网络请求都不发**；② 命令层新增 `.claude/hooks/jms_guard.py`（PreToolUse Bash，CC/ZCode/CodeBuddy 走 `.claude/settings.json`，pi 走 `.pi/extensions/trade-guards.ts` 桥接），拦「盘中跑 `jms_pool.py` / `ip_pool.py --refresh」且无 `--allow-intraday` 的命令；只读子命令（`--multi-status` / `--status`）放行。
+  - **两个刷新窗口**：① `preflight.py`（收到盯盘指令时）→ `refresh(force=True, allow_intraday=True)` + `start_multi(force=True)`，输出「🌐 IP 池已刷新（N 节点 / M 端口）」；② `stop_summary.py`（收盘前写总结）开头���壳，输出「🌐 收尾刷新 IP 池」。中间时段不更新（热路径 `network=False`，只读本地缓存——上一轮已改）。
+  - **失败归因改口径**：池内全不可用 → 文案从「去老虎页加白」改为「归因为 JMS 代理服务的稳定性问题，等下一个刷新窗口或考虑更换更稳定的代理服务」（`apply_proxy` / `_IPRetryClient` / `ip_pool` CLI / `account_status` 四处同步）。
+  - **切换计数与持久化**：`ip_pool.log_switch()` 每次真实换端口追加一行到 `reviews/ip-switch-log.csv`（入库、append-only，列：`timestamp_utc/hkt/et, market, session_id, source(retry|ensure), from_port, to_port, from_node, to_node, reason`）；`_IPRetryClient` 请求级换端口写 `retry`、`ensure()` 体检换端口写 `ensure_switch`、重拉订阅后恢复写 `ensure_switch_after_resub`。`stop_summary.py` 新增 `ip_switch_stats()`，在总结表加一行「切换 IP 次数（本会话 / 当日全会话 / 近 7 日日均）」，飞书业务版也加一行「代理稳定性」。
+  - **白名单功能退役**：`proxy_guard.py` 的 `main()` 改为只输一句停用提示（保留源码与公共设施：`ip_pool` 仍 import 它的 `_print` / `subprocess` / `PROJECT_ROOT` / `TMP_DIR`）；`preflight.py` 不再调它（顶掉原来 110s 超时那一块，preflight 明显变快）；`monitor_watcher.py` 的 `check_proxy_whitelist()` 直接 return（watcher 已无检查项，进程保留不删）；`config.example.json` 删除 `tiger_whitelist` 相关字段，本机 `config.json` 保留数据但注释标「已弃用、代码不读」。
+  - **文档**：`SKILL.md`「IP 池保证」节整体重写为「本地 IP 池：盘中只在池内 fallback，订阅只在两个窗口刷新」；停盯总结节新增「必须加报切换 IP 次数」；`accounts.md` 白名单节改写为「本地 IP 池（白名单整体弃用）」；`references/monitoring.md` 的 watcher 描述、`references/auto-mode.md` 的实盘第二道拦截面同步。
+- **验证（本机实测）**：`jms_pool.py` CLI 盘中输出「本地 IP 池：6 个节点（缓存兜底，未真拉取）+ 盘中已阻止拉取订阅」；`fetch_subscription()` 返回 `blocked_intraday`、`refresh(allow_intraday=True)` 返回 `ok`；`jms_guard.py` 探针：盘中跑 `jms_pool.py` → exit 2 被拦、带 `--allow-intraday` → 放行、`ip_pool.py --multi-status` → 放行；`preflight.py` 输出「🌐 IP 池已刷新（6 个节点 / 6 个 IP，池内 6 个端口）」且不再有白名单提示；`stop_summary.py --dry-run` 输出「🌐 收尾刷新 IP 池」+ 总结表新增行「切换 IP 次数（本会话）0 次」+ 飞书版「代理稳定性」行；`log_switch()`/`ip_switch_stats()` 用临时日志文件验证（本会话 2 次 retry / 当日全会话 3 次 / 别的会话 1 次 / hk 市场过滤 0 次均正确）。
+- **⚠️ 回归风险（必须告知用户）**：**实盘误开防护的第二道面（网络层物理拒）失效**。旧设计：实盘未解锁 → `apply_proxy` 不挂代理 → 直连 → 被老虎 IP 白名单在连接层拒（`access forbidden`）。现在白名单已删，直连不再被拒，只剩券商「非合规出口只允许平仓/减仓/转出」这一道（开仓/加仓仍被拒，但查询/平仓类请求会真的成功）。第一道闸（6 个下单脚本的 `live_locked` 拒单）不受影响、仍是主要防线；建议后续把「实盘无解锁不得发任何实盘请求」做成`apply_proxy` 里的硬拒（而非依赖网络层），否则防护强度比 08-21 那次设计弱一层。
+- **边界**：不改交易策略、风控参数、下单参数；不改 `_IPRetryClient` 的毫秒级换端口机制；不动 JMS 订阅链接与节点凭证（仍在 gitignore 的本地配置与 `tmp/` 缓存里）。
+
 ### 变更（热路径彻底不拉订阅：本地 IP 池缓存当唯一事实源，2026-10-30 16:05）
 
 - **为什么改（用户提问触发）**：「本地 IP 池有 6 个 IP，为什么还会频繁去拉取 JMS 的订阅？不可能 6 个 IP 都失效吧」——问得对，这是上一轮修复没解决干净的设计问题：`jms_pool.refresh()` 原来带 600 秒 TTL、且被放在**交易主链路**上（盯盘/下单每轮采样都会通过 `apply_proxy → start_multi → build_multi_config` / `fast_switch` / `ensure` 调它 3 次左右），于是**每个 10 分钟就有一次真实拉取落在交易路径上**——订阅源一卡，采样与下单跟着卡。而本地那 6 个 IP 与节点凭证全都在 `tmp/jms_subscription.cache` 里，交易本来就不需要重拉。

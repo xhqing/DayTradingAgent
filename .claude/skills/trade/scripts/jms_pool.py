@@ -61,6 +61,35 @@ _last_fetch_fail_at = 0.0    # 进程级：上次拉取失败的时刻（time.ti
 _in_fetch = False            # 进程级：正在拉取中（防递归）——见下条注释
 
 
+def in_trading_session(now=None):
+    """现在是否处于港/美可交易时段。返回 (bool, 'HK'|'US'|None)。
+
+    港股：HKT 09:30-12:00 / 13:00-16:00；美股：ET 04:00-16:00（含盘前，与 skill 口径一致）。
+    只看星期、不看节假日——对「盘中禁止拉订阅」这条护栏来说，节假日多禁一会儿无副作用
+    （两个允许窗口都走 allow_intraday=True 显式放行）。
+    """
+    from datetime import datetime
+    try:
+        from zoneinfo import ZoneInfo
+    except Exception:
+        return False, None
+    now = now or datetime.now()
+    try:
+        hk = now.astimezone(ZoneInfo('Asia/Hong_Kong'))
+        if hk.weekday() < 5:
+            hm = hk.hour * 60 + hk.minute
+            if 570 <= hm < 720 or 780 <= hm < 960:
+                return True, 'HK'
+        et = now.astimezone(ZoneInfo('America/New_York'))
+        if et.weekday() < 5:
+            hm = et.hour * 60 + et.minute
+            if 240 <= hm < 960:
+                return True, 'US'
+    except Exception:
+        pass
+    return False, None
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 配置读取
 # ──────────────────────────────────────────────────────────────────────────────
@@ -78,7 +107,7 @@ def load_subscription_url():
 # 拉取
 # ──────────────────────────────────────────────────────────────────────────────
 
-def fetch_subscription(url=None, timeout=None, use_local_pool=True):
+def fetch_subscription(url=None, timeout=None, use_local_pool=True, allow_intraday=False):
     """拉取订阅原文。返回 (ok, text_or_None, reason)。
 
     走本项目自己的代理池端口（避免直连被墙 / 被 Cloudflare 拦），池不可用时退回直连。
@@ -86,7 +115,19 @@ def fetch_subscription(url=None, timeout=None, use_local_pool=True):
 
     `timeout` = 单通道超时（秒）；不传用 FETCH_TIMEOUT（10s）。缓存过期时的快拉传
     FAST_FETCH_TIMEOUT（5s）——见模块顶部 T177 的说明，绝不允许再把调用方卡 60 秒以上。
+
+    **盘中禁止拉订阅（2026-10-30 用户立，工具强制在这一层）**：港/美可交易时段内直接
+    返回 `blocked_intraday`、**一个网络请求都不发**。只允许两个窗口刷新：
+      ① 收到盯盘指令时（preflight 传 `allow_intraday=True`）；
+      ② 收盘前写总结时（stop_summary 传 `allow_intraday=True`）。
+    盘中只有本地 IP 池在干活：哪个 IP 请求失败就在池内换端口，池全不可用则归因为
+    「JMS 代理服务稳定性问题」→ 该换更稳定的代理服务，而不是在这儿反复拉订阅。
     """
+    if not allow_intraday:
+        _in_sess, _mkt = in_trading_session()
+        if _in_sess:
+            return False, None, (f'blocked_intraday（{_mkt} 交易时段：禁止拉取 JMS 订阅，'
+                                 f'只用本地 IP 池；刷新只在盯盘启动与收盘前总结两个窗口）')
     url = url or load_subscription_url()
     if not url:
         return False, None, 'no_subscription_url'
@@ -428,7 +469,7 @@ def compare(jms_ips=None, whitelist=None):
     }
 
 
-def refresh(cache=True, ttl=600, force=False, network=True):
+def refresh(cache=True, ttl=600, force=False, network=True, allow_intraday=False):
     """一次完整刷新：拉订阅 → 解析 → 返回 {ok, nodes, ips, reason}。
 
     结果缓存到 `tmp/jms_subscription.cache`（含节点凭证，0600、已 gitignore）。
@@ -443,7 +484,7 @@ def refresh(cache=True, ttl=600, force=False, network=True):
          fast_switch / ensure），10 分钟 TTL 会让每个会话每 10 分钟**在交易主链路上**做一次
          真实拉取——这正是 2026-10-29 卡死（甚至下不了单）的放大器。本地那 6 个 IP 与节点
          凭证都已经在缓存文件里，交易根本不需要重新拉订阅；拉订阅只用于「发现订阅商换节点」
-         这类**慢信号**，应该交给低频的守护路径（proxy_guard / preflight / 手工 CLI）。
+         这类**慢信号**，只交给两个窗口（preflight 盯盘启动 / stop_summary 收盘前总结）+ 手工 CLI。
          （无缓存时例外：允许联网引导一次，否则首次跑不起来。）
 
     `force=True` 强制真拉取（运维排查 / 用户手工刷新时用）。
@@ -474,7 +515,8 @@ def refresh(cache=True, ttl=600, force=False, network=True):
                         'reason': f'cache({age:.0f}s，拉取失败退避中，'
                                   f'{int(FETCH_FAIL_BACKOFF - (time.time() - _last_fetch_fail_at))}s 后重试)',
                         'stale': True}
-            ok, text, reason = fetch_subscription(timeout=FAST_FETCH_TIMEOUT)
+            ok, text, reason = fetch_subscription(timeout=FAST_FETCH_TIMEOUT,
+                                                  allow_intraday=allow_intraday)
             nodes = parse_subscription(text) if ok else {}
             if nodes:
                 if cache:
@@ -485,7 +527,7 @@ def refresh(cache=True, ttl=600, force=False, network=True):
             return {'ok': True, 'nodes': cached, 'ips': ip_pool_from_nodes(cached),
                     'reason': f'{reason}（缓存已过期，已用旧缓存兜底，'
                               f'{FETCH_FAIL_BACKOFF}s 内不再重试）', 'stale': True}
-    ok, text, reason = fetch_subscription()
+    ok, text, reason = fetch_subscription(allow_intraday=allow_intraday)
     nodes = parse_subscription(text) if ok else {}
     if nodes:
         if cache:
@@ -519,53 +561,37 @@ def _read_cache():
 
 
 def main(argv=None):
-    """CLI：只输出数量与是否同步，**绝不打印链接与 IP 原文**。
+    """CLI：只输出数量与是否受阻，**绝不打印链接与 IP 原文**。
 
     用法：
-        python3 jms_pool.py            # 拉取 + 解析 + 与本地白名单镜像比对，打印摘要
-        python3 jms_pool.py --verbose  # 额外打印每个 IP 的归属（本机终端看，别贴出去）
+        python3 jms_pool.py                     # 刷新本地 IP 池（盘中会被拦，见下）
+        python3 jms_pool.py --allow-intraday    # 盘中强制刷新（仅供人工排查 / 两个窗口）
+        python3 jms_pool.py --verbose           # 额外打印 IP 清单（本机终端看，别贴出去）
+
+    白名单功能已移除（2026-10-30 用户立：老虎侧白名单已清空、不再维护），
+    这里只报「拉到了几个节点 / 是不是用缓存兜底 / 是否被盘中护栏拦下」。
     """
     argv = argv if argv is not None else sys.argv[1:]
+    allow_intraday = '--allow-intraday' in argv
     url = load_subscription_url()
     if not url:
         print('❌ 未配置 JMS 订阅链接。请在本机 config.json 的 jms.subscription_url 填入'
               '（该文件已被 .gitignore 忽略，不会进仓库）。')
         return 3
 
-    r = refresh()
+    r = refresh(force=True, allow_intraday=allow_intraday)
     if not r['ok']:
         print(f'❌ 拉取订阅失败：{r["reason"]}（未打印链接与内容）')
         return 2
 
-    print(f'✅ 拉取成功：{len(r["nodes"])} 个节点，{len(r["ips"])} 个入口 IP'
-          + ('（用的是本地缓存兜底）' if r['stale'] else ''))
-
-    try:
-        import proxy_guard as G
-        wl = G.load_whitelist() or []
-    except Exception:
-        wl = []
-    if not wl:
-        print('⚠️ 本地老虎白名单镜像为空，无法比对')
-        return 0
-
-    d = compare(r['ips'], wl)
-    if d['in_sync']:
-        print(f'✅ JMS 池与老虎白名单一致（{d["jms_count"]} 个 IP）')
-    else:
-        print(f'⚠️ 不一致：JMS {d["jms_count"]} 个 / 白名单 {d["whitelist_count"]} 个')
-        if d['missing_in_whitelist']:
-            print(f'   → JMS 有 {len(d["missing_in_whitelist"])} 个 IP 不在老虎白名单内，'
-                  f'这些节点当前用不了，需去老虎开发者页加白')
-        if d['stale_in_whitelist']:
-            print(f'   → 白名单有 {len(d["stale_in_whitelist"])} 个 IP 已不在 JMS 池内，'
-                  f'建议从老虎页清掉')
-        if '--verbose' in argv:
-            for ip in d['missing_in_whitelist']:
-                print(f'      [待加白] {ip}')
-            for ip in d['stale_in_whitelist']:
-                print(f'      [可清除] {ip}')
-    return 0 if d['in_sync'] else 1
+    print(f'✅ 本地 IP 池：{len(r["nodes"])} 个节点，{len(r["ips"])} 个入口 IP'
+          + ('（缓存兜底，未真拉取）' if r['stale'] else '（已刷新）'))
+    if r['reason'] and 'blocked_intraday' in str(r['reason']):
+        print('ℹ️ 盘中已阻止拉取订阅，仅用本地 IP 池（2026-10-30 用户立）')
+    if '--verbose' in argv:
+        for nid, n in (r['nodes'] or {}).items():
+            print(f'   {nid}  {n.get("protocol")}  {n.get("address")}:{n.get("port")}')
+    return 0
 
 
 if __name__ == '__main__':

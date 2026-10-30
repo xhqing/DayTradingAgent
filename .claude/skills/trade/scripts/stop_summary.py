@@ -376,6 +376,61 @@ def detect_trade_date(market, account_mode):
     return datetime.now(market_day_tz(market)).date().isoformat()
 
 
+def ip_switch_stats(market, trade_date, sid8):
+    """统计 IP 切换次数（2026-10-30 用户立：每次停盯总结必报这一项）。
+
+    数据源 `reviews/ip-switch-log.csv`（由 ip_pool.log_switch() 追加，含 utc/hkt/et
+    三份时间戳 + market + session_id + source）。返回 dict：
+      session = 本会话该市场日的切换次数（按 sid8 + 日期窗口过滤）
+      by_source = {retry / ensure: n}（本会话）
+      d7_total / d7_days / d7_avg = 近 7 日全部会话的累计与日均
+      total = 当日全部会话（不分 sid）的切换次数（多会话并行时的全局口径）
+
+    过滤口径：按「北京日期」匹配——切换事件的三份时间戳里 hkt 与 ET 交易日可能跨日，
+    取 hkt 日期等于 trade_date 的 ET 交易日换算太绕；这里用「事件时间落在该市场交易日的
+    时间窗内」判断：ET 日 D 对应北京 D 20:00 ~ D+1 12:00（夏令时）/ 13:00（冬令时），
+    为免边界复杂，统一用「hkt 日期 ∈ {D, D+1} 且 market 匹配」的宽松口径——切换计数是
+    稳定性指标，宽松一点不影响结论，反而不会漏计。
+    """
+    import csv
+    from datetime import datetime, timedelta
+    out = {"session": 0, "by_source": {}, "total": 0,
+           "d7_total": 0, "d7_days": 0, "d7_avg": 0.0, "days": []}
+    path = os.path.join(project_root(), "reviews", "ip-switch-log.csv")
+    try:
+        if not os.path.exists(path):
+            return out
+        rows = list(csv.DictReader(open(path)))
+    except Exception:
+        return out
+    y, m, d = [int(x) for x in trade_date.split("-")]
+    day = datetime(y, m, d)
+    ok_days = {day.strftime("%Y-%m-%d"), (day + timedelta(days=1)).strftime("%Y-%m-%d")}
+    for r in rows:
+        if (r.get("market") or "") != market:
+            continue
+        hkt_day = (r.get("timestamp_hkt") or "")[:10]
+        if hkt_day not in ok_days:
+            continue
+        out["total"] += 1
+        if sid8 and (r.get("session_id") or "") == sid8:
+            out["session"] += 1
+            src = r.get("source") or "other"
+            out["by_source"][src] = out["by_source"].get(src, 0) + 1
+    # 近 7 日（按 hkt 日期归并，全部会话）
+    cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    per_day = {}
+    for r in rows:
+        hkt_day = (r.get("timestamp_hkt") or "")[:10]
+        if hkt_day >= cutoff:
+            per_day[hkt_day] = per_day.get(hkt_day, 0) + 1
+    out["days"] = sorted(per_day.items())
+    out["d7_total"] = sum(per_day.values())
+    out["d7_days"] = len(per_day)
+    out["d7_avg"] = round(out["d7_total"] / out["d7_days"], 1) if per_day else 0.0
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--market", default="us", choices=["us", "hk"])
@@ -393,6 +448,24 @@ def main():
     if a.detect_market:
         print(detect_market_for_session())
         return 0
+
+    # ── 刷新窗口 ②：收盘后写总结前刷新本地 IP 池（2026-10-30 用户立）────────────
+    # 两个允许拉取 JMS 订阅的窗口之一（另一个是 preflight 盯盘启动）。这里显式传
+    # allow_intraday=True——用户可能在盘中就喊停，"停盯总结"这个时点始终允许刷新。
+    # 顺带把「本场切换 IP 次数」的数据源（reviews/ip-switch-log.csv）保持在最新。
+    try:
+        import jms_pool as _J2
+        _rp = _J2.refresh(force=True, allow_intraday=True)
+        if _rp.get('ok'):
+            import ip_pool as _P2
+            _mp = _P2.start_multi(force=True)
+            print(f"🌐 收尾刷新 IP 池：{len(_rp.get('nodes') or {})} 个节点 / 池内 "
+                  f"{len(_mp or [])} 个端口"
+                  + ("（订阅源没拉到，用缓存兜底）" if _rp.get('stale') else ""))
+        else:
+            print(f"⚠️ 收尾刷新 IP 池失败（{_rp.get('reason')}），继续生成总结")
+    except Exception as _e2:
+        print(f"⚠️ 收尾刷新 IP 池技术异常（{_e2}），继续生成总结")
 
     root = project_root()
     sid8 = current_sid8()
@@ -533,6 +606,11 @@ def main():
     L.append(f"| 笔数 / 胜率 | {len(trades)} 笔 / **{(wins / len(trades) * 100 if trades else 0):.0f}%** |")
     L.append(f"| 总 max_loss（净口径） | {money_abs(total_ml)} |")
     L.append(f"| **整体实际落地赔率** | **{('%.2fR' % overall_r) if overall_r is not None else 'N/A'}**（总盈亏 ÷ 总 max_loss） |")
+    _sw = ip_switch_stats(a.market, date, sid8)
+    _src = "、".join(f"{k} {v}" for k, v in sorted(_sw["by_source"].items())) or "—"
+    L.append(f"| **切换 IP 次数（本会话）** | **{_sw['session']} 次**（{_src}）"
+             f"｜当日全会话 {_sw['total']} 次｜近 7 日 {_sw['d7_total']} 次 / "
+             f"{_sw['d7_days']} 天（日均 {_sw['d7_avg']}） |")
     L.append("")
     L.append("## 三、北京日期对照（App 对账用）")
     L.append("")
@@ -582,6 +660,9 @@ def main():
     F.append(f"- 净盈亏：**{money(total_pnl)}**")
     F.append(f"- 整体实际落地赔率：**{('%.2fR' % overall_r) if overall_r is not None else 'N/A'}**（总盈亏 ÷ 总 max_loss {money_abs(total_ml)}）")
     F.append(f"- 收工时状态：空仓（无隔夜持仓）")
+    # 2026-10-30 用户立：每次停盯总结都要报「切换 IP 次数」（评估代理服务稳定性）
+    F.append(f"- 代理稳定性：本场切换 IP **{_sw['session']} 次**"
+             f"（当日全会话 {_sw['total']} 次，近 7 日日均 {_sw['d7_avg']} 次）")
     if len(by_bj) > 1:
         F.append("")
         F.append("## 对账提示")

@@ -28,6 +28,9 @@ import { additionalContext, runHook } from "./lib/hooks.ts";
 const SECRET_TRIGGER = /\.tigeropen|accounts\.json|private_key|TIGEROPEN|tiger_openapi_config/;
 // monitor_guard pretool 只在命令出现采样相关脚本名时可能拦（跑法 / 连跑 / 空转 / 池互斥）。
 const MONITOR_TRIGGER = /monitor_segment|ws_segment|futu_ws_segment|snapshot|hot_list/;
+// jms_guard pretool 拦「盘中拉取 JMS 订阅」（2026-10-30 用户立：盘中只用本地 IP 池，
+// 订阅只在「收到盯盘指令」与「收盘前写总结」两个窗口刷新）。
+const JMS_TRIGGER = /jms_pool\.py|ip_pool\.py/;
 // read 工具禁止直接读的凭证文件（对齐 CC 端 permissions.deny 的口径并覆盖 ~/.tigeropen）。
 // 路径写法兼容绝对 / 相对（`accounts.json` 裸文件名也算）与 Windows 反斜杠。
 const READ_DENY = [
@@ -87,6 +90,9 @@ export default function tradeGuards(pi: ExtensionAPI) {
 			}
 			if (MONITOR_TRIGGER.test(command)) {
 				jobs.push({ label: "monitor_guard", result: runHook("monitor_guard.py", ["pretool"], payload) });
+			}
+			if (JMS_TRIGGER.test(command)) {
+				jobs.push({ label: "jms_guard", result: runHook("jms_guard.py", ["pretool"], payload) });
 			}
 			if (jobs.length === 0) return;
 

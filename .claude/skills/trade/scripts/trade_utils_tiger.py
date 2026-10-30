@@ -239,32 +239,20 @@ def apply_proxy(config):
                                 apply_port=_apply_proxy_port)
         _IP_POOL_RESULT = _res
 
-        # 核心监护职责：JMS 最新池 vs 老虎白名单池不一致 → 提醒用户去老虎页加白
-        gap = _res.get('whitelist_gap') or {}
-        if gap and not gap.get('in_sync'):
-            if gap.get('missing_in_whitelist'):
-                print(f"⚠️ JMS 池里有 {len(gap['missing_in_whitelist'])} 个 IP 不在老虎白名单内"
-                      f"（这些节点当前用不了）—— 请去老虎开发者页加白；加白后点面板「已添加」"
-                      f"可同步本地镜像。手查：python3 .claude/skills/trade/scripts/jms_pool.py",
-                      file=sys.stderr)
-            if gap.get('stale_in_whitelist'):
-                print(f"ℹ️ 老虎白名单里有 {len(gap['stale_in_whitelist'])} 个 IP 已不在 JMS 池内"
-                      f"（拉不到的旧 IP），建议从老虎页清掉", file=sys.stderr)
-
+        # 2026-10-30 用户立：老虎白名单已撤（不再有「加白」这件事），这里不再做任何
+        # 白名单比对与加白提示——只看网关放不放行。
         if _res.get('ok'):
-            if _res.get('action') == 'switched':
+            if _res.get('action') in ('switched', 'switched_after_resub'):
                 print(f"🔄 IP 池：已在池内换到端口 {_res.get('proxy_port')}"
                       f"（出口 {_res.get('egress')}）", file=sys.stderr)
-            if _res.get('mirror_stale'):
-                print("ℹ️ 老虎实际放行但本地白名单镜像缺这个 IP——建议补 config.tiger_whitelist 镜像"
-                      "（老虎页加白后点面板「已添加」可自动同步）", file=sys.stderr)
         else:
             print(f"🚨 IP 池不可用：{_res.get('reason')}｜出口 {_res.get('egress')} —— "
-                  f"老虎 API 极可能被白名单拒（下单 / 平仓 / 查持仓都会失败）。"
-                  f"处置：去老虎开发者页把 JMS 池里的 IP 全部加白，然后重试；"
-                  f"手查 python3 .claude/skills/trade/scripts/jms_pool.py", file=sys.stderr)
+                  f"老虎 API 调用会失败（下单 / 平仓 / 查持仓）。"
+                  f"归因：JMS 代理服务的稳定性问题，等下一个刷新窗口（盯盘启动 / 收盘前总结）"
+                  f"重拉订阅，或考虑更换更稳定的代理服务；手查 "
+                  f"python3 .claude/skills/trade/scripts/ip_pool.py", file=sys.stderr)
     except Exception as e:
-        print(f"⚠️ IP 池检查异常（不阻断，但下单可能被白名单拒）: {e}", file=sys.stderr)
+        print(f"⚠️ IP 池检查异常（不阻断，但下单可能失败）: {e}", file=sys.stderr)
 
 
 def _is_live_account(config):
@@ -530,14 +518,20 @@ class _IPRetryClient:
                     port, eg, node = _pool.fast_switch(exclude_port=cur)
                     if port:
                         _apply_proxy_port(port)
-                        print(f"🔄 IP 池：请求被白名单拒 → 换到端口 {port}"
+                        print(f"🔄 IP 池：请求失败 → 换到端口 {port}"
                               f"（出口 {eg}），重发请求", file=sys.stderr)
+                        # 2026-10-30 用户立：切换次数持久化，用于评估代理服务稳定性
+                        try:
+                            _pool.log_switch(cur, port, None, node, 'request_retry',
+                                             source='retry')
+                        except Exception:
+                            pass
                     else:
-                        # 本项目自己的端口池里没有可用端口了 —— 不再有「重启 xpilot」这种
-                        # 兜底（与 xpilot 彻底解耦，2026-10-29）。直接如实报错。
-                        print("🚨 IP 池：当前出口被白名单拒，且本项目端口池内无可用端口 —— "
-                              "请去老虎开发者页为 JMS 池里的 IP 加白；"
-                              "手查 python3 .claude/skills/trade/scripts/jms_pool.py",
+                        # 池内没有可用端口了 —— 归因到 JMS 代理服务的稳定性（2026-10-30 用户立：
+                        # 不再有「去老虎页加白」这条出路，老虎侧白名单已清空且不再维护）。
+                        print("🚨 IP 池：本地池内已无可用端口 —— 归因为 JMS 代理服务的稳定性"
+                              "问题，考虑更换更稳定的代理服务；手查 "
+                              "python3 .claude/skills/trade/scripts/ip_pool.py",
                               file=sys.stderr)
                         raise last_exc
                     try:

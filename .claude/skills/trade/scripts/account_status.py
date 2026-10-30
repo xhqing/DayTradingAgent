@@ -630,7 +630,8 @@ def position_status(account=None):
                 failed_tags.add(account_tag)
                 lines.append(f'🚨 持仓状态查询失败（账户 {account_tag}）: {query_err}')
                 lines.append('    → 这是查询链路故障、**不是**「账户已无持仓」——不要按空仓处置；'
-                             '先排查（常见根因：代理节点漂移出老虎 IP 白名单，见 proxy_guard 白名单守护），'
+                             '先排查（常见根因：本地 IP 池里的节点集体失效 = JMS 代理服务稳定性问题，'
+                             '老虎侧白名单已于 2026-10-30 弃用），'
                              '修复前本段以 actions 记录为持仓依据。')
             stop = stops.get(code)
             stop_str = f'{stop:g}' if stop is not None else '无活动止损单'

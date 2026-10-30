@@ -166,19 +166,17 @@ def check_proxy_whitelist():
     5 分钟通知冷却，launchd 每 10 秒触发不会弹窗风暴。失败静默（检测链自身故障不应
     影响主守护流程）。
     """
-    guard = os.path.join(_PROJECT_ROOT, ".claude", "skills", "trade", "scripts", "proxy_guard.py")
-    try:
-        subprocess.run(["python3", guard], capture_output=True, timeout=90)
-    except Exception:
-        pass
+    # 2026-10-30 用户立：老虎白名单功能整体移除（老虎侧白名单已清空、不再维护），
+    # 白名单漂移检测没有意义了 —— 该检查停用。本地 IP 池的可用性由 ip_pool 在每次
+    # 真实请求上自愈（请求失败 → 池内换端口重发），不再需要独立巡检。
+    return
 
 
 def main():
-    if not in_trading_session():
-        return  # 盘外不检查
-    # 唯一保留的检查：白名单漂移检测 + 自动切换（2026-08-19 立；2026-08-21 空转警报
-    # 删除后为 watcher 仅存功能，与盯盘会话状态无关）。
-    check_proxy_whitelist()
+    # 2026-10-30：watcher 已无任何检查项（白名单漂移检测随白名单功能一起移除）。
+    # 保留进程与 launchd 项不删——停用比删除更安全（可回溯、用户想恢复也容易），
+    # 但这里直接返回，不做任何动作。
+    return
 
 
 if __name__ == "__main__":

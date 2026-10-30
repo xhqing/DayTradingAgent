@@ -130,24 +130,25 @@ _ensure_awake()
 # （2026-08-04 教训，多层防护见 monitoring.md「不因市况降频」节 + .claude/hooks/monitor_guard.py）。
 print("🔒 密采样提醒：盯盘密采样唯一入口是 monitor_segment.py 40 秒循环，禁用 cron / 直接 snapshot 替代。")
 
-# 老虎 IP 白名单守护（2026-08-19 立，工具强制）：当前节点出口漂出白名单时自动切回白名单内
-# 节点（preflight 时点就把服务恢复好，不等盘中断 API）；节点 IP 有变化时响铃弹窗给加白串、
-# 用户在老虎页加白后点「已添加」自动同步本地 config（按钮确认制，详见 scripts/proxy_guard.py
-# 头注释）。挂在 preflight = 每次盯盘启动必过这道闸（monitor_watcher 另在盘中每 10 秒兜底）。
-# 超时保护：guard 含连通验证（switch 60s + test 45s/候选、总预算 90s），timeout=110 兜住。
+# ── 刷新窗口 ①：盯盘启动时刷新本地 IP 池（2026-10-30 用户立）─────────────────
+# 用户口径：**只有两个窗口允许拉取 JMS 订阅**——① 收到盯盘指令时（就是这里）；
+# ② 收盘后写总结前（stop_summary.py）。盘中一律禁止拉订阅（jms_pool.fetch_subscription
+# 会直接返回 blocked_intraday），只用本地 IP 池、失败就在池内换端口。
+# 这里必须传 allow_intraday=True：盯盘启动往往正好在交易时段内。
 try:
-    import subprocess as _sp2
-    _r = _sp2.run(["python3", _os.path.join(_os.path.dirname(__file__), "proxy_guard.py")],
-                  capture_output=True, text=True, timeout=110)
-    _out = (_r.stdout or "").strip()
-    if _out:
-        print(_out)
-    if _r.returncode == 2:
-        print("🚨 白名单全漂出：盯盘前须先人工去老虎开发者页加白（弹窗已给 IP 串），否则老虎 API 全断")
-    elif _r.returncode == 3:
-        print("⚠️ proxy_guard 配置缺失（tiger_whitelist / nodes.json），白名单比对未生效")
+    import jms_pool as _J
+    _r = _J.refresh(force=True, allow_intraday=True)
+    if _r.get('ok'):
+        import ip_pool as _P
+        _m = _P.start_multi(force=True)
+        print(f"🌐 IP 池已刷新（{len(_r.get('nodes') or {})} 个节点 / "
+              f"{len(_r.get('ips') or [])} 个 IP，池内 {len(_m or [])} 个端口）"
+              + ("　⚠️ 用的是缓存兜底（订阅源本次没拉到）" if _r.get('stale') else ""))
+    else:
+        print(f"⚠️ IP 池刷新失败（{_r.get('reason')}）——将使用本地缓存；"
+              f"盘中不再重试（2026-10-30 口径）")
 except Exception as _e:
-    print(f"⚠️ 白名单守护检查失败（{_e}）——手动跑 python3 scripts/proxy_guard.py 确认")
+    print(f"⚠️ IP 池刷新技术异常（{_e}）——将使用本地缓存")
 
 # 交易互斥状态（2026-08-17 立，多会话并行盯盘·方案 A）：启动时一眼看到「谁在场」——
 # intent 日志有无 pending（有 = 后到开仓会被拒，先处理）、常驻白名单、在场注册会话数。
@@ -301,7 +302,7 @@ def _ensure_watcher():
     _label = "com.daytrading.monitor-watcher"
     _ls = _sp.run(["launchctl", "list"], capture_output=True, text=True)
     if _label in (_ls.stdout or ""):
-        print("🛡️ 密采样守护 watcher 已在跑（白名单漂移检测，低频不扰民）")
+        print("🛡️ 密采样守护 watcher 已在跑（低频、盘外静默）")
         return
     _plist = _os.path.expanduser(f"~/Library/LaunchAgents/{_label}.plist")
     if not _os.path.isfile(_plist):
