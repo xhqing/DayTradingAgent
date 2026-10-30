@@ -408,7 +408,10 @@ def main():
     except Exception as e:
         _print(f"❌ 无法加载 jms_pool.py（{e}）")
         return 3
-    _jms = J.refresh()
+    # 守护路径允许联网拉订阅（与交易热路径相反：这里的职责就是发现「订阅商换了节点」），
+    # 但频率压到 30 分钟一次——本脚本港股盘中每 10 秒被调一次，10 分钟 TTL 会每 10 分钟
+    # 撞一次真实拉取（2026-10-29 卡顿的放大器之一）。节点清单是慢信号，半小时足够。
+    _jms = J.refresh(ttl=1800)
     if not _jms.get("ok") or not _jms.get("nodes"):
         _print(f"❌ JMS 订阅取不到节点（{_jms.get('reason')}）—— 无法比对白名单。"
                f"手查：python3 .claude/skills/trade/scripts/jms_pool.py")

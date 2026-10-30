@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### 变更（热路径彻底不拉订阅：本地 IP 池缓存当唯一事实源，2026-10-30 16:05）
+
+- **为什么改（用户提问触发）**：「本地 IP 池有 6 个 IP，为什么还会频繁去拉取 JMS 的订阅？不可能 6 个 IP 都失效吧」——问得对，这是上一轮修复没解决干净的设计问题：`jms_pool.refresh()` 原来带 600 秒 TTL、且被放在**交易主链路**上（盯盘/下单每轮采样都会通过 `apply_proxy → start_multi → build_multi_config` / `fast_switch` / `ensure` 调它 3 次左右），于是**每个 10 分钟就有一次真实拉取落在交易路径上**——订阅源一卡，采样与下单跟着卡。而本地那 6 个 IP 与节点凭证全都在 `tmp/jms_subscription.cache` 里，交易本来就不需要重拉。
+- **改了什么**：
+  - `jms_pool.refresh()` 新增 `network=True/False` 参数——`network=False` 时**只读本地缓存、绝不发网络请求**（不管缓存多旧；无缓存才允许联网引导一次）。
+  - `ip_pool.py` 四个热路径调用点（`ensure()` 的 whitelist_gap 比对、`build_multi_config()`、`_port_node_map()`、`fast_switch()`）全部改为 `refresh(network=False)`。
+  - `proxy_guard.py`（守护路径，职责就是发现订阅商换节点）仍联网，但 TTL 提到 **1800 秒**——它港股盘中每 10 秒被调一次，10 分钟 TTL 等于每 10 分钟撞一次拉取。
+  - `ip_pool.ensure()` 的失败分支新增**唯一的联网重拉场景**：池内端口全失败（= 缓存里这 6 个真废了）→ `refresh(force=True)` 重拉 + `start_multi(force=True)` 重建 + 探一次（成功则 `action=switched_after_resub`）。这才是「6 个 IP 全失效」时该做的事。
+- **验证（订阅源打成黑洞 `http://10.255.255.1/sub` 后实测）**：`start_multi` 0.01s（6 端口）、`fast_switch` 0.0s、`ensure` 4.0s（探针本身开销）、**缓存 mtime 未变**（= 热路径零网络拉取）；`load_config()` 连续三次 0.93 / 1.59 / 1.62s（修复前缓存一过期就是 70s+）。
+- **回归风险**：低。① 热路径只用缓存，而缓存内容（6 节点 + 凭证）正是交易所需，无功能弱化；② 「订阅商换节点」的发现从「每 10 分钟（在交易路径上）」变成「守护路径 30 分钟 + preflight + 池内全失败时强制重拉 + 手工 CLI」，**慢信号的及时性仍足够**（节点清单本来就是几天一变）；③ 唯一新增行为是「全失败时多一次重拉重试」，失败仍照旧返回 failed。
+- **边界**：不改白名单判定口径（网关探针 + 实测出口仍为标准），不改 `ensure()` 的事前体检逻辑。
+
 ### 修复（T177：jms 订阅拉取阻塞拖死采样与下单；T178：美股 TICKER 实测结论，2026-10-30 15:35）
 
 - **为什么改**：2026-10-29 美股盯盘实测两个基础设施缺陷（当天已登记为 T177 / T178）。T177 的直接后果是**盘中失去交易能力**：21:47 起多个 `monitor_segment` 采样段完全不出数据（每次卡 60-90 秒以上）、`load_config()` 卡 70 秒以上、`python3 jms_pool.py` 卡 75 秒以上——`load_config() → apply_proxy() → ip_pool.ensure()` 与采样脚本每轮都走同一条链，所以下单脚本一样卡。当天只能靠 `touch tmp/jms_subscription.cache` 续期绕过去。

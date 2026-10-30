@@ -428,20 +428,33 @@ def compare(jms_ips=None, whitelist=None):
     }
 
 
-def refresh(cache=True, ttl=600, force=False):
+def refresh(cache=True, ttl=600, force=False, network=True):
     """一次完整刷新：拉订阅 → 解析 → 返回 {ok, nodes, ips, reason}。
 
     结果缓存到 `tmp/jms_subscription.cache`（含节点凭证，0600、已 gitignore）。
 
-    两级缓存策略（2026-10-29 补，性能必需）：
+    **两级缓存 + network 开关（2026-10-30 再修，接 T177）**：
       ① **TTL 内直接用缓存、不发请求**——`ip_pool.build_multi_config()` 会在每次切端口时
          调本函数，若每次都拉订阅，切换延迟会从 1ms 涨到秒级。
       ② 拉取失败时用**过期缓存兜底**（标记 stale=True），避免订阅源临时不可用就让整条
          交易链路瘫痪。
+      ③ **`network=False` = 热路径专用：只读本地缓存、绝不发网络请求**（不管缓存多旧）。
+         为什么必须这么改：盯盘 / 下单每轮采样都会调本函数 3 次左右（build_multi_config /
+         fast_switch / ensure），10 分钟 TTL 会让每个会话每 10 分钟**在交易主链路上**做一次
+         真实拉取——这正是 2026-10-29 卡死（甚至下不了单）的放大器。本地那 6 个 IP 与节点
+         凭证都已经在缓存文件里，交易根本不需要重新拉订阅；拉订阅只用于「发现订阅商换节点」
+         这类**慢信号**，应该交给低频的守护路径（proxy_guard / preflight / 手工 CLI）。
+         （无缓存时例外：允许联网引导一次，否则首次跑不起来。）
 
     `force=True` 强制真拉取（运维排查 / 用户手工刷新时用）。
     """
     global _last_fetch_fail_at
+    if not network:
+        cached = _read_cache()
+        if cached:
+            return {'ok': True, 'nodes': cached, 'ips': ip_pool_from_nodes(cached),
+                    'reason': 'cache_only（热路径不联网）', 'stale': True}
+        network = True   # 本地无缓存（首次运行）→ 仍允许联网引导一次（有界）
     if cache and not force and ttl:
         cached = _read_cache()
         if cached:

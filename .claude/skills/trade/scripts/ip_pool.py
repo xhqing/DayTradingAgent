@@ -242,7 +242,7 @@ def ensure(account='paper', quiet=False, allow_switch=True, budget=ENSURE_BUDGET
     # ① 确保本项目自己的端口池在跑（节点源 = JMS 订阅），并做一次「JMS 池 ↔ 白名单」比对
     try:
         import jms_pool as _J
-        _jms = _J.refresh()
+        _jms = _J.refresh(network=False)
         if _jms.get('ok') and _jms.get('ips'):
             out['whitelist_gap'] = _J.compare(_jms['ips'], whitelist)
     except Exception:
@@ -328,6 +328,36 @@ def ensure(account='paper', quiet=False, allow_switch=True, budget=ENSURE_BUDGET
         if not quiet:
             G._print(f'    ⚠️ 该端口仍不可用：出口 {e2}，网关 {st2}（{d2[:80]}）')
         cur_port = port
+
+    # ── 池内全部失败 → 可能是订阅商整批换了节点（缓存里那 6 个全废）────────────
+    # 2026-10-30 立：这是**唯一应该联网重拉订阅**的场景——本地缓存已经不能用，重拉才可能
+    # 拿到新节点（要不要再去老虎页加白是用户的事，但至少能告诉 TA「池子已经换了」）。
+    # 只试一次，失败照旧返回失败，不在这里循环等。
+    try:
+        import jms_pool as _J2
+        _fr = _J2.refresh(force=True)
+        if _fr.get('ok') and _fr.get('nodes'):
+            if start_multi(force=True):
+                port, eg, nid = fast_switch(force_probe=True)
+                if port:
+                    if apply_port:
+                        apply_port(port)
+                    e2, _ = probe_egress(port=port)
+                    st2, d2 = probe_tiger(account)
+                    out['proxy_port'], out['node'] = port, nid
+                    out['egress'] = e2
+                    out['in_pool'] = (e2 in wl_set) if e2 else None
+                    if st2 == 'ok':
+                        out['ok'] = True
+                        out['action'] = 'switched_after_resub'
+                        _log(f'ensure 重拉订阅后恢复：端口 {port}（节点 {nid}）出口 {e2}')
+                        if not quiet:
+                            G._print(f'    ✅ 重拉订阅后已恢复：端口 {port}，出口 {e2}')
+                        out['elapsed'] = round(time.time() - t0, 2)
+                        _save_state(out)
+                        return out
+    except Exception:
+        pass
 
     out['ok'] = False
     out['action'] = 'failed'
@@ -545,7 +575,7 @@ def build_multi_config(nodes=None):
     # 与 _node_outbound() 期望的完全一致，所以代理配置生成逻辑不用改。
     try:
         import jms_pool as _J
-        _r = _J.refresh()
+        _r = _J.refresh(network=False)
         nodes = _r['nodes'] if _r.get('ok') else {}
         default_id = None
     except Exception:
@@ -768,7 +798,7 @@ def _port_node_map():
             cfg = json.load(f)
         try:
             import jms_pool as _J
-            _r = _J.refresh()
+            _r = _J.refresh(network=False)
             nodes = _r['nodes'] if _r.get('ok') else {}
         except Exception:
             nodes = {}
@@ -820,7 +850,7 @@ def fast_switch(exclude_port=None, force_probe=False):
     if not cands and force_probe is False and not os.path.exists(MULTI_PORTS):
         try:
             import jms_pool as _J
-            _r = _J.refresh()
+            _r = _J.refresh(network=False)
             wl = set(G.load_whitelist() or [])
             for port, nid in mapping:
                 if exclude_port is not None and int(port) == int(exclude_port):
