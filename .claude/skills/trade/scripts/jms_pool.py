@@ -45,6 +45,21 @@ CONFIG_PATH = os.path.join(HERE, '..', 'config.json')
 TMP_DIR = os.path.join(ROOT, 'tmp')
 CACHE_PATH = os.path.join(TMP_DIR, 'jms_subscription.cache')
 
+# 拉取超时与失败退避（2026-10-30 立，修 T177）。
+# 背景：2026-10-29 美股盯盘时订阅源拉不到，fetch_subscription 走「代理 25s + 直连 25s」
+# 两条通道，每次卡 60-90 秒；而 refresh() 被 ip_pool.ensure() / build_multi_config() /
+# monitor_segment 每轮采样调用——结果整条采样链与下单链一起被拖死（当日至此无法下单）。
+# 现在：① 默认拉取超时降到 10s；② 缓存已过期时用 5s 快拉；③ 失败后 300s 内不再重试
+# （直接用旧缓存），保证最坏情况下 5 分钟内最多卡一次 10s、而不是每调一次卡 60s。
+FETCH_TIMEOUT = 10           # 无缓存时的拉取超时（秒，单通道）
+FAST_FETCH_TIMEOUT = 5       # 缓存过期时快拉超时（秒，单通道）
+FETCH_FAIL_BACKOFF = 900     # 拉取失败后的退避窗口（秒）——取 15 分钟：订阅源会回
+                             # HTTP 429（限流），重重重试反而一直拿不到；旧缓存完全够用，
+                             # 节点变动不差这 15 分钟。
+
+_last_fetch_fail_at = 0.0    # 进程级：上次拉取失败的时刻（time.time()）
+_in_fetch = False            # 进程级：正在拉取中（防递归）——见下条注释
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 配置读取
@@ -63,15 +78,37 @@ def load_subscription_url():
 # 拉取
 # ──────────────────────────────────────────────────────────────────────────────
 
-def fetch_subscription(url=None, timeout=25, use_local_pool=True):
+def fetch_subscription(url=None, timeout=None, use_local_pool=True):
     """拉取订阅原文。返回 (ok, text_or_None, reason)。
 
     走本项目自己的代理池端口（避免直连被墙 / 被 Cloudflare 拦），池不可用时退回直连。
     **不打印链接**，只在失败时给一句不含敏感值的 reason。
+
+    `timeout` = 单通道超时（秒）；不传用 FETCH_TIMEOUT（10s）。缓存过期时的快拉传
+    FAST_FETCH_TIMEOUT（5s）——见模块顶部 T177 的说明，绝不允许再把调用方卡 60 秒以上。
     """
     url = url or load_subscription_url()
     if not url:
         return False, None, 'no_subscription_url'
+    timeout = timeout or FETCH_TIMEOUT
+
+    # 防递归（2026-10-30，T177 修复的一部分）：fetch_subscription → ip_pool.fast_switch()
+    # → start_multi() → build_multi_config() → refresh() → fetch_subscription …
+    # 缓存过期时这条链会自己套自己，每层再花「代理 5s + 直连 5s」，实测能转上好几分钟
+    # （2026-10-29 盘中就是这么卡住的）。发现已在拉取中就直接回退——让内层 refresh 走缓存/
+    # 快速失败，不再发任何网络请求。
+    global _in_fetch
+    if _in_fetch:
+        return False, None, 'reentrant_skip（拉取进行中，避免递归）'
+    _in_fetch = True
+    try:
+        return _fetch_subscription_inner(url, timeout, use_local_pool)
+    finally:
+        _in_fetch = False
+
+
+def _fetch_subscription_inner(url, timeout, use_local_pool=True):
+    """真正干活的拉取（不含防递归外壳）。"""
 
     proxies = []
     if use_local_pool:
@@ -404,6 +441,7 @@ def refresh(cache=True, ttl=600, force=False):
 
     `force=True` 强制真拉取（运维排查 / 用户手工刷新时用）。
     """
+    global _last_fetch_fail_at
     if cache and not force and ttl:
         cached = _read_cache()
         if cached:
@@ -414,6 +452,26 @@ def refresh(cache=True, ttl=600, force=False):
             if age < ttl:
                 return {'ok': True, 'nodes': cached, 'ips': ip_pool_from_nodes(cached),
                         'reason': f'cache({age:.0f}s)', 'stale': False}
+            # ── 缓存已过期（T177，2026-10-30）──────────────────────────────
+            # 旧行为：过期就同步真拉，且每条通道 25s，拉不到再回退缓存 → 每次调用卡 60s 以上。
+            # 新行为：① 刚失败过（退避窗口内）→ 直接返回旧缓存、不做任何网络请求；
+            #         ② 否则用 5s 快拉，拉不到也立刻返回旧缓存。
+            if _last_fetch_fail_at and (time.time() - _last_fetch_fail_at) < FETCH_FAIL_BACKOFF:
+                return {'ok': True, 'nodes': cached, 'ips': ip_pool_from_nodes(cached),
+                        'reason': f'cache({age:.0f}s，拉取失败退避中，'
+                                  f'{int(FETCH_FAIL_BACKOFF - (time.time() - _last_fetch_fail_at))}s 后重试)',
+                        'stale': True}
+            ok, text, reason = fetch_subscription(timeout=FAST_FETCH_TIMEOUT)
+            nodes = parse_subscription(text) if ok else {}
+            if nodes:
+                if cache:
+                    _write_cache(nodes)
+                return {'ok': True, 'nodes': nodes, 'ips': ip_pool_from_nodes(nodes),
+                        'reason': 'ok', 'stale': False}
+            _last_fetch_fail_at = time.time()
+            return {'ok': True, 'nodes': cached, 'ips': ip_pool_from_nodes(cached),
+                    'reason': f'{reason}（缓存已过期，已用旧缓存兜底，'
+                              f'{FETCH_FAIL_BACKOFF}s 内不再重试）', 'stale': True}
     ok, text, reason = fetch_subscription()
     nodes = parse_subscription(text) if ok else {}
     if nodes:
@@ -421,6 +479,7 @@ def refresh(cache=True, ttl=600, force=False):
             _write_cache(nodes)
         return {'ok': True, 'nodes': nodes, 'ips': ip_pool_from_nodes(nodes),
                 'reason': 'ok', 'stale': False}
+    _last_fetch_fail_at = time.time()
     cached = _read_cache()
     if cached:
         return {'ok': True, 'nodes': cached, 'ips': ip_pool_from_nodes(cached),

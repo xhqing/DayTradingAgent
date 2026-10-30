@@ -58,6 +58,7 @@ except ImportError:
     _MUTEX_AVAILABLE = False
 
 _today_orders_cache = {}   # query_stop_prices 每轮写入 {账户: 当日订单}，第四层检测复用（同一次查单；T136 起按账户分账）
+_last_flat_orders_query = 0.0   # 空仓时的查单节流时间戳（2026-10-30 立，T177：空仓最多 45s 查一次）
 
 
 def check_position_discipline(orders):
@@ -120,6 +121,22 @@ def query_stop_prices(symbols):
     """
     if not _TIGER_AVAILABLE:
         return {}
+    # 空仓降频（2026-10-30 立，T177）：当日 actions 里没有未平仓记录时，本会话一定没有止损单要
+    # 显示（止损价对空仓无用），但「第四层双持仓兜底」仍需订单流做检测——折中为**空仓时最多
+    # 每 45 秒查一次**（兜底覆盖率足够，又不把每轮采样拖慢）；有仓则每轮照常查（止损价必须实时）。
+    # 背景：2026-10-29 实录——老虎链路卡顿 + 每轮查单，采样段连续几十秒不出数据；实测一次查单
+    # 就是 4-6 秒，40 秒段里每轮都查会把段时长拉到 60 秒以上。
+    # 边界：多会话并行时 targets 已被 pool_claim 互斥、不存在「其它会话的同标持仓」，故「本会话
+    # 空仓 = 目标标的无活动止损单」成立。
+    global _last_flat_orders_query
+    try:
+        from account_status import _holding_from_actions, _session_id
+        if not _holding_from_actions(only_session=_session_id()):
+            if time.time() - _last_flat_orders_query < 45:
+                return {}
+            _last_flat_orders_query = time.time()
+    except Exception:
+        pass
     global _today_orders_cache   # 第四层持仓检测复用同一次查单（不再多打一次 API）
     try:
         # 账户口径（2026-09-02 T136）：按标的解析下单账户（intent account 字段优先、
