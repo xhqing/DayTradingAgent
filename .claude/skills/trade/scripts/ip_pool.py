@@ -25,10 +25,11 @@
 - 端口可用性缓存（`tmp/ip_pool_ports.json`）：每个端口探一次「出口 + 网关放行」，供
   `fast_switch` 毫秒级挑端口。
 
-## 切换计数（2026-10-30 用户立）
+## 节点使用记录（2026-10-30 立切换计数，2026-10-31 改口径）
 
-每次真实换端口都写一行到 `reviews/ip-switch-log.csv`（`log_switch()`），停盯总结据此报
-「本场切换 IP N 次」，长期用来评估代理服务稳定性。
+每次 `ensure()` 校验通过都记一条「本场使用的 JMS 节点」（role=in_use，同会话+市场+节点
+去重）；真实换端口再额外记 role=switch。写 `reviews/ip-node-log.local.csv`——**被 gitignore**，
+因为节点名含订阅商域名（敏感类别）。停盯总结据此报「本场使用节点 + 切换次数」。
 
 ## 对外接口
 
@@ -80,19 +81,76 @@ STATE_PATH = os.path.join(TMP_DIR, 'ip_pool_state.json')
 QUICK_TTL = 30
 
 # ──────────────────────────────────────────────────────────────────────────────
-# IP 切换计数与持久化（2026-10-30 用户立）
+# IP 节点使用记录（2026-10-30 立切换计数；2026-10-31 用户改口径为「记录使用的节点名称」）
 #
-# 目的：把「切换 IP」变成可统计的运行数据，用来评估**代理服务（JMS）的稳定性**。
-# 每次真实换端口都追加一行到 `reviews/ip-switch-log.csv`（入库、append-only）：
-#   · source=retry  → 请求级：某个 IP 请求失败，立刻换端口重发（_IPRetryClient，8ms 级）
-#   · source=ensure_switch           → 体检级：ensure() 发现当前出口被拒/不通，池内换端口
-#   · source=ensure_switch_after_resub → 池内全失败后重拉订阅、重建池再换（最后手段）
-# 停盯总结按「会话 + 市场交易日」统计本场次数（stop_summary.py），可看出代理稳不稳。
-# 写盘失败一律静默——计数是观察数据，绝不得影响交易链路。
+# 目的：让每场盯盘**至少留下一条「这场用的是哪个 JMS 节点」的记录**（纯切换计数在绝大多数
+# 正常场次都是 0 行、等于没数据），既能事后回看稳定性，也方便核对「某场是不是换了线路」。
+#
+# 文件：`reviews/ip-node-log.local.csv`——**不入库（.gitignore 忽略）**。原因：节点名称是
+# JMS 订阅给的形如 `JMS-<订阅号>@<子域>.<订阅商域名>:<端口>`，含**订阅商域名体系**，属项目
+# CLAUDE.md 明令禁止写入被 git 跟踪文件的敏感类别（2026-08-23 中性化口径）。所以：
+#   · 本机明细（完整节点名）→ 只写这个被忽略的 .local 文件；
+#   · 对外 / 入库（actions 总结、飞书、对话汇报）→ 只写节点**标签**（如 `c56s1`，域名与订阅
+#     号已剥离）或池内编号，不写全名。
+#
+# 行语义（role 列）：
+#   · in_use → 交易过程中实际使用的节点（ensure() 成功即记；同「会话+市场+节点」去重，
+#              不会因为每 40 秒一个采样段就刷 239 行）
+#   · switch → 真实换端口事件：retry（请求级，_IPRetryClient，8ms 级）/ ensure_switch
+#              （体检级：ensure() 发现出口被拒或不通）/ ensure_switch_after_resub
+#              （池内全失败后重拉订阅、重建池再换，最后手段）
+# 停盯总结按「会话 + 市场交易日」取出：本场用过哪些节点 + 切换几次（stop_summary.py）。
+# 写盘失败一律静默——这是观察数据，绝不得影响交易链路。
 # ──────────────────────────────────────────────────────────────────────────────
-SWITCH_LOG = os.path.join(PROJECT_ROOT, 'reviews', 'ip-switch-log.csv')
-SWITCH_LOG_HEADER = ('timestamp_utc,timestamp_hkt,timestamp_et,market,session_id,'
-                     'source,from_port,to_port,from_node,to_node,reason')
+NODE_LOG = os.path.join(PROJECT_ROOT, 'reviews', 'ip-node-log.local.csv')
+NODE_LOG_HEADER = ('timestamp_utc,timestamp_hkt,timestamp_et,market,session_id,'
+                   'role,port,node_name,node_label,prev_node_label,reason')
+# 兼容旧名（外部若还有引用不断链；新代码一律用 NODE_LOG）
+SWITCH_LOG = NODE_LOG
+SWITCH_LOG_HEADER = NODE_LOG_HEADER
+
+
+def _node_label(node):
+    """节点名 → 可外露的短标签：`JMS-<订阅号>@<子域>.<域名>:443@<IP>:443` → `c56s1`。
+
+    为什么不用 `split('@')[-1]`：节点 id 是「名@域名:端口@IP:端口」两截 `@`，最后一截是
+    裸 IP（既看不出是哪条线，又正好是敏感类别之一）。这里跳过订阅号与裸 IP，只取域名段的
+    第一级 = 节点自身标签，既足够认线、又不带订阅商域名。
+    """
+    try:
+        import re as _re
+        s = str(node or '').strip()
+        if not s:
+            return ''
+        ip_re = _re.compile(r'^\d{1,3}(\.\d{1,3}){3}$')
+        for part in s.split('@'):
+            host = part.split(':')[0].strip()
+            if not host or ip_re.match(host) or '.' not in host:
+                continue
+            if not all(ch.isalnum() or ch in '-_' for ch in host.replace('.', '')):
+                continue
+            return host.split('.')[0] or host
+        return ''
+    except Exception:
+        return ''
+
+
+def _last_in_use(session, market):
+    """读回「本会话 + 本市场」最后一条 in_use 记录（用于去重）。返回 dict 或 None。"""
+    try:
+        import csv as _csv
+        if not os.path.exists(NODE_LOG):
+            return None
+        last = None
+        with open(NODE_LOG) as f:
+            for r in _csv.DictReader(f):
+                if (r.get('role') or '') == 'in_use' \
+                        and (r.get('session_id') or '') == session \
+                        and (r.get('market') or '') == market:
+                    last = r
+        return last
+    except Exception:
+        return None
 
 
 def _session_id_short():
@@ -117,34 +175,67 @@ def _market_now():
     return 'off'
 
 
-def log_switch(from_port, to_port, from_node, to_node, reason='', market=None, source=None):
-    """追加一条 IP 切换记录（失败静默）。
+def _append_node_row(role, port, node, prev_node='', reason='', market=None):
+    """写一行节点记录到本地（被忽略的）日志。失败静默。"""
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    row = [
+        now.strftime('%Y-%m-%d %H:%M:%S'),
+        now.astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S'),
+        now.astimezone(timezone(timedelta(hours=-4))).strftime('%Y-%m-%d %H:%M:%S'),
+        market or _market_now(),
+        _session_id_short(),
+        role,
+        '' if port is None else int(port),
+        node or '',
+        _node_label(node),
+        _node_label(prev_node) if prev_node else '',
+        reason or '',
+    ]
+    os.makedirs(os.path.dirname(NODE_LOG), exist_ok=True)
+    new = not os.path.exists(NODE_LOG)
+    with open(NODE_LOG, 'a') as f:
+        if new:
+            f.write(NODE_LOG_HEADER + '\n')
+        f.write(','.join(str(x) for x in row) + '\n')
 
-    source 默认根据 reason 推：'retry' = 请求级换端口；其余归为体检级 ensure。
+
+def log_node(port, node, market=None, reason='', force=False):
+    """记录「交易过程中实际使用的节点」（2026-10-31 用户立）。
+
+    ensure() 校验通过就记一条 role=in_use；同「会话 + 市场 + 节点」只记一次（去重），
+    避免每个采样段都写一行。节点变了会自然记新的一行（等于「本场换过线路」的证据）。
+    返回 True = 真的写了；False = 去重跳过或写失败。
     """
     try:
-        from datetime import datetime, timezone, timedelta
-        now = datetime.now(timezone.utc)
+        if not node:
+            return False
+        sess = _session_id_short()
+        mkt = market or _market_now()
+        if not force:
+            last = _last_in_use(sess, mkt)
+            if last and (last.get('node_name') or '') == str(node):
+                return False
+            prev = (last.get('node_label') or '') if last else ''
+        else:
+            prev = ''
+        _append_node_row('in_use', port, node, prev_node=prev, reason=reason, market=mkt)
+        return True
+    except Exception as e:
+        _log(f'节点使用记录写盘失败（已忽略）: {e}')
+        return False
+
+
+def log_switch(from_port, to_port, from_node, to_node, reason='', market=None, source=None):
+    """追加一条真实切换记录（role=switch）。失败静默。
+
+    source 默认根据 reason 推：'retry' = 请求级换端口；其余归为体检级 ensure。
+    位置仍是本地被忽略的节点日志（节点名含订阅商域名，不入库）。
+    """
+    try:
         src = source or ('retry' if reason in ('retry', 'request_retry') else 'ensure')
-        row = [
-            now.strftime('%Y-%m-%d %H:%M:%S'),
-            now.astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S'),
-            now.astimezone(timezone(timedelta(hours=-4))).strftime('%Y-%m-%d %H:%M:%S'),
-            market or _market_now(),
-            _session_id_short(),
-            src,
-            '' if from_port is None else int(from_port),
-            '' if to_port is None else int(to_port),
-            from_node or '',
-            to_node or '',
-            reason or '',
-        ]
-        os.makedirs(os.path.dirname(SWITCH_LOG), exist_ok=True)
-        new = not os.path.exists(SWITCH_LOG)
-        with open(SWITCH_LOG, 'a') as f:
-            if new:
-                f.write(SWITCH_LOG_HEADER + '\n')
-            f.write(','.join(str(x) for x in row) + '\n')
+        _append_node_row('switch', to_port, to_node, prev_node=from_node,
+                         reason=f'{src}:{reason or ""}', market=market)
     except Exception as e:
         _log(f'切换记录写盘失败（已忽略）: {e}')
 
@@ -328,6 +419,9 @@ def ensure(account='paper', quiet=False, allow_switch=True, budget=ENSURE_BUDGET
     if state == 'ok':
         out['ok'] = True
         out['action'] = 'native'
+        # 2026-10-31 用户立：交易过程中实际使用了哪个 JMS 节点要留一条记录
+        # （正常场次没有切换，旧「只记切换」的口径下一行都没有；这里保证每场至少一条）
+        log_node(cur_port, out.get('node'), reason='ensure_ok')
         out['elapsed'] = round(time.time() - t0, 2)
         _save_state(out)
         return out
@@ -359,6 +453,7 @@ def ensure(account='paper', quiet=False, allow_switch=True, budget=ENSURE_BUDGET
             out['ok'] = True
             out['action'] = 'switched'
             log_switch(cur_port, port, None, nid, 'ensure_switch', source='ensure')
+            log_node(port, nid, reason='ensure_switch')
             _log(f'ensure 已恢复：换到端口 {port}（节点 {nid}），实测出口 {e2}，网关 ok')
             if not quiet:
                 G._print(f'    ✅ 已换到端口 {port} 并验证：出口 {e2}，老虎网关放行')
@@ -392,6 +487,7 @@ def ensure(account='paper', quiet=False, allow_switch=True, budget=ENSURE_BUDGET
                         out['action'] = 'switched_after_resub'
                         log_switch(None, port, None, nid,
                                    'ensure_switch_after_resub', source='ensure')
+                        log_node(port, nid, reason='ensure_switch_after_resub')
                         _log(f'ensure 重拉订阅后恢复：端口 {port}（节点 {nid}）出口 {e2}')
                         if not quiet:
                             G._print(f'    ✅ 重拉订阅后已恢复：端口 {port}，出口 {e2}')

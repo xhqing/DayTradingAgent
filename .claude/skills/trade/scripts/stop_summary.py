@@ -377,26 +377,31 @@ def detect_trade_date(market, account_mode):
 
 
 def ip_switch_stats(market, trade_date, sid8):
-    """统计 IP 切换次数（2026-10-30 用户立：每次停盯总结必报这一项）。
+    """统计「本场使用的 JMS 节点 + 切换次数」（2026-10-30 立切换计数；2026-10-31 改口径）。
 
-    数据源 `reviews/ip-switch-log.csv`（由 ip_pool.log_switch() 追加，含 utc/hkt/et
-    三份时间戳 + market + session_id + source）。返回 dict：
-      session = 本会话该市场日的切换次数（按 sid8 + 日期窗口过滤）
-      by_source = {retry / ensure: n}（本会话）
-      d7_total / d7_days / d7_avg = 近 7 日全部会话的累计与日均
-      total = 当日全部会话（不分 sid）的切换次数（多会话并行时的全局口径）
+    数据源 `reviews/ip-node-log.local.csv`（由 `ip_pool.log_node()` / `log_switch()` 追加，
+    含 utc/hkt/et 三份时间戳 + market + session_id + role(in_use|switch) + port +
+    node_name + node_label）。该文件**被 .gitignore 忽略**——节点名含订阅商域名（敏感类别），
+    只能留本机；对外（actions 总结 / 飞书 / 对话）只用 node_label（如 c56s1）。
+
+    返回 dict：
+      session   = 本会话该市场日的切换次数（role=switch）
+      by_source = {retry / ensure: n}（本会话，取自 reason 前缀）
+      nodes     = 本会话该市场日用过的节点标签（有序去重）
+      records   = 本会话该市场的节点使用记录条数（in_use）
+      total / d7_total / d7_days / d7_avg = 同旧口径（当日全会话、近 7 日）
 
     过滤口径：按「北京日期」匹配——切换事件的三份时间戳里 hkt 与 ET 交易日可能跨日，
     取 hkt 日期等于 trade_date 的 ET 交易日换算太绕；这里用「事件时间落在该市场交易日的
     时间窗内」判断：ET 日 D 对应北京 D 20:00 ~ D+1 12:00（夏令时）/ 13:00（冬令时），
-    为免边界复杂，统一用「hkt 日期 ∈ {D, D+1} 且 market 匹配」的宽松口径——切换计数是
-    稳定性指标，宽松一点不影响结论，反而不会漏计。
+    为免边界复杂，统一用「hkt 日期 ∈ {D, D+1} 且 market 匹配」的宽松口径——稳定性指标，
+    宽松一点不影响结论，反而不会漏计。
     """
     import csv
     from datetime import datetime, timedelta
-    out = {"session": 0, "by_source": {}, "total": 0,
+    out = {"session": 0, "by_source": {}, "total": 0, "nodes": [], "records": 0,
            "d7_total": 0, "d7_days": 0, "d7_avg": 0.0, "days": []}
-    path = os.path.join(project_root(), "reviews", "ip-switch-log.csv")
+    path = os.path.join(project_root(), "reviews", "ip-node-log.local.csv")
     try:
         if not os.path.exists(path):
             return out
@@ -412,15 +417,25 @@ def ip_switch_stats(market, trade_date, sid8):
         hkt_day = (r.get("timestamp_hkt") or "")[:10]
         if hkt_day not in ok_days:
             continue
-        out["total"] += 1
-        if sid8 and (r.get("session_id") or "") == sid8:
-            out["session"] += 1
-            src = r.get("source") or "other"
-            out["by_source"][src] = out["by_source"].get(src, 0) + 1
-    # 近 7 日（按 hkt 日期归并，全部会话）
+        role = r.get("role") or ""
+        mine = sid8 and (r.get("session_id") or "") == sid8
+        if role == "switch":
+            out["total"] += 1
+            if mine:
+                out["session"] += 1
+                src = (r.get("reason") or "other").split(":")[0] or "other"
+                out["by_source"][src] = out["by_source"].get(src, 0) + 1
+        elif role == "in_use" and mine:
+            out["records"] += 1
+            lab = r.get("node_label") or ""
+            if lab and lab not in out["nodes"]:
+                out["nodes"].append(lab)
+    # 近 7 日（按 hkt 日期归并，全部会话）——只数 switch 行
     cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
     per_day = {}
     for r in rows:
+        if (r.get("role") or "") != "switch":
+            continue
         hkt_day = (r.get("timestamp_hkt") or "")[:10]
         if hkt_day >= cutoff:
             per_day[hkt_day] = per_day.get(hkt_day, 0) + 1
@@ -452,7 +467,7 @@ def main():
     # ── 刷新窗口 ②：收盘后写总结前刷新本地 IP 池（2026-10-30 用户立）────────────
     # 两个允许拉取 JMS 订阅的窗口之一（另一个是 preflight 盯盘启动）。这里显式传
     # allow_intraday=True——用户可能在盘中就喊停，"停盯总结"这个时点始终允许刷新。
-    # 顺带把「本场切换 IP 次数」的数据源（reviews/ip-switch-log.csv）保持在最新。
+    # 顺带把「本场使用节点 / 切换次数」的数据源（reviews/ip-node-log.local.csv）保持在最新。
     try:
         import jms_pool as _J2
         _rp = _J2.refresh(force=True, allow_intraday=True)
@@ -608,6 +623,9 @@ def main():
     L.append(f"| **整体实际落地赔率** | **{('%.2fR' % overall_r) if overall_r is not None else 'N/A'}**（总盈亏 ÷ 总 max_loss） |")
     _sw = ip_switch_stats(a.market, date, sid8)
     _src = "、".join(f"{k} {v}" for k, v in sorted(_sw["by_source"].items())) or "—"
+    _nodes = "、".join(_sw["nodes"]) or "未记录"
+    L.append(f"| **本场使用 IP 节点** | **{_nodes}**（节点标签；使用记录 {_sw['records']} 条，"
+             f"完整节点名见本机 `reviews/ip-node-log.local.csv`，不入库） |")
     L.append(f"| **切换 IP 次数（本会话）** | **{_sw['session']} 次**（{_src}）"
              f"｜当日全会话 {_sw['total']} 次｜近 7 日 {_sw['d7_total']} 次 / "
              f"{_sw['d7_days']} 天（日均 {_sw['d7_avg']}） |")
@@ -660,9 +678,8 @@ def main():
     F.append(f"- 净盈亏：**{money(total_pnl)}**")
     F.append(f"- 整体实际落地赔率：**{('%.2fR' % overall_r) if overall_r is not None else 'N/A'}**（总盈亏 ÷ 总 max_loss {money_abs(total_ml)}）")
     F.append(f"- 收工时状态：空仓（无隔夜持仓）")
-    # 2026-10-30 用户立：每次停盯总结都要报「切换 IP 次数」（评估代理服务稳定性）
-    F.append(f"- 代理稳定性：本场切换 IP **{_sw['session']} 次**"
-             f"（当日全会话 {_sw['total']} 次，近 7 日日均 {_sw['d7_avg']} 次）")
+    # 2026-10-31：代理节点/切换次数属技术运行细节，**不进飞书**（飞书只发业务内容；
+    # 节点名还含订阅商域名，属敏感类别，更不能外发）。对话汇报与 actions 总结里照常报。
     if len(by_bj) > 1:
         F.append("")
         F.append("## 对账提示")

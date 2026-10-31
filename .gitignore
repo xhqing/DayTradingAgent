@@ -24,3 +24,7 @@ __pycache__/
 # Claude Code 本机本地配置（permissions），仅本机、不入库；
 # clone 者复制 .claude/settings.local.example.json → settings.local.json 后按本机路径填
 .claude/settings.local.json
+
+# 交易链路：JMS 节点使用记录（节点名含订阅号 + 订阅商域名 = 敏感类别，只留本机、不入库）
+reviews/ip-node-log.local.csv
+reviews/ip-switch-log.csv
