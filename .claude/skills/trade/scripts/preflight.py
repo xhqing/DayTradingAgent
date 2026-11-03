@@ -102,13 +102,15 @@ except Exception as _e:
 
 # positions 检查已移除（2026-07-15 信号模式：假设执行、不查 positions，见 SKILL「信号模式总则」第 1 条）
 
-# 防系统睡眠（2026-07-25 立 → 2026-07-27 修订：无条件自动启用，取代旧「检测电源 + 弹窗建议启用 keep-awake」）。
-# 根因：盯盘期间系统睡眠会暂停所有进程——富途 OpenD 的 get_market_snapshot 无 timeout、卡到 TCP 超时
-# ~15 分钟才返回、整段采样空窗；claude-proxy、xpilot 同断。故盯盘预热（preflight）无条件启用
-# caffeinate -s（创建 PreventSystemSleep assertion、防合盖 Clamshell 与维护 Maintenance 两类系统级睡眠），
-# 不再询问开盖/合盖、不再弹窗建议「启用合盖盯盘」（防睡眠已并入 trade，原 keep-awake skill
-# 2026-09-01 撤销；开盖盯盘无所谓电池/电源、电池下合盖是硬件强制软件防不住但防空闲维护睡眠仍有效，
-# 故统一启用、不提醒）。停止盯盘时由 trade 停盯流程调 scripts/keepawake_off.sh 解除。
+# 防系统睡眠（2026-07-25 立 → 2026-07-27 修订 → 2026-11-03 修正能力边界）
+# 根因：盯盘期间系统睡眠会暂停所有进程——富途 OpenD 的 get_market_snapshot 无 timeout、
+# 卡到 TCP 超时 ~15 分钟才返回、整段采样空窗。
+# ⚠️ **能力边界（2026-11-03 日志实测修正）**：caffeinate -s 只能防「空闲睡眠 / 维护睡眠」，
+# **防不住合盖睡眠（Clamshell Sleep）**——电池供电下合盖是 macOS 硬件强制睡眠，
+# caffeinate 断言仍在依旧会睡（旧注释误写「防合盖 Clamshell」，已纠正）。
+# 2026-11-03 00:02 实录：合盖 + 电池（31%）→ `Entering Sleep state due to 'Clamshell Sleep'`，
+# 富途请求被挂起 33 分钟、会话停摆近 4 小时，停盯收尾靠一次 45 秒的 DarkWake 窗口才侥幸完成。
+# 故 preflight 额外发一条飞书电源提醒（_power_reminder）：要求合盖前接通电源（两头都插）。
 def _ensure_awake():
     import subprocess as _sp, time as _t
     if _sp.run(["pgrep", "-f", "caffeinate -s"], stdout=_sp.DEVNULL).returncode == 0:
@@ -124,7 +126,47 @@ def _ensure_awake():
     except Exception as _e:
         print(f"⚠️ 启用防睡眠失败（{_e}）（盯盘期间注意别让系统睡眠）")
 
+
+def _power_reminder():
+    """飞书提醒「插电源」（2026-11-03 用户立，盯盘前置动作）。
+
+    背景：2026-11-02 美股盯盘（北京 11-03 凌晨）因 **MacBook 端电源线忘了插**、靠电池供电，
+    合盖后进入 Clamshell Sleep，盯盘中段中断约 4 小时；停盯收尾恰好撞上一次 45 秒的
+    DarkWake 窗口才发出去（飞书 04:30:28 发送成功、04:30:32 又被眠），属侥幸。
+    caffeinate -s 拦不住合盖睡眠（硬件强制），唯一可靠做法 = 合盖前接交流电。
+
+    为什么放在 preflight（工具强制）：用户明确要求「盯盘的前置动作里加一条任务」——
+    启动即执行，不依赖 AI 记忆（本项目「文档规定必须尽可能配工具强制」）。
+    --no-mark：不写停盯总结的漏发标记、不覆盖其内容存档。
+    """
+    import os as _os, subprocess as _sp, sys as _sys
+    notify = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "notify_feishu.py")
+    text = (
+        "🔌 **盯盘前请插上电源：电源线两头都要插牢**\n\n"
+        "① 插座 / 排插那一端\n"
+        "② MacBook 那一端\n\n"
+        "上次就是因为 MacBook 这一端忘了插、靠电池供电，合盖后电脑进入休眠，"
+        "盯盘中断近 4 小时，收尾差点漏掉。\n\n"
+        "插好电源后合盖也不会休眠，盯盘才能连续跑完整个交易时段。"
+    )
+    try:
+        r = _sp.run([_sys.executable, notify, "--text", text, "--no-mark"],
+                    capture_output=True, text=True, timeout=90)
+        if r.returncode == 0:
+            print("🔌 飞书电源提醒已发送（电源线两头都要插）")
+        elif r.returncode == 3:
+            print("🔌 飞书电源提醒跳过（飞书未配置或已停用）——请自行确认电源线两头都已插好")
+        else:
+            lines = (r.stderr or r.stdout or "").strip().splitlines()
+            print(f"⚠️ 飞书电源提醒发送失败（exit {r.returncode}）："
+                  f"{lines[-1][:160] if lines else '无输出'}")
+            print("   ⚠️ 请自行确认：电源线两头（插座端 + MacBook 端）都已插好")
+    except Exception as _e:
+        print(f"⚠️ 飞书电源提醒异常（{_e}）——请自行确认电源线两头都已插好")
+
+
 _ensure_awake()
+_power_reminder()
 
 # D12（2026-08-04）：盯盘启动密采样入口提醒——防 AI 用 cron / 直接 snapshot 绕过 monitor_segment 降频
 # （2026-08-04 教训，多层防护见 monitoring.md「不因市况降频」节 + .claude/hooks/monitor_guard.py）。

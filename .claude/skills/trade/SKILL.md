@@ -154,7 +154,8 @@ AI 用富途 OpenD / 老虎 SDK（盯盘行情数据主力，Level2 盘口 / 经
 
 盯盘标准启动序列：**`preflight` → 方向研判 → `hot_list` 找标的 → `snapshot` + `classify` 核实标的 → `kline` + `monitor_summary` 分析 → `pool_claim.py claim <候选>` 认领标的池（2026-08-19 立自动划分；signal / auto 同规——认领表有活认领时不认领就被 hook 拦，见 monitoring.md「标的池自动划分」）→ `monitor_segment` 密采样盯盘 → 段结束通知驱动循环 → 撞上终止边界或用户喊停 → 停盯总结**。
 
-1. **preflight**（`scripts/preflight.py`）：时间 / 港股美股时段 / 富途 OpenD 端口 / 当日交易记录文件（auto 读 `actions/`、signal 读 `signals/`）+ equity / 自动启用 caffeinate 防系统睡眠。**先跑这个**。
+1. **preflight**（`scripts/preflight.py`）：时间 / 港股美股时段 / 富途 OpenD 端口 / 当日交易记录文件（auto 读 `actions/`、signal 读 `signals/`）+ equity / 自动启用 caffeinate 防系统睡眠 / **发飞书电源提醒**。**先跑这个**。
+   - ⚠️ **电源提醒（2026-11-03 用户立）**：preflight 启动即往飞书发一条提醒——**电源线两头都要插牢（① 插座 / 排插端 ② MacBook 端）**。为什么必做：`caffeinate -s` **只能防「空闲睡眠 / 维护睡眠」，防不住合盖睡眠（Clamshell Sleep）**——电池供电下合盖是硬件强制睡眠，caffeinate 断言仍在也照样睡。2026-11-03 00:02 实录：MacBook 端电源线忘了插（电池 31%），合盖后进入 Clamshell Sleep，富途请求被挂起 33 分钟、盯盘中断近 4 小时，停盯收尾恰好撞上一次 45 秒的 DarkWake 窗口才发出去（属于侥幸）。**唯一可靠做法 = 合盖前接通电源。** 实现：`preflight.py` 的 `_power_reminder()` → `notify_feishu.py --no-mark`（不写停盯总结的漏发标记、不覆盖其内容存档）。
 2. **方向研判**（盯盘第一步定当日基调）：五维度（宏观基调 / 技术趋势 / 量价 / 资金流 / 事件催化）独立打分 + 位置评估（当前价在大趋势的上沿超买 / 下沿超跌 / 中段），产出「今日偏多 / 偏空 / 中性震荡」+ 盘中方向假设。
 3. **hot_list**（`scripts/hot_list.py HK 15`）：热度榜 + 叠 snapshot 查成交额 / 振幅 / 换手 + 类型列（**印花税闸已停用 2026-08-28：税闸列与预检列不再显示**），找标的铁律第一步——不许凭关注列表或 AI 记忆直接定标的。
 4. **核实标的**：`snapshot` + `classify_hk_security.py` 查代码真身与类型（etf / stock / reit）。
@@ -206,7 +207,7 @@ AI 用富途 OpenD / 老虎 SDK（盯盘行情数据主力，Level2 盘口 / 经
 > **token 费用**：传 `--fx <CNY/USD 实值>` 时脚本会顺手跑 `token_cost.py` 记账；**查不到汇率就不传**
 > （禁止估算），标记里会记 `token_cost_logged=false` 供复盘补。
 
-**停盯第一个动作——解除防睡眠 + 注销盯盘会话**：盯盘预热（preflight）已自动启用 `caffeinate -s` 防系统睡眠（无论开盖合盖、不询问），故停止盯盘时（用户喊停 / AI 仅在快休市或收盘时才自主停——其余时段持续盯、不收尾）AI **必须自己**跑 `bash .claude/skills/trade/scripts/keepawake_off.sh` 解除防睡眠，并跑 `bash .claude/skills/trade/scripts/monitor_unregister.sh` 注销盯盘会话（从 `tmp/monitor_sessions.txt` 注册表移除本会话——preflight 已自动注册**仅港股盯盘**，注册表供 caffeinate 引用计数（多会话并行时最后停盯的才解除防睡眠）与 preflight 在场会话数打印使用；watcher 的中断警报 2026-08-20 已删、空转警报 2026-08-21 已删，watcher 不再依赖注册表，但停盯仍必须注销，否则注册表残留会让 caffeinate 引用计数误判「还有人在盯」而不关灯；注销脚本同时联动释放本会话的标的池认领，2026-08-19 立）。用户**不会**主动说「解除防睡眠」——AI 自主在停止盯盘时收尾，避免长期持 `PreventSystemSleep` assertion。
+**停盯第一个动作——解除防睡眠 + 注销盯盘会话**：盯盘预热（preflight）已自动启用 `caffeinate -s` 防系统睡眠（无论开盖合盖、不询问；**但防不住合盖睡眠——电池供电下合盖仍会睡，见上文「电源提醒」**），故停止盯盘时（用户喊停 / AI 仅在快休市或收盘时才自主停——其余时段持续盯、不收尾）AI **必须自己**跑 `bash .claude/skills/trade/scripts/keepawake_off.sh` 解除防睡眠，并跑 `bash .claude/skills/trade/scripts/monitor_unregister.sh` 注销盯盘会话（从 `tmp/monitor_sessions.txt` 注册表移除本会话——preflight 已自动注册**仅港股盯盘**，注册表供 caffeinate 引用计数（多会话并行时最后停盯的才解除防睡眠）与 preflight 在场会话数打印使用；watcher 的中断警报 2026-08-20 已删、空转警报 2026-08-21 已删，watcher 不再依赖注册表，但停盯仍必须注销，否则注册表残留会让 caffeinate 引用计数误判「还有人在盯」而不关灯；注销脚本同时联动释放本会话的标的池认领，2026-08-19 立）。用户**不会**主动说「解除防睡眠」——AI 自主在停止盯盘时收尾，避免长期持 `PreventSystemSleep` assertion。
 
 盯盘结束时，AI 主动给一份**当日小结**，区别于复盘分析（见 `references/review-and-evaluation.md`，由用户指令触发、更详细）。**⚠️ 美股停盯总结有硬截止——最迟美东 24:00（12 midnight ET，2026-09-15 用户立；夏令时北京次日 12:00 / 冬令时次日 13:00）**：正常停盯当场写；会话跨夜中断、当场没收上尾的，恢复会话 / 次日首个会话第一件事补记，最迟美东 24:00 前完成、不漏进下一个美东日历日，发现已过线的立即补、不等（preflight 启动时自动检测提醒）。港股 12:00 / 16:00 边界到点强制终止、总结当场闭环，无此问题。**⚠️ 总结范围 = 只总结本会话自己（2026-08-29 用户立，多会话并行场景）**：停盯总结**只能总结本会话自身的盯盘任务执行过程和结果**——本会话认领的标的池、本会话开 / 平的交易、本会话的影子仓、本会话的采样与分析执行情况；**禁止把其它并行会话的交易、其它标的池的盈亏、或账户全口径数字混进来**（多会话共用同一账户时，「账户今日订单」是全池混合口径、不等于本会话战绩——2026-08-28 实录：美股会话停盯总结误把其它会话的 NVDA/CRM/PLTR 交易与历史订单当成当日总结对象、且总结范围跑到港股，被用户两次纠正）。**用户要全局或跨会话汇总时明确说，才做全口径汇总并标明数据来源与归属**。**停盯总结必含每笔的赔率三阶段（初始预期 / 修正预期 / 实际落地）**，不只是盈亏金额：
 
