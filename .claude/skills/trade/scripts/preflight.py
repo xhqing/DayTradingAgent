@@ -166,6 +166,44 @@ def _power_reminder():
 
 
 _ensure_awake()
+
+
+def _worktree_check():
+    """盯盘必须在 worktree 里跑（2026-11-03 用户立，工具在场提醒）。
+
+    用户原话：「本项目盯盘任务必然会在工作区写入文件，为了减少盘中干扰，在用户发出盯盘指令
+    的时候直接先准备好 worktree 并切换到 worktree 开始盯盘。」
+
+    为什么：盯盘持续写 `actions/` `signals/` 等被 git 跟踪的文件，而主工作区（main）自
+    2026-11-02 起禁止 `git add` / `git commit`（`git-main-guard.ts` 硬拦）——在主工作区跑
+    会把改动积在 main 上、最后提交不了，只能手工搬去 worktree。
+
+    判定：`--git-dir` 与 `--git-common-dir` 不同 → 在 worktree（前者在
+    `<common>/worktrees/<name>`）；相同 → 主工作区。
+    """
+    import os as _os, subprocess as _sp
+    try:
+        r1 = _sp.run(["git", "rev-parse", "--git-dir"], capture_output=True, text=True, timeout=5)
+        r2 = _sp.run(["git", "rev-parse", "--git-common-dir"], capture_output=True, text=True, timeout=5)
+        r3 = _sp.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=5)
+        if r1.returncode or r2.returncode or r3.returncode:
+            return  # 非 git 仓库：不管
+        gd = _os.path.realpath(r1.stdout.strip())
+        cd = _os.path.realpath(r2.stdout.strip())
+        top = _os.path.realpath(r3.stdout.strip())
+        if gd == cd:
+            print("⚠️ 盯盘未在 worktree 里：当前是主工作区（main 分支）——盯盘会写 actions/ signals/，"
+                  "而 main 已禁止 add / commit，改动最后提交不了。")
+            print("   正确动作（2026-11-03 用户立）：先跑 "
+                  "`python3 .claude/skills/trade/scripts/worktree_start.py --market us|hk`，"
+                  "再用它输出的 WORKTREE 路径重跑本脚本及后续所有盯盘命令。")
+        else:
+            print(f"🧵 盯盘 worktree：{top}")
+    except Exception:
+        pass  # 检查失败不阻断 preflight
+
+
+_worktree_check()
 _power_reminder()
 
 # D12（2026-08-04）：盯盘启动密采样入口提醒——防 AI 用 cron / 直接 snapshot 绕过 monitor_segment 降频
