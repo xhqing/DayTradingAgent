@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+### 新增（盯盘启动第一动作改为「先建 worktree」，2026-11-03 11:40）
+
+> 来源：用户 2026-11-03 指令：「本项目盯盘任务必然会在工作区写入文件，为了减少盘中干扰，在用户发出盯盘指令的时候直接先准备好 worktree 并切换到 worktree 开始盯盘」。
+
+- **为什么改**：2026-11-02 立的团队项目规则要求「任何写操作第一步就是建 worktree」，且 local main 只剩「生成 worktree」「被 remote main 快进同步」两个职责（`git-main-guard.ts` 已硬拦 main 上的 `git add` / `git commit`）。而盯盘会**持续写入** `actions/` `signals/` 等被 git 跟踪的文件——在主工作区跑会把改动积在 main 上、最后全部提交不了。
+- **改了什么**：
+  - **新增 `scripts/worktree_start.py`（盯盘 worktree 启动器）**：① 幂等判断（已在 worktree 就直接复用）；② 建 `<仓库名>-watch-<YYYYMMDD>-<market>` + 分支 `chore/watch-<YYYYMMDD>-<market>`（已存在则复用）；③ **软链 4 个被 .gitignore 忽略、但盯盘必需的本机私有文件**——`accounts.json`（老虎凭证）、`config.json`（风控参数）、`feishu.local.json`（飞书接收人）、`reviews/ip-node-log.local.csv`（节点记录）；④ **把 `tmp/` 软链回主仓库**（关键，见下）；⑤ 输出 `WORKTREE=<路径>`供后续命令拼接。
+  - **`tmp/` 必须软链而非建空目录（实测教训）**：`tmp/` 里是跨会话共享的运行时状态——采样 log（连续性与断层检测）、`pool_claims.json`（多会话标的池互斥）、`monitor_sessions.txt`（caffeinate 引用计数）、**`circuit_breaker.json`（实盘熔断状态，丢了 = 实盘开仓闸失效）**、`feishu_sent_*` / `stop_done_*`（停盯收尾与飞书漏发检查标记）。首版实现建了独立空 `tmp/`，worktree 里跑 preflight **立即误报「停盯总结已写但未见飞书推送记录」**（工作区的空 tmp 里找不到发送标记）——证明状态隔离会造成保护失效。
+  - **`preflight.py` 新增 `_worktree_check()`**：工具在场提醒——主工作区跑时醒目警告「未在 worktree 里，main 已禁 add/commit，改动最后提交不了」并给出正确命令；在 worktree 里则打印 `🧵 盯盘 worktree：<路径>`。判定用 `--git-dir` vs `--git-common-dir`（不同 = worktree）。
+  - **`SKILL.md`**：新增「触发后第二件事 = 先建 worktree，全程在 worktree 里盯」节（紧跟模式提醒之后、preflight 之前），含命令、四个软链文件清单、`tmp/` 软链原因、停盯后在该 worktree 提交的流程；启动序列首项改为 `worktree_start.py` 并注明所有命令拼 `WORKTREE` 前缀。
+- **验证（本机实测）**：`worktree_start.py --market us` → 建出 `DayTradingAgent-watch-20261102-us`、4 个私有文件软链成功、`tmp/` 软链指向主仓库；在 worktree 里跑 preflight 能正常读凭证/风控参数、飞书电源提醒发送成功、**不再误报飞书漏发**、能读到 `circuit_breaker.json` 与 `feishu_sent_us_2026-11-02.txt`；主工作区跑 preflight 正确打印未在 worktree 的警告。
+- **⚠️ 回归风险**：无交易策略/风控/下单链路改动。注意两点：① **worktree 检出的是已提交版本**——改 skill 脚本后必须先提交，新 worktree 才会带上新代码（本次测试就因此先跑了老版 preflight）；② 每日新建 worktree 会在 `../` 下累积 `DayTradingAgent-watch-<日期>-<市场>` 目录，停盯提交合并后应 `git worktree remove` 清理（SKILL.md 已写明）。
+
 ## [0.8.0] - 2026-11-03
 
 ### 新增（盯盘前置动作增加「飞书电源提醒」+ 修正 caffeinate 能力边界注释，2026-11-03 10:55）

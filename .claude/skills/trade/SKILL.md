@@ -55,6 +55,25 @@ AI 用富途 OpenD / 老虎 SDK（盯盘行情数据主力，Level2 盘口 / 经
 
 > 这条提醒是安全件：auto 模式下 AI 不问用户就下单，账户或模式弄错就是实盘事故。开场强制亮明模式 + 账户，等于逼 AI 和用户双方第一眼对齐——用户发现不对能立刻喊停（比如本想要信号、却显示 auto；或本想模拟、却显示实盘）。默认是 signal（不下单），只有用户特别说明才切 auto，切换的瞬间务必重新亮 auto 提醒。**auto 默认模拟账户；切实盘账户需用户明确说 + AI 额外确认两道闸**（2026-08-12 立）。
 
+### 触发后第二件事 = 先建 worktree，全程在 worktree 里盯（2026-11-03 用户立，最高优先级）
+
+**用户发出盯盘指令后，第二个动作（紧接模式提醒）就是跑 worktree 启动器——不要先跑 preflight。**
+
+```bash
+python3 .claude/skills/trade/scripts/worktree_start.py --market us   # 或 hk
+```
+
+它输出 `WORKTREE=<绝对路径>`，**之后所有盯盘命令（preflight / hot_list / snapshot / monitor_segment / 开平仓脚本 / log_action）全部拼这个路径前缀**，不在主工作区跑。已在 worktree 里时它幂等直接复用。
+
+**为什么（用户原话）**：「本项目盯盘任务必然会在工作区写入文件，为了减少盘中干扰，在用户发出盯盘指令的时候直接先准备好 worktree 并切换到 worktree 开始盯盘。」盯盘会持续写 `actions/` `signals/` 等被 git 跟踪的文件，在主工作区（main）里写会污染 main，且 main 自 2026-11-02 起已禁止 `git add` / `git commit`（`git-main-guard.ts` 硬拦）。
+
+**启动器做了什么**（细节见脚本 docstring）：
+1. 建 `<仓库名>-watch-<YYYYMMDD>-<market>` + 分支 `chore/watch-<YYYYMMDD>-<market>`（已存在则复用）；
+2. **软链 4 个被 .gitignore 忽略、但盯盘必需的本机私有文件**（worktree 检出里没有它们，缺了就不能下单 / 推送飞书）：`accounts.json`（凭证）、`config.json`（风控参数）、`feishu.local.json`（飞书接收人）、`reviews/ip-node-log.local.csv`（节点记录）；
+3. **把 `tmp/` 软链回主仓库**（关键，2026-11-03 实测教训）——`tmp/` 里是跨会话共享的运行时状态：采样 log（连续性与断层检测）、标的池认领表（多会话互斥）、caffeinate 引用计数、**实盘熔断状态（`circuit_breaker.json`，丢了 = 实盘开仓闸失效）**、停盯收尾与飞书发送标记。若给 worktree 建独立空 `tmp/`，这些状态会「每场清零」（首次实测就踩到：preflight 误报「停盯总结已写但未见飞书推送」）。
+
+**停盯时怎么收尾**：盯盘产生的 `actions/` `signals/` 改动都在 worktree 分支上，停盯总结写完后在该 worktree 里走 `/add` → `/commit`（非 main 分支，自动触发允许）→ push → PR → 合并；合并后 `git worktree remove <路径>` 清理。**全程不回主工作区提交。**
+
 ### 模式路由
 
 模式定下后，加载对应模式的专属规则（执行环节的差异都在里面）：
@@ -152,7 +171,7 @@ AI 用富途 OpenD / 老虎 SDK（盯盘行情数据主力，Level2 盘口 / 经
 
 ## 盯盘工作流（高层骨架）
 
-盯盘标准启动序列：**`preflight` → 方向研判 → `hot_list` 找标的 → `snapshot` + `classify` 核实标的 → `kline` + `monitor_summary` 分析 → `pool_claim.py claim <候选>` 认领标的池（2026-08-19 立自动划分；signal / auto 同规——认领表有活认领时不认领就被 hook 拦，见 monitoring.md「标的池自动划分」）→ `monitor_segment` 密采样盯盘 → 段结束通知驱动循环 → 撞上终止边界或用户喊停 → 停盯总结**。
+盯盘标准启动序列：**`worktree_start.py`（建 worktree 并全程在其中作业）→ `preflight` → 方向研判 → `hot_list` 找标的 → `snapshot` + `classify` 核实标的 → `kline` + `monitor_summary` 分析 → `pool_claim.py claim <候选>` 认领标的池（2026-08-19 立自动划分；signal / auto 同规——认领表有活认领时不认领就被 hook 拦，见 monitoring.md「标的池自动划分」）→ `monitor_segment` 密采样盯盘 → 段结束通知驱动循环 → 撞上终止边界或用户喊停 → 停盯总结**。启动序列中的每条命令都用 `worktree_start.py` 输出的 `WORKTREE` 路径前缀拼接（2026-11-03 立）。
 
 1. **preflight**（`scripts/preflight.py`）：时间 / 港股美股时段 / 富途 OpenD 端口 / 当日交易记录文件（auto 读 `actions/`、signal 读 `signals/`）+ equity / 自动启用 caffeinate 防系统睡眠 / **发飞书电源提醒**。**先跑这个**。
    - ⚠️ **电源提醒（2026-11-03 用户立）**：preflight 启动即往飞书发一条提醒——**电源线两头都要插牢（① 插座 / 排插端 ② MacBook 端）**。为什么必做：`caffeinate -s` **只能防「空闲睡眠 / 维护睡眠」，防不住合盖睡眠（Clamshell Sleep）**——电池供电下合盖是硬件强制睡眠，caffeinate 断言仍在也照样睡。2026-11-03 00:02 实录：MacBook 端电源线忘了插（电池 31%），合盖后进入 Clamshell Sleep，富途请求被挂起 33 分钟、盯盘中断近 4 小时，停盯收尾恰好撞上一次 45 秒的 DarkWake 窗口才发出去（属于侥幸）。**唯一可靠做法 = 合盖前接通电源。** 实现：`preflight.py` 的 `_power_reminder()` → `notify_feishu.py --no-mark`（不写停盯总结的漏发标记、不覆盖其内容存档）。
