@@ -44,7 +44,7 @@ if [ -z "${SESSION_ID}" ]; then
     exit 1
 fi
 # scripts/ 向上 4 级 = 项目根（scripts -> trade -> skills -> .claude -> 项目根）
-REG_FILE="$SCRIPT_DIR/../../../../tmp/monitor_sessions.txt"
+REG_FILE="$SCRIPT_DIR/../../../../state/monitor_sessions.txt"
 if [ -f "$REG_FILE" ]; then
     grep -vxF "${SESSION_ID}" "$REG_FILE" > "$REG_FILE.tmp" 2>/dev/null || true
     mv "$REG_FILE.tmp" "$REG_FILE"

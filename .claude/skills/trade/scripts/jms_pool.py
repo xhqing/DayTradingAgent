@@ -43,7 +43,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, '..', '..', '..', '..'))
 CONFIG_PATH = os.path.join(HERE, '..', 'config.json')
 TMP_DIR = os.path.join(ROOT, 'tmp')
-CACHE_PATH = os.path.join(TMP_DIR, 'jms_subscription.cache')
+# 订阅缓存属状态（盘中禁止重拉订阅，删了要等下一个刷新窗口）→ state/（2026-11-03）
+STATE_DIR = os.path.join(ROOT, 'state')
+CACHE_PATH = os.path.join(STATE_DIR, 'jms_subscription.cache')
 
 # 拉取超时与失败退避（2026-10-30 立，修 T177）。
 # 背景：2026-10-29 美股盯盘时订阅源拉不到，fetch_subscription 走「代理 25s + 直连 25s」
@@ -472,7 +474,7 @@ def compare(jms_ips=None, whitelist=None):
 def refresh(cache=True, ttl=600, force=False, network=True, allow_intraday=False):
     """一次完整刷新：拉订阅 → 解析 → 返回 {ok, nodes, ips, reason}。
 
-    结果缓存到 `tmp/jms_subscription.cache`（含节点凭证，0600、已 gitignore）。
+    结果缓存到 `state/jms_subscription.cache`（含节点凭证，0600、已 gitignore）。
 
     **两级缓存 + network 开关（2026-10-30 再修，接 T177）**：
       ① **TTL 内直接用缓存、不发请求**——`ip_pool.build_multi_config()` 会在每次切端口时

@@ -43,9 +43,9 @@ from datetime import datetime
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "..", "..", ".."))
-TMP_DIR = os.path.join(PROJECT_ROOT, "tmp")
-LOCK_FILE = os.path.join(TMP_DIR, "trade_mutex.lock")
-INTENT_FILE = os.path.join(TMP_DIR, "trade_intent.log")
+STATE_DIR = os.path.join(PROJECT_ROOT, "state")
+LOCK_FILE = os.path.join(STATE_DIR, "trade_mutex.lock")
+INTENT_FILE = os.path.join(STATE_DIR, "trade_intent.log")
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "..", "config.json")
 
 
@@ -109,7 +109,7 @@ def append_intent(session_id, market, symbol, side, qty, account=None):
     哪个账户」精确选账户查持仓与订单——此前查询方只能靠当日 actions 的「| 账户 | 实盘」
     行粗判，记录漏写账户行就错查模拟账户（2026-09-02 实盘首单 00100 后持仓状态行
     连续误报「账户已无持仓」）。"""
-    os.makedirs(TMP_DIR, exist_ok=True)
+    os.makedirs(STATE_DIR, exist_ok=True)
     rec = {
         "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "session_id": session_id or "unknown",
@@ -299,7 +299,7 @@ class TradeMutex:
         self._fd = None
 
     def __enter__(self):
-        os.makedirs(TMP_DIR, exist_ok=True)
+        os.makedirs(STATE_DIR, exist_ok=True)
         self._fd = open(LOCK_FILE, "a")
         # 阻塞等锁：开仓机会不因对方在下单而丢弃——等对方下完、闸门判定后再决定。
         fcntl.flock(self._fd, fcntl.LOCK_EX)

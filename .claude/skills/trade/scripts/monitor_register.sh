@@ -26,7 +26,7 @@ if [ -z "${SESSION_ID}" ]; then
 fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # scripts/ 向上 4 级 = 项目根（scripts -> trade -> skills -> .claude -> 项目根）
-REG_FILE="$SCRIPT_DIR/../../../../tmp/monitor_sessions.txt"
+REG_FILE="$SCRIPT_DIR/../../../../state/monitor_sessions.txt"
 mkdir -p "$(dirname "$REG_FILE")"
 if ! grep -qxF "${SESSION_ID}" "$REG_FILE" 2>/dev/null; then
     echo "${SESSION_ID}" >> "$REG_FILE"

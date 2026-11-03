@@ -9,7 +9,7 @@
   里「认领」一段未占用的标的；后启动的会话认领剩下的；死会话（崩溃 / 忘注销）的标的
   自动释放回候选池。天然支持会话数动态变化。
 
-数据文件：tmp/pool_claims.json（当天有效；跨日自动重置——每条认领带日期，读时只认
+数据文件：state/pool_claims.json（当天有效；跨日自动重置——每条认领带日期，读时只认
   当日条目，昨日残留不占坑）。结构：
   {"date": "YYYY-MM-DD", "claims": [{"session": "<sid>", "symbols": ["HK.00700", ...],
     "ts": "HH:MM:SS"}, ...]}
@@ -54,9 +54,9 @@ from datetime import datetime
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "..", "..", ".."))
-TMP_DIR = os.path.join(PROJECT_ROOT, "tmp")
-CLAIMS_FILE = os.path.join(TMP_DIR, "pool_claims.json")
-LOCK_FILE = os.path.join(TMP_DIR, "pool_claim.lock")
+STATE_DIR = os.path.join(PROJECT_ROOT, "state")
+CLAIMS_FILE = os.path.join(STATE_DIR, "pool_claims.json")
+LOCK_FILE = os.path.join(STATE_DIR, "pool_claim.lock")
 
 # 死会话阈值（同 monitor_watcher.DEAD_SESSION_SECONDS）：jsonl 停更 > 30 分钟 = 已结束。
 DEAD_SESSION_SECONDS = 30 * 60
@@ -220,7 +220,7 @@ def _load_claims(today):
 
 
 def _save_claims(today, claims):
-    os.makedirs(TMP_DIR, exist_ok=True)
+    os.makedirs(STATE_DIR, exist_ok=True)
     tmp = CLAIMS_FILE + ".tmp"
     with open(tmp, "w") as f:
         f.write(json.dumps({"date": today, "claims": claims}, ensure_ascii=False, indent=1))

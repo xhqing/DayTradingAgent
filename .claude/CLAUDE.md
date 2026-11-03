@@ -87,6 +87,18 @@
 - **仍然禁止（裁定不豁免的类别，照旧执行）**：① 账户号打码（实盘 / 模拟账户号一律打码口径，AI 上下文禁读 accounts.json / `~/.tigeropen/` 完整号）；② 密钥 / token / 盐值；③ 代理节点 IP 清单、订阅商域名体系、白名单拒绝报文原文、地域规避叙述（2026-08-23 中性化口径不变——这些涉及外部服务配置与绕行链路，与净值豁免无关）。
 - **边界**：模拟账户净值（假钱）本就不受限；全局「敏感信息禁止写入未被 .gitignore 忽略的文件」规则中**除账户净值外的其它敏感类别**（含个人 / 公司财务状况的描述性信息——收入目标、资产负债全貌、财务紧迫程度等）**不受本裁定影响、照旧禁写**。
 
+## tmp/ 与 state/ 的口径划分（2026-11-03 用户立）
+
+`tmp/` 是**临时文件目录**——用户定义：里面的文件「用过之后完全可以彻底删除」，**删了不应该影响正常功能**。因此：**凡是删了会让功能失效的状态，一律不得放 tmp/，必须放 `state/`**。
+
+- **`state/`**（已入 `.gitignore`，跨会话 / 跨中断必须保留）：实盘熔断状态 `circuit_breaker.json`（最严重——丢了 = 实盘开仓闸失效）、标的池认领 `pool_claims.json`、盯盘注册表 `monitor_sessions.txt`、单持仓互斥 WAL `trade_intent.log`、影子仓 `shadow_positions.json`、连败计数 `losing_streak.json`、停盯收尾与飞书漏发标记 `stop_done_*` / `feishu_sent_*`、代理池 `ip_pool_*` 与订阅缓存 `jms_subscription.cache`（盘中禁止重拉订阅，删了要等下一个刷新窗口）。
+- **`tmp/`**（真临时）：采样 log `monitor_log_*`、分析心跳 `analysis_beat_*`、方向重估标记、后台任务日志 `pi-bg/`、飞书待发草稿 `feishu_stop_*`、历史实验脚本与一次性输出。
+
+**判断标准只有一条**：清空这个目录会不会让功能失效？**会 → `state/`，不会 → `tmp/`**。
+
+- **为什么立这条**（2026-11-03 实证）：盯盘 worktree 首次实现时把上述「状态」与临时文件混放在 `tmp/`，worktree 给了独立 `tmp/` 后，preflight 立即误报「停盯总结已写但未见飞书推送记录」、熔断/认领/互斥也全部只看得到空目录——**状态与临时混放让目录语义失真，也在目录隔离时暴露成故障**。
+- **配套**：`worktree_start.py` 会把 `state/` 软链回主仓库（共享持久状态）、`tmp/` 每个 worktree 独立一份（真临时）；新增持久状态时请直接写 `state/`。
+
 ## signals 目录归属（2026-07-18 立）
 
 所有交易信号记录统一放**项目根 `signals/`**：港美每日信号（`signals/YYYY-MM-DD-HKT-signals.md` 港股 / `signals/YYYY-MM-DD-ET-signals.md` 美股）+ 响铃 log（`signals/ring-log.csv`）。**不在 `.claude/skills/trade/signals/` 下**（2026-07-18 已从该旧路径全量迁出到根 `signals/`，统一存放、便于复盘、避免 skill 目录与信号数据混杂）。发信号记录、响铃 log、复盘读取均走根 `signals/`。

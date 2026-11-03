@@ -22,7 +22,7 @@
   `access forbidden`。不需要凭证、约 200ms~2s。
 - **实测出口 IP**：经本项目的代理端口打外部 IP 查询服务。必须实测——订阅里的 address 只是
   入口地址，实际出口可能因服务商 NAT / 多入口而不同。
-- 端口可用性缓存（`tmp/ip_pool_ports.json`）：每个端口探一次「出口 + 网关放行」，供
+- 端口可用性缓存（`state/ip_pool_ports.json`）：每个端口探一次「出口 + 网关放行」，供
   `fast_switch` 毫秒级挑端口。
 
 ## 节点使用记录（2026-10-30 立切换计数，2026-10-31 改口径）
@@ -54,6 +54,9 @@ import proxy_guard as G   # 只复用公共设施（_print / subprocess / PROJEC
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = G.PROJECT_ROOT
 TMP_DIR = G.TMP_DIR
+# 状态目录（2026-11-03 用户立）：端口探活缓存、多端口 xray 配置（含节点凭证）属状态，
+# 删了会让 IP 池重建成本升高（盘中禁止重拉订阅），故放 state/ 而非 tmp/。
+STATE_DIR = os.path.join(PROJECT_ROOT, "state")
 
 # 老虎网关探针：无签名的无害请求。模拟盘走沙箱网关、实盘走生产网关（两者都按 IP 白名单
 # 在连接层拦，实测 2026-10-29：放行时回 code=1000 url invalid，拒绝时回 code=4 access forbidden）。
@@ -636,10 +639,10 @@ def _wait_proxy_port(timeout=PORT_WAIT_TIMEOUT):
 
 MULTI_BASE_PORT = 10871          # 多端口池 http 起始端口（10871..10871+N-1）
 SOCKS_PORT_OFFSET = 10           # socks 端口 = http 端口 + 10（10881..10885），同节点同出口
-MULTI_CONFIG = os.path.join(TMP_DIR, 'ip_pool_xray.json')   # 生成的 xray 配置（含节点凭证 → 必须留在 tmp/）
+MULTI_CONFIG = os.path.join(STATE_DIR, 'ip_pool_xray.json')   # 生成的 xray 配置（含节点凭证 → 必须留在 tmp/）
 MULTI_PID = os.path.join(TMP_DIR, 'ip_pool_xray.pid')
 MULTI_LOG = os.path.join(TMP_DIR, 'ip_pool_xray.log')
-MULTI_PORTS = os.path.join(TMP_DIR, 'ip_pool_ports.json')
+MULTI_PORTS = os.path.join(STATE_DIR, 'ip_pool_ports.json')
 MULTI_PROBE_TTL = 300            # 端口出口探活缓存有效期（秒）
 MULTI_START_TIMEOUT = 8.0        # 等全部端口 accept 的上限
 
