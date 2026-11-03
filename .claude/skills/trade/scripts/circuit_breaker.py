@@ -5,7 +5,7 @@
 「暂停修整线」在 2026-08-17 立定时只有复盘报告的文本建议——无工具强制、无状态
 持久化，AI 给完建议下次盯盘照样能切实盘开仓（散文规定会衰减，2026-08-18 早盘
 三起漏执行已实证）。本脚本把第二级判据落成机制：熔断状态持久化到
-tmp/circuit_breaker.json，open_position 脚本对 --account live 前置检查熔断状态、
+state/circuit_breaker.json，open_position 脚本对 --account live 前置检查熔断状态、
 tripped 即拒单（blocked_by: circuit_breaker）——与 live_unlock（授权闸）、
 losing_streak（一级降频闸）并列的第三道开仓前置闸。
 
@@ -35,7 +35,7 @@ config.json risk.circuit_breaker 读，调参改配置不改代码。
   python3 circuit_breaker.py reset --confirmed-by-user "用户已 AskUserQuestion 确认重启实盘（复盘 2026-09-12 建议重启）"
                                                           # 解除熔断（须用户确认后）
 
-状态文件 tmp/circuit_breaker.json（本机运行时数据，tmp/ 已 gitignore）：
+状态文件 state/circuit_breaker.json（本机运行时数据，state/ 已 gitignore）：
   {"status": "ok"|"tripped", "updated_at": "...", "tripped_at": "...",
    "reason": "...", "evidence": {...}, "history": [{"at","event","note"}, ...]}
 """
@@ -54,7 +54,7 @@ HISTORY_KEEP = 20   # 历史最多保留条数（防止无限增长）
 
 def state_path():
     """状态文件路径：scripts/ 的上四级 = 项目根（scripts → trade → skills → .claude → 项目根）。"""
-    return SCRIPTS_DIR.parent.parent.parent.parent / "tmp" / STATE_FILE
+    return SCRIPTS_DIR.parent.parent.parent.parent / "state" / STATE_FILE
 
 
 def load_config_section():

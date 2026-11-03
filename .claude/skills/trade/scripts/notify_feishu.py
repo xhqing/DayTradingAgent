@@ -18,8 +18,8 @@ SKILL.md「停盯总结 · 飞书汇报（业务版）」节。
     echo "……" | python3 scripts/notify_feishu.py --market hk
     python3 scripts/notify_feishu.py --file x.md --dry-run   # 只校验与预览，不发送
 
-发送成功：写标记 tmp/feishu_sent_<market>_<交易日>.txt（preflight 凭此检查漏发），
-并在 tmp/feishu_sent/ 留发送内容存档。退出码：0 成功 / 2 内容被过滤拦下 /
+发送成功：写标记 state/feishu_sent_<market>_<交易日>.txt（preflight 凭此检查漏发），
+并在 state/feishu_sent/ 留发送内容存档。退出码：0 成功 / 2 内容被过滤拦下 /
 3 未配置或已停用 / 1 发送失败。
 
 **消息最前面自动加 session_id（2026-10-21 用户立：跳代码追踪）**：默认在消息首行插入
@@ -242,9 +242,9 @@ def main():
         print(f"✅ 飞书已发送（market={market}, message_id={message_id or 'n/a'}；--no-mark：未写标记与存档）")
         return 0
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    out_dir = os.path.join(PROJECT_ROOT, "tmp", "feishu_sent")
+    out_dir = os.path.join(PROJECT_ROOT, "state", "feishu_sent")
     os.makedirs(out_dir, exist_ok=True)
-    marker = os.path.join(PROJECT_ROOT, "tmp", f"feishu_sent_{market}_{date_str}.txt")
+    marker = os.path.join(PROJECT_ROOT, "state", f"feishu_sent_{market}_{date_str}.txt")
     try:
         with open(marker, "w", encoding="utf-8") as fh:
             fh.write(f"{now}\t{market}\t{date_str}\t{message_id}\n")

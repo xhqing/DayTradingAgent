@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+### 变更（tmp/ 与 state/ 口径分离：状态不得放临时目录，2026-11-03 16:30）
+
+> 来源：用户 2026-11-03 指正：「关于 tmp 目录的问题，这个目录是临时文件目录，应该是存放临时用的文件，用过之后是完全可以彻底删除的文件，这里面的文件不存在不应该影响正常功能，如果会影响正常功能则说明不应该放 tmp 目录！」
+
+- **为什么改**：排查发现 `tmp/` 里混了大量**删了会失效的状态**——最严重的是 `circuit_breaker.json`（实盘熔断；删了 = 实盘开仓闸失效）、`pool_claims.json`（多会话标的池互斥）、`trade_intent.log`（单持仓 WAL）、`monitor_sessions.txt`（caffeinate 引用计数）、`feishu_sent_*` / `stop_done_*`（收尾与漏发检查）、`ip_pool_*` / `jms_subscription.cache`（盘中禁止重拉订阅，删了要等下一个刷新窗口）。这违反「tmp 删了不影响功能」的语义。**实证**：盯盘 worktree 首次实现给独立 `tmp/` 后，preflight 立刻误报「停盯总结已写但未见飞书推送记录」，熔断/认领/互斥也只看到空目录。
+- **改了什么**：
+  - **新建 `state/` 目录**（入 `.gitignore`），把 51 个状态文件从 `tmp/` 迁入：`circuit_breaker.json`、`pool_claims.json(.bak)`、`pool_claim.lock`、`monitor_sessions.txt`、`trade_mutex.lock`、`trade_intent.log`、`shadow_positions.json`、`losing_streak.json`、`ip_pool_{ports,state,rotate,xray}.json`、`jms_subscription.cache`、`live_reference.json`、`feishu_sent_*.txt`、`stop_done_*.txt`。
+  - **脚本路径同步改到 `state/`**（共 11 个文件）：`circuit_breaker.py`（STATE_FILE 根目录）、`trade_mutex.py`、`pool_claim.py`、`shadow_trade.py`（TMP_DIR→STATE_DIR）、`trade_utils_tiger.py`（`losing_streak.json` / `live_reference.json`）、`ip_pool.py`（新增 STATE_DIR；端口探活缓存 + 多端口 xray 配置）、`jms_pool.py`（订阅缓存）、`stop_summary.py`（stop_done 标记）、`notify_feishu.py`（feishu_sent 标记 + 存档目录）、`monitor_register.sh` / `monitor_unregister.sh` / `keepawake_off.sh`（REG_FILE）、`monitor_guard.py` hook（收尾检查 + 认领/注册/互斥读取路径）。
+  - **`tmp/` 保留纯临时**：采样 log `monitor_log_*`、分析心跳 `analysis_beat_*`、方向重估标记、后台任务日志 `pi-bg/`、飞书待发草稿 `feishu_stop_*`、历史实验脚本与输出。
+  - **`worktree_start.py`**：改为**软链 `state/`**（共享持久状态）+ **`tmp/` 每个 worktree 独立**（真临时）；头部 docstring 与输出版本同步。
+  - **文档**：项目 `CLAUDE.md` 新增「tmp/ 与 state/ 的口径划分」节（判断标准一条：清空会不会让功能失效？会→state，不会→tmp）；`SKILL.md`「先建 worktree」节第 3 条改写为 `state/` 软链 + `tmp/` 独立；`.gitignore` 同步口径注释。
+- **验证（本机实测）**：`circuit_breaker.py status` → 正确读到 `tripped`（从 state/）；`pool_claim.py status` / `trade_mutex.py status` 正常，互斥锁路径显示 `state/trade_mutex.lock`；模拟 `monitor_guard.py stop` hook → **收尾提醒不再刷屏**（能找到 `state/stop_done_us_2026-11-02_01a19c7d.txt`）；新建测试 worktree 后 `state` 为软链（能读燔断/认领）、`tmp` 为独立目录；全部 Python 脚本 `py_compile` 通过、三个 shell 脚本 `bash -n` 通过。
+- **⚠️ 回归风险**：改动集中在路径，不涉交易策略 / 风控参数 / 下单逻辑。风险点：若有未枚举到的脚本仍写 `tmp/<状态文件>`，会出现「状态双写」（旧路径新建空文件 + state/ 的真实状态被忽略）。已 grep 全仓库 `.claude/hooks` + `.claude/skills` 覆盖；后续新增状态文件请直接写 `state/`。
+
 ### 新增（盯盘启动第一动作改为「先建 worktree」，2026-11-03 11:40）
 
 > 来源：用户 2026-11-03 指令：「本项目盯盘任务必然会在工作区写入文件，为了减少盘中干扰，在用户发出盯盘指令的时候直接先准备好 worktree 并切换到 worktree 开始盯盘」。

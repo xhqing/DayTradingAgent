@@ -55,7 +55,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "..", "..", ".."))
 SIGNALS_DIR = os.path.join(PROJECT_ROOT, "signals")
 TMP_DIR = os.path.join(PROJECT_ROOT, "tmp")
-SHADOW_STATE = os.path.join(TMP_DIR, "shadow_positions.json")
+SHADOW_STATE = os.path.join(STATE_DIR, "shadow_positions.json")
 
 MARKETS = ("HKT", "ET")
 
@@ -75,7 +75,7 @@ def _load_state():
 
 
 def _save_state(state):
-    os.makedirs(TMP_DIR, exist_ok=True)
+    os.makedirs(STATE_DIR, exist_ok=True)
     tmp = SHADOW_STATE + ".tmp"
     with open(tmp, "w") as f:
         f.write(json.dumps(state, ensure_ascii=False, indent=1))

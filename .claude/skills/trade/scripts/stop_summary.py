@@ -22,7 +22,7 @@
    总结则拒绝追加，防重复）。
 4. **飞书业务版**：生成 `tmp/feishu_stop_<et_date>-<market>.md` 并用
    notify_feishu.py 发送（业务内容，无技术细节），成功后写收尾标记
-   `tmp/stop_done_<market>_<et_date>.txt`（供 monitor_guard / preflight 检查
+   `state/stop_done_<market>_<et_date>.txt`（供 monitor_guard / preflight 检查
    「当天停了盯却没发收尾」）。
 
 ## 用法
@@ -749,7 +749,7 @@ def main():
         print("⚠️ --no-feishu：跳过飞书推送")
 
     # 3) 收尾标记（供 monitor_guard / preflight 检查）
-    marker = os.path.join(root, "tmp", f"stop_done_{a.market}_{date}{mid}.txt")
+    marker = os.path.join(root, "state", f"stop_done_{a.market}_{date}{mid}.txt")
     with open(marker, "w", encoding="utf-8") as f:
         f.write(json.dumps({
             "market": a.market, "et_date": date, "account": masked,

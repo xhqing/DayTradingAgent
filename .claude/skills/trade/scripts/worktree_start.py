@@ -29,7 +29,10 @@ main 上的 `git add` / `git commit`。
      .claude/skills/trade/feishu.local.json    飞书接收人配置（电源提醒 / 停盯总结推送）
      reviews/ip-node-log.local.csv             JMS 节点使用记录（追加写；软链让数据回流主仓库）
    软链而非复制：凭证只有一份源、不会分叉；worktree 删除也不影响主仓库。
-4. 建 `tmp/`（运行时产物目录，`.gitignore` 已覆盖）；
+4. **软链 `state/`** 回主仓库——`state/` 放「删了会让功能失效」的持久状态（熔断 / 标的池
+   认领 / 盯盘注册表 / 互斥 WAL / 收尾与飞书标记 / 影子仓 / 连败计数 / IP 池缓存），
+   必须跨 worktree 共享；`tmp/` 则每个 worktree **独立一份**（真临时：采样 log / 心跳 /
+   后台任务日志 / 待发草稿，删了不影响功能，2026-11-03 用户立的口径划分）；
 5. 打印 `WORKTREE=<绝对路径>`，AI 据此把后续所有盯盘命令拼上该前缀。
 
 ## 用法
@@ -46,9 +49,11 @@ main 上的 `git add` / `git commit`。
 在 worktree 里跑 `/add` → `/commit`（非 main 分支，自动触发允许）→ push → PR → 合并；
 合并后 `git worktree remove <路径>` 清理。**全程不要回主工作区提交。**
 
-注意：worktree 的 `tmp/` 已软链回主仓库（**共用同一份运行时状态**）——采样 log、标的池
-认领表、caffeinate 引用计数、实盘熔断状态、停盯收尾与飞书发送标记都必须在同一处，
-否则会「每场清零」（实测：首版建独立空 tmp/，preflight 立即误报「未见飞书推送记录」）。
+目录口径（2026-11-03 用户立）：**`state/` 软链共享、`tmp/` 每场独立**。
+`state/` 里是删了会失效的状态（最严重的是 `circuit_breaker.json`——实盘熔断丢了等于
+实盘开仓闸失效）；`tmp/` 里是真临时文件（采样 log、心跳、后台任务日志、待发草稿），
+删了不影响功能。首次实现曾把两者都放 tmp/ 并让 worktree 独立，结果 preflight 立刻
+误报「停盯总结已写但未见飞书推送记录」——这正是「状态文件不该放 tmp」的实证。
 """
 
 import argparse
@@ -158,39 +163,46 @@ def main():
         os.symlink(src, dst)
         linked.append(rel)
 
-    # ── 5. 软链 tmp/（**运行时状态必须与主仓库共享**，2026-11-03 实测修正）────
+    # ── 5. 状态目录与临时目录（2026-11-03 用户立的口径划分）────────────
     #
-    # 为什么不能给 worktree 建空 tmp/：`tmp/` 里放的是**跳会话共享的运行时状态**——
-    #   monitor_log_*.csv          采样 log（连续性与断层检测 / monitor_summary 全貌）
-    #   pool_claims.json           标的池认领表（多会话并行盯盘的互斥依据）
-    #   monitor_sessions.txt       caffeinate 引用计数（多会话时最后停盯才关灯）
-    #   circuit_breaker.json       **实盘熔断状态**（丢了 = 实盘开仓闸失效，最严重）
-    #   feishu_sent_<market>_<date>.txt / stop_done_*.txt   停盯收尾与飞书漏发检查标记
-    #   shadow_positions.json      影子仓、trade_mutex 锁等
-    # 若让 worktree 建独立空 tmp/，这些状态会「每场清零」——首次实测就发现 preflight
-    # 误报「停盯总结已写但未见飞书推送记录」（它在 worktree 的空 tmp/ 里找不到发送标记）。
-    # 故 tmp/ 也软链回主仓库（worktree 删除不影响主仓库数据）。
-    tmp_src = os.path.join(root, "tmp")
-    tmp_dst = os.path.join(wt_path, "tmp")
-    os.makedirs(tmp_src, exist_ok=True)
-    tmp_note = ""
-    if os.path.islink(tmp_dst):
-        tmp_note = "tmp/ 已软链（共用主仓库运行时状态）"
-    elif os.path.isdir(tmp_dst):
+    # state/ = 「删了会让功能失效」的持久状态，**必须软链回主仓库**（跨会话/跨中断共享）：
+    #   circuit_breaker.json   **实盘熔断状态**（丢了 = 实盘开仓闸失效，最严重）
+    #   pool_claims.json       标的池认领表（多会话并行盯盘的互斥依据）
+    #   monitor_sessions.txt   caffeinate 引用计数
+    #   trade_intent.log       单持仓互斥闸 WAL
+    #   shadow_positions.json  影子仓 / losing_streak.json 连败计数
+    #   feishu_sent_* / stop_done_*   收尾与飞书漏发检查标记
+    #   ip_pool_*.json / jms_subscription.cache   代理池与订阅缓存（盘中禁止重拉订阅）
+    #
+    # tmp/ = 「删了不影响功能」的临时文件（采样 log / 心跳 / 后台任务日志 / 待发草稿）。
+    # **每个 worktree 独立一份**即可——一场盯盘在同一 worktree 内完成，log 天然连续；
+    # 次日新 worktree 重置也是期望行为。
+    state_src = os.path.join(root, "state")
+    state_dst = os.path.join(wt_path, "state")
+    os.makedirs(state_src, exist_ok=True)
+    state_note = ""
+    if os.path.islink(state_dst):
+        state_note = "state/ 已软链（共用主仓库持久状态）"
+    elif os.path.isdir(state_dst):
         try:
-            os.rmdir(tmp_dst)          # 仅空目录可删
-            os.symlink(tmp_src, tmp_dst)
-            tmp_note = "tmp/ 空目录已替换为软链（共用主仓库运行时状态）"
+            os.rmdir(state_dst)          # 仅空目录可删
+            os.symlink(state_src, state_dst)
+            state_note = "state/ 空目录已替换为软链（共用主仓库持久状态）"
         except OSError:
-            tmp_note = "⚠️ tmp/ 不是软链且非空，未替换——请手工确认（可能是早前独立建的）"
+            state_note = "⚠️ state/ 不是软链且非空，未替换——请手工确认"
     else:
-        os.symlink(tmp_src, tmp_dst)
-        tmp_note = "tmp/ 已软链（共用主仓库运行时状态）"
+        os.symlink(state_src, state_dst)
+        state_note = "state/ 已软链（共用主仓库持久状态）"
+
+    # tmp/ 独立（真临时）
+    os.makedirs(os.path.join(wt_path, "tmp"), exist_ok=True)
+    tmp_note = "tmp/ 独立（真临时文件，删了不影响功能）"
 
     # ── 6. 输出 ────────────────────────────────────────────────────
     print(f"🔗 本机私有文件软链：{len(linked)} 个")
     for item in linked:
         print(f"   - {item}")
+    print(f"🔗 {state_note}")
     print(f"🔗 {tmp_note}")
     if missing:
         print(f"⚠️ 主仓库里找不到以下文件（盯盘可能缺配置）：")

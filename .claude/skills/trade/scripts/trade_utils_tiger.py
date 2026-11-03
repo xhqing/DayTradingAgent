@@ -1981,7 +1981,9 @@ def check_open_time_gate(market, now=None):
 # 漏执行），落地为脚本硬拦。
 # 口径说明：连败判定**跨日累计**（规则原文「当日或跨日连续」），触发处置**按日执行**
 # ——最近一笔亏损平仓不在今日则不拦（「次日再战」），今日再亏则重新触发当日拦。
-# 数据文件 tmp/losing_streak.json（本机运行时数据、已 gitignore）。
+# 数据文件 state/losing_streak.json（本机运行时数据、已 gitignore）。
+# 2026-11-03 用户立规：tmp/ 只能放「删了不影响功能」的临时文件；连败状态删了会让
+# 连败闸失效（下一个开仓不再被拦），属于状态而非临时，故从 tmp/ 迁到 state/。
 LOSING_STREAK_FILE = "losing_streak.json"
 FULL_LOSS_R = -0.95   # 亏满型阈值：净 R ≤ -0.95（规则原文 |R|≥0.95，含滑点/费超亏）
 
@@ -1989,7 +1991,7 @@ FULL_LOSS_R = -0.95   # 亏满型阈值：净 R ≤ -0.95（规则原文 |R|≥0
 def _losing_streak_path():
     from pathlib import Path
     # scripts/ 的上四级 = 项目根（scripts → trade → skills → .claude → 项目根）
-    return Path(__file__).resolve().parent.parent.parent.parent.parent / "tmp" / LOSING_STREAK_FILE
+    return Path(__file__).resolve().parent.parent.parent.parent.parent / "state" / LOSING_STREAK_FILE
 
 
 def update_losing_streak(market, symbol, direction, entry_price, stop_dist,
@@ -2267,9 +2269,9 @@ _LIVE_REFERENCE_REFRESH_HINT = (
 
 
 def live_reference_path():
-    """实盘参考快照文件路径：项目根 tmp/live_reference.json（tmp/ 已 gitignore）。"""
+    """实盘参考快照文件路径：项目根 state/live_reference.json（state/ 已 gitignore）。"""
     root = Path(__file__).resolve().parent.parent.parent.parent.parent  # scripts/ 上五级 = 项目根
-    return root / "tmp" / _LIVE_REFERENCE_FILENAME
+    return root / "state" / _LIVE_REFERENCE_FILENAME
 
 
 def _beijing_date(dt=None):

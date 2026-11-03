@@ -70,7 +70,7 @@ python3 .claude/skills/trade/scripts/worktree_start.py --market us   # 或 hk
 **启动器做了什么**（细节见脚本 docstring）：
 1. 建 `<仓库名>-watch-<YYYYMMDD>-<market>` + 分支 `chore/watch-<YYYYMMDD>-<market>`（已存在则复用）；
 2. **软链 4 个被 .gitignore 忽略、但盯盘必需的本机私有文件**（worktree 检出里没有它们，缺了就不能下单 / 推送飞书）：`accounts.json`（凭证）、`config.json`（风控参数）、`feishu.local.json`（飞书接收人）、`reviews/ip-node-log.local.csv`（节点记录）；
-3. **把 `tmp/` 软链回主仓库**（关键，2026-11-03 实测教训）——`tmp/` 里是跨会话共享的运行时状态：采样 log（连续性与断层检测）、标的池认领表（多会话互斥）、caffeinate 引用计数、**实盘熔断状态（`circuit_breaker.json`，丢了 = 实盘开仓闸失效）**、停盯收尾与飞书发送标记。若给 worktree 建独立空 `tmp/`，这些状态会「每场清零」（首次实测就踩到：preflight 误报「停盯总结已写但未见飞书推送」）。
+3. **目录口径：`state/` 软链共享、`tmp/` 每场独立（2026-11-03 用户立）**——`state/` 放「删了会让功能失效」的持久状态，必须跨 worktree 共享：`circuit_breaker.json`（**实盘熔断**）、`pool_claims.json`（多会话互斥）、`monitor_sessions.txt`（caffeinate 引用计数）、`trade_intent.log`（单持仓 WAL）、`shadow_positions.json`、`losing_streak.json`、`feishu_sent_*` / `stop_done_*`（收尾与漏发检查）、`ip_pool_*` / `jms_subscription.cache`（盘中禁止重拉订阅）；`tmp/` 只放「删了不影响功能」的临时文件（采样 log / 分析心跳 / 后台任务日志 / 待发草稿）。**判断标准就一条**：清空这个目录会不会让功能失效？会→`state/`，不会→`tmp/`。
 
 **停盯时怎么收尾**：盯盘产生的 `actions/` `signals/` 改动都在 worktree 分支上，停盯总结写完后在该 worktree 里走 `/add` → `/commit`（非 main 分支，自动触发允许）→ push → PR → 合并；合并后 `git worktree remove <路径>` 清理。**全程不回主工作区提交。**
 

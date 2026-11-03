@@ -56,6 +56,9 @@ from datetime import datetime
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", ".."))
 TMP_DIR = os.path.join(_PROJECT_ROOT, "tmp")
+# 状态目录（2026-11-03 用户立）：tmp/ 只能放「删了不影响功能」的临时文件；
+# 熔断状态 / 标的池认领 / 盯盘注册表 / 互斥 WAL / 收尾标记属于状态，已迁到 state/。
+STATE_DIR = os.path.join(_PROJECT_ROOT, "state")
 # 2026-08-16 分层（原 STALE_SECONDS=300 单层与自述「段间循环 <90 秒」不匹配——进程死后
 # log 5 分钟内仍判「在跑」、最长 5 分钟盲窗）：
 #   进程在跑（pgrep）或 log <120 秒有更新 → 在跑（确定信号）；
@@ -181,7 +184,7 @@ def _stop_done_reminder(payload=None):
 
     判据（三件同时成立才提醒，避免误伤）：
       ① actions/<ET 日期>-ET-actions.md 存在且含「🟢🟢🟢 开仓」；
-      ② tmp/stop_done_us_<ET 日期>[_<sid8>].txt 不存在（= stop_summary.py 没跑成功）；
+      ② state/stop_done_us_<ET 日期>[_<sid8>].txt 不存在（= stop_summary.py 没跑成功）；
       ③ 距该 et 日期末次订单/采样已过 30 分钟以上（避免盘中每回合都提醒）。
 
     会话标识：优先 payload.session_id（pi 扩展桥把 session_id 放进 hook JSON；pi 进程
@@ -223,15 +226,15 @@ def _stop_done_reminder(payload=None):
         # 会话标记（多会话隔离：A 的收尾不能压掉 B 的提醒）；否则（非盯盘会话 / 拿不到
         # sid）→ 任意同日标记都算该日已收尾（防非盯盘会话反复误报）。
         is_owner = bool(sid8) and (f"🆔 会话：{sid8}" in txt)
-        tmp_dir = os.path.join(root, "tmp")
+        state_dir = os.path.join(root, "state")
         if is_owner:
-            cands = [os.path.join(tmp_dir, f"stop_done_us_{d}_{sid8}.txt")]
+            cands = [os.path.join(state_dir, f"stop_done_us_{d}_{sid8}.txt")]
             if any(os.path.exists(x) for x in cands):
                 continue
         else:
-            if glob.glob(os.path.join(tmp_dir, f"stop_done_us_{d}*.txt")):
+            if glob.glob(os.path.join(state_dir, f"stop_done_us_{d}*.txt")):
                 continue
-            cands = [os.path.join(tmp_dir, f"stop_done_us_{d}.txt")]  # 仅供提示文案
+            cands = [os.path.join(state_dir, f"stop_done_us_{d}.txt")]  # 仅供提示文案
         # 时间门槛 A：该文件最后修改距今 < 30 分钟 → 视为盘中仍在记录，不提醒
         age_min = (time.time() - os.path.getmtime(acts)) / 60.0
         if age_min < 30:
@@ -268,15 +271,15 @@ def _stop_done_reminder(payload=None):
         if "🟢🟢🟢 开仓" not in txt:
             continue
         is_owner = bool(sid8) and (f"🆔 会话：{sid8}" in txt)
-        tmp_dir = os.path.join(root, "tmp")
+        state_dir = os.path.join(root, "state")
         if is_owner:
-            cands = [os.path.join(tmp_dir, f"stop_done_hk_{d}_{sid8}.txt")]
+            cands = [os.path.join(state_dir, f"stop_done_hk_{d}_{sid8}.txt")]
             if any(os.path.exists(x) for x in cands):
                 continue
         else:
-            if glob.glob(os.path.join(tmp_dir, f"stop_done_hk_{d}*.txt")):
+            if glob.glob(os.path.join(state_dir, f"stop_done_hk_{d}*.txt")):
                 continue
-            cands = [os.path.join(tmp_dir, f"stop_done_hk_{d}.txt")]  # 仅供提示文案
+            cands = [os.path.join(state_dir, f"stop_done_hk_{d}.txt")]  # 仅供提示文案
         if (time.time() - os.path.getmtime(acts)) / 60.0 < 30:
             continue
         try:
@@ -360,7 +363,7 @@ def _pool_conflict(exec_seg_cmds, sid=""):
     """
     if not sid:
         return None   # 非会话内（手动跑 / 测试）：无池概念，不拦
-    claims_path = os.path.join(TMP_DIR, "pool_claims.json")
+    claims_path = os.path.join(STATE_DIR, "pool_claims.json")
     if not os.path.isfile(claims_path):
         return None   # 无认领表文件：不拦（认领制未启用）
     try:
@@ -506,7 +509,7 @@ def _is_monitoring_session(sid):
         if not sid:
             return False
         # ① 盯盘注册表
-        reg = os.path.join(TMP_DIR, "monitor_sessions.txt")
+        reg = os.path.join(STATE_DIR, "monitor_sessions.txt")
         if os.path.isfile(reg):
             try:
                 with open(reg) as f:
@@ -515,7 +518,7 @@ def _is_monitoring_session(sid):
             except OSError:
                 pass
         # ② 当日认领表
-        claims = os.path.join(TMP_DIR, "pool_claims.json")
+        claims = os.path.join(STATE_DIR, "pool_claims.json")
         if os.path.isfile(claims):
             try:
                 with open(claims) as f:
@@ -540,7 +543,7 @@ def _is_monitoring_session(sid):
                         return False
             except OSError:
                 pass
-        intent = os.path.join(TMP_DIR, "trade_intent.log")
+        intent = os.path.join(STATE_DIR, "trade_intent.log")
         if os.path.isfile(intent):
             try:
                 today_dash = datetime.now().strftime("%Y-%m-%d")
