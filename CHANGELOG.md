@@ -16,6 +16,13 @@
 - **改了什么**：`README.md` / `README_cn.md` 顶部徽章区删除那一枚 shields.io 访问量徽章（整行删除，数据源 `https://raw.githubusercontent.com/xhqing/xhqing/main/traffic/badges/<仓库名>.json`）；License / Version / Type 等其它徽章与正文一个字未动。
 - **回归检查**：只删这一整行，徽章区所在的 `<p align="center">` / `<div>` 结构与相邻徽章不受影响；README 其余内容零改动。
 
+
+### 修复（preflight 飞书漏发检查读错目录，每次都误报「未见飞书推送记录」，2026-11-04 21:30）
+
+- **为什么改**：2026-11-03 把状态文件从 `tmp/` 迁到 `state/` 时，`notify_feishu.py` 的发送标记改写到 `state/feishu_sent_us_<交易日>.txt`，但 `preflight.py` 的漏发检查仍读 `tmp/feishu_sent_us_<交易日>.txt`。盯盘 worktree 的 `tmp/` 是每场独立的空目录，于是每次 preflight 都会误报「停盯总结已写但未见飞书推送记录」，把已经发过的日子当成漏发、催 AI 补发（2026-11-04 实测：11-03 ET 的业务版其实已在 11-04 05:00:56 发出，标记就在 `state/` 里）。
+- **改了什么**：`preflight.py` 的 `_feishu_check()` 先把标记路径改成 `state/` 优先、`tmp/` 兼容兜底（`any(os.path.isfile(m))`），注释同步说明来由；没有标记才提醒补发。
+- **⚠️ 回归风险：无**。只改「判读漏发标记的位置」，不碰发送链路、不碰交易逻辑；标记存在即静默、不存在才提醒，与改动前语义一致，只是不再看一个恒为空的目录。
+
 ### 变更（币种符号：美元一律写 `US$` / `USD`，禁止裸 `$`，2026-11-04 05:50）
 
 > 来源：用户 2026-11-04 指令：「以后所有遇到美金单位的情况用“US$”而不是“$”」，并补充「或者 USD」。
