@@ -565,12 +565,12 @@ def main():
 
     overall_r = (total_pnl / total_ml) if total_ml else None
 
-    # 币种单位（2026-10-23 用户立：所有金额必须带单位；港币写 HK$、禁止裸 $；
-    # 港股汇总不得标成 USD——港美分开统计，币种随 --market 走）
-    CUR = "$" if a.market == "us" else "HK$"
+    # 币种单位（2026-10-23 用户立：所有金额必须带单位；2026-11-04 修订：美元写 US$、不再用裸 $；
+    # 港股写 HK$；港美分开统计，币种随 --market 走）
+    CUR = "US$" if a.market == "us" else "HK$"
 
     def money(x):
-        """金额带币种单位：+$21.08 / -$36.52 / +HK$21.08（正负号在币种符号前）。"""
+        """金额带币种单位：+US$21.08 / -US$36.52 / +HK$21.08（正负号在币种符号前）。"""
         s = f"{x:+.2f}"
         return f"{s[0]}{CUR}{s[1:]}"
 
@@ -579,7 +579,7 @@ def main():
           f"{(wins / len(trades) * 100 if trades else 0):.0f}%")
 
     def money_abs(x):
-        """不带符号的金额（用于 max_loss 这类恒正项）：$299.62。"""
+        """不带符号的金额（用于 max_loss 这类恒正项）：US$299.62。"""
         return f"{CUR}{x:.2f}"
 
     def stage_str(rw):
