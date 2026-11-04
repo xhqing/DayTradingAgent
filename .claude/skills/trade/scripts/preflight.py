@@ -312,7 +312,9 @@ _us_wrapup_check()
 
 # 飞书汇报漏发检查（2026-10-13 用户立）：每次停盯都要把停盯总结（业务版）推送到飞书，
 # 本检查看「最近一个已完结的美股交易日」已在 signals/actions 写入停盯总结、但
-# notify_feishu.py 的发送标记（tmp/feishu_sent_us_<交易日>.txt）不存在 → 提醒补发。
+# notify_feishu.py 的发送标记（state/feishu_sent_us_<交易日>.txt）不存在 → 提醒补发。
+# 2026-11-04 修：标记自状态/临时目录分离（2026-11-03）后写在 state/，本检查原先仍读 tmp/
+# （worktree 的 tmp/ 独立、恒为空）→ 每次都误报漏发；改为 state/ 优先、tmp/ 兼容兜底。
 # 只查 ET（停盯总结进文件与上方 _us_wrapup_check 同口径）；港股停盯当场闭环、暂不查。
 # 功能上线（2026-10-13）之前的交易日无标记属正常（历史记录不追责）。
 def _feishu_check():
@@ -341,8 +343,9 @@ def _feishu_check():
             continue
     if not _has_summary:
         return
-    _marker = _os.path.join(_root, "tmp", f"feishu_sent_us_{_d.isoformat()}.txt")
-    if not _os.path.isfile(_marker):
+    _markers = [_os.path.join(_root, d, f"feishu_sent_us_{_d.isoformat()}.txt")
+                for d in ("state", "tmp")]
+    if not any(_os.path.isfile(m) for m in _markers):
         print(f"📨 飞书汇报提醒：{_d.isoformat()} ET 的停盯总结已写但未见飞书推送记录——按用户规定"
               f"（每次停盯必发业务版）补发：python3 scripts/notify_feishu.py --file <业务版文件> --market us")
 
