@@ -169,7 +169,7 @@ AI 不下单，所有订单 / 成交均为用户在 App 操作。**signal 模式
 **每笔交易了结后**（主动平仓 🔴 清仓、被动平仓止损 / 止盈触发——凡是兑现盈亏的了结动作都算），当前 equity += 本笔盈亏（港股直接 HKD、美股按当日 USD/HKD 汇率换算 HKD），并**同时写两处**：
 
 1. **append 一行到 `signals/equity-log.csv`**（字段 `date, symbol, P_HKD, equity_after, note`，结构化、preflight 读它算 B；equity-log 照常入库跟踪——2026-08-20~29 曾被 gitignore 只留本机，2026-08-29 用户裁定实盘净值不属敏感信息后恢复入库）；
-2. **在该笔了结对应的当天信号文件记录末尾 append 一行当前总资产口径**（港股 `signals/YYYY-MM-DD-HKT-signals.md` / 美股 `signals/YYYY-MM-DD-ET-signals.md`）。形如 `> 本笔了结：±HK$P（±X.XR）| 当前 equity = HK$116,xxx，B = 2%×equity ≈ HK$2,300`。**口径沿革**：2026-08-20~29 曾按「实盘净值禁止写入被跟踪文件」旧规只写盈亏与 B、不写 equity 本体；2026-08-29 用户裁定实盘净值不属敏感财务信息（账户资金只是个人全部财产的一小部分），equity 本体恢复照常写（裁定详情见项目 CLAUDE.md「实盘净值不属敏感信息、照常可写」节）。
+2. **在该笔了结对应的当天信号文件记录末尾 append 一行当前总资产口径**（港股 `signals/YYYY-MM-DD-HKT-signals.md` / 美股 `signals/YYYY-MM-DD-ET-signals.md`）。形如 `> 本笔了结：±HK$P（±X.XR）| 当前 equity = HK$116,xxx，B = 2%×equity ≈ HK$2,300`。**口径沿革**：2026-08-20~29 曾按「实盘净值禁止写入被跟踪文件」旧规只写盈亏与 B、不写 equity 本体；2026-08-29 用户裁定实盘净值不属敏感财务信息（账户资金只是个人全部财产的一小部分），equity 本体恢复照常写（裁定详情见项目 AGENTS.md「实盘净值不属敏感信息、照常可写」节）。
 
 **当前 equity = `equity-log.csv` 最新行 `equity_after`**（无记录则 = `config.risk.initial_equity`）。权益缩水 → B 自动缩小（复利减速）、权益增长 → B 自动放大（复利加速）。
 

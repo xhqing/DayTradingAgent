@@ -10,4 +10,4 @@
 - 港股：`YYYY-MM-DD-HKT-actions.md`
 - 美股：`YYYY-MM-DD-ET-actions.md`
 
-复盘数据源 = `signals/` + `actions/` 两个目录的交易记录（signal 模式交易在 `signals/`、auto 模式交易在 `actions/`）；默认复盘范围 = 港股（只遍历 `*-HKT-*` 文件，用户明确要求复盘美股时才遍历 `*-ET-*`）。详见项目 `CLAUDE.md`「actions/ 目录归属」节与 trade skill「复盘分析」节。
+复盘数据源 = `signals/` + `actions/` 两个目录的交易记录（signal 模式交易在 `signals/`、auto 模式交易在 `actions/`）；默认复盘范围 = 港股（只遍历 `*-HKT-*` 文件，用户明确要求复盘美股时才遍历 `*-ET-*`）。详见项目 `AGENTS.md`「actions/ 目录归属」节与 trade skill「复盘分析」节。

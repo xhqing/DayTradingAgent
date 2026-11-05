@@ -570,7 +570,7 @@ def ring_after_fill(market, symbol, note="", ring_type="open"):
 
     为什么：auto 模式 AI 直接调脚本开仓，用户若不盯屏幕感知不到已开仓——成交确认后
     响一声把用户注意力拉回来。挂在**开仓脚本成交确认之后**（脚本内置 = 工具强制，
-    不靠 AI 记得调 ring.sh；见项目 CLAUDE.md「文档规定必须尽可能配工具强制」）。
+    不靠 AI 记得调 ring.sh；见项目 AGENTS.md「文档规定必须尽可能配工具强制」）。
 
     实现：调 ring.sh（复用现有响铃机制与音色映射），但 RING_LOG=ring-log-auto.csv
     隔离响铃记录——signal 的 ring-log.csv 末行被 log_action.sh（signal 模式读末行当
@@ -813,7 +813,7 @@ def note_equity_baseline(value, currency):
     一小部分、不能代表个人财务状况），照常可写——「实盘净值禁止写入被跟踪文件」
     旧规废止，equity_guard.py hook 已从 settings.json 摘除。本函数保留为空操作
     （调用点一并清理），防止旧调用点报 NameError；基准黑名单文件
-    hooks/equity-baseline.local 不再写入。沿革见 CLAUDE.md「实盘净值不属
+    hooks/equity-baseline.local 不再写入。沿革见 AGENTS.md「实盘净值不属
     敏感信息、照常可写」节与 CHANGELOG 2026-08-29 条。
     """
     return None
