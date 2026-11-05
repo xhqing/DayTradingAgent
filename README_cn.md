@@ -15,7 +15,7 @@
 
 **Victor** 是一个港股 / 美股日内交易的 AI 执行智能体。它负责盯盘、分析标的、计算仓位与止损位、输出结构化交易信号——而每一笔订单都由人在券商 App 里手动执行。
 
-> 这**不是**一个传统意义上的软件项目：没有可供 `npm install` 或 `cargo run` 的应用。**这个仓库本身就是智能体**——它的全部行为方式都由 `.claude/` 下的 skills 和 rules 塑造，由运行框架（harness）加载，作为 Victor 的工作纪律。
+> 这**不是**一个传统意义上的软件项目：没有可供 `npm install` 或 `cargo run` 的应用。**这个仓库本身就是智能体**——它的全部行为方式都由 `.pi/skills/` 下的 `trade` 技能与 `AGENTS.md` 里的项目规则塑造，由 **pi** 运行框架加载，作为 Victor 的工作纪律。
 
 ---
 
@@ -41,15 +41,15 @@
 | **信号模式** | 自 2026-07-07 起，Victor 只发信号（🟢 开仓 / 🔵 加仓 / 🟠 减仓 / 🔴 平仓 / 🟡 移动止损），绝不调用任何下单命令。 |
 | **EV 驱动** | 每笔开仓都要求胜率 > 50% **且** 赔率 ≥ 1.2，否则不发信号。 |
 | **信号层面复盘** | 统计胜率 / 赔率 / EV（信号层面，不依赖账户）；实际账户盈亏由用户自算。 |
-| **知识沉淀** | 强约束规范沉淀进 `rules/` 和 `skills/`。AutoMemory 已于 2026-07-20 废弃（内容全量提炼进 SKILL.md，`.claude/memory/` 目录与 `autoMemoryDirectory` 配置均已移除）。 |
+| **知识沉淀** | 强约束规范沉淀进 `AGENTS.md` 与 `trade` 技能的 references。AutoMemory 已于 2026-07-20 废弃（内容全量提炼进 SKILL.md）。 |
 
 ---
 
 ## Victor 如何工作
 
-当用户提出**盯盘、发信号、交易复盘、分析标的**时，运行框架激活 Victor，加载 `trade` skill 并运行其护栏。
+当用户提出**盯盘、发信号、交易复盘、分析标的**时，pi 激活 Victor，加载 `trade` skill 并运行其护栏。
 
-**盯盘标准启动序列**（脚本在 `.claude/skills/trade/scripts/`）：
+**盯盘标准启动序列**（脚本在 `.pi/skills/trade/scripts/`）：
 
 1. `preflight.py` —— 核实时间、港股 / 美股时段、富途 OpenD 端口
 2. `hot_list.py` —— 拉热度榜（选标的的铁律第一步）
@@ -65,46 +65,37 @@
 
 ```
 DayTradingAgent/
-├── CLAUDE.md                      # 项目入口，指引运行框架找到 rules 与 trade skill
+├── AGENTS.md                      # 项目规则——智能体的工作纪律（入口）
 ├── LICENSE.md                     # MIT
-├── README.md                      # 英文 README
+├── README.md                      # 英文版 README
 ├── README_cn.md                   # 本文件（中文）
 │
-├── .claude/
-│   ├── settings.local.json        # 本机配置：permissions（已 gitignore）
-│   ├── settings.local.example.json # settings.local.json 模板（入库）
-│   │
-│   ├── rules/                     # 通用工作规范（跨领域）
-│   │   ├── verify-facts-before-stating.md
-│   │   └── output-and-writing-style.md
-│   │
+├── .pi/                           # pi 运行框架配置
+│   ├── settings.json              # 服务商 / 模型默认值
+│   ├── extensions/                # 项目级 pi 扩展
+│   │   ├── trade-guards.ts        # 把 pi 事件桥接到 hooks/ 下的 Python 护栏
+│   │   └── ask-question.ts        # AskUserQuestion 结构化提问工具
 │   └── skills/
-│       └── trade/                 # 交易领域执行规范——Victor 的核心
+│       └── trade/                 # 领域执行规范——Victor 的核心
 │           ├── SKILL.md           # 主文件：执行规范 + 硬性护栏
-│           ├── classify_hk_security.py   # 港股证券类型判定（个股/ETF/REIT/衍生品）
+│           ├── references/        # 策略、风控、盯盘、复盘、宿主集成
 │           ├── config.example.json       # 风控 / 盯盘配置模板
 │           ├── accounts.example.json     # 老虎凭证模板
-│           ├── accounts.md               # 数据源配置 + 港股代码格式
-│           ├── tiger-websocket.md        # 老虎 SDK WebSocket 代码骨架
-│           ├── hk-level2-sources.md      # 港股 Level2 数据源调研
-│           ├── futu-opend-level2.md      # 富途 OpenD Level2 调用骨架
-│           └── scripts/                  # 盯盘脚本库
-│               ├── preflight.py          # 开盘前检查：时间/时段/OpenD + 风控配置 + 防睡眠
-│               ├── hot_list.py           # 热度榜（选标的铁律第一步）
-│               ├── snapshot.py           # 行情快照
-│               ├── kline.py              # K 线 + 斐波那契回撤
-│               ├── monitor.py            # 密采样（单标的）
-│               ├── monitor_segment.py    # 后台分段采样（多标的——盯盘主力机制）
-│               ├── monitor_summary.py    # 全貌摘要 + 行情性质判别
-│               ├── capital.py            # 资金流（富途）
-│               ├── review.py             # 复盘统计（R-multiple、贝叶斯 NIG）
-│               ├── bayes_evolution.py    # 序贯贝叶斯演化图
-│               └── alert.sh              # 写信号文件 + 声音提醒
+│           └── scripts/           # 盯盘 / 下单 / 复盘脚本库
 │
-├── signals/                      # 每日信号日志（港股 / 美股分开，HKT/ET 后缀）+ ring-log.csv + equity-log.csv
-├── reviews/                      # 复盘报告 + 每次复盘的 CSV/PNG 附件
-├── notes/                        # 长篇推导（凯利下注方案、累计收益率数学）
-└── archive/                       # 仅本地保留的历史归档（已 gitignore）：重构前的 memory 快照 + 旧复盘
+├── hooks/                         # 护栏脚本（唯一源，由 pi 扩展桥接 spawn）
+│   ├── secret_guard.py            # 凭证读取拦截
+│   ├── monitor_guard.py           # 密采样纪律 / 互斥闸 / 断链提醒
+│   ├── changelog_guard.py         # CHANGELOG / TODO 卫生提醒
+│   ├── jms_guard.py               # 盘中禁止刷新订阅
+│   └── live_auth_witness.py       # 实盘授权见证
+│
+├── signals/                       # 每日信号记录（港美分开、HKT/ET 后缀）+ ring-log.csv + equity-log.csv
+├── reviews/                       # 复盘报告 + 配套 CSV/PNG 附件
+├── notes/                         # 长篇推导（凯利仓位方案、累计收益数学）
+├── state/                         # 持久运行状态（已 gitignore）：熔断、标的池认领、互斥 WAL
+├── tmp/                           # 一次性运行文件（已 gitignore）：采样日志、心跳、后台任务日志
+└── archive/                       # 本机历史留存（已 gitignore）：重构前 memory 快照 + 旧复盘
 ```
 
 > 真实的 `config.json` 和 `accounts.json`（含老虎凭证）**已被 gitignore**——仓库只随附 `*.example.json` 模板。`archive/` 目录同样仅本地保留。
@@ -142,10 +133,10 @@ Victor 在发出任何信号前逐条自检（完整清单见 `SKILL.md`）：
 
 要让 Victor 真正跑起来，仓库之外还需要：
 
-- 一个智能体运行框架（harness）——加载本仓库 `.claude/` 下的 skills 与 rules 的运行时
+- **pi** 智能体运行框架——加载本仓库 `.pi/` 下的技能、扩展与 `AGENTS.md` 规则的运行时
 - **老虎** SDK（`tigeropen`）已配置在 `~/.tigeropen/`
 - **富途 OpenD** 本地网关在运行（港股 Level2 + 美股深度）
-- 从 `*.example.json` 模板填好本地的 `config.json` 和 `accounts.json`（accounts.json 只需 tiger 段）；可选：把 `.claude/settings.local.example.json` 复制为 `.claude/settings.local.json`，按需补充额外的命令预授权
+- 从 `*.example.json` 模板填好本地的 `config.json` 和 `accounts.json`（accounts.json 只需 tiger 段）
 - **Windows 用户**（2026-08-09 起脚本与护栏双平台适配）：需安装 Git for Windows（安装时勾选 Add to PATH）+ Python 3 加入 PATH；本文档命令示例按 macOS 写 `python3`，Windows 上执行时用 `python`（`settings.json` 两套都已预授权）
 
 即便没有这些环境，本仓库仍是一份完整的「一个守纪律的交易智能体应当如何行事」的规范说明。

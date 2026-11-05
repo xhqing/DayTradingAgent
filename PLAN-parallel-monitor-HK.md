@@ -1,7 +1,7 @@
 # Plan：多会话并行盯盘（方案 A）—— 港股实现
 
 > 状态：待实现（2026-08-17 15:05 立项）。配套美股 Plan 见 `PLAN-parallel-monitor-US.md`（两市场共享同一套互斥公共模块，先读本文「公共模块」节）。
-> 方案背景：单会话盯盘在多标的时「段间分析串行」是时间利用率的瓶颈——40 秒采样段结束后要串行分析所有标的，只数越多每只分析越浅、破位到决策的链路越长。方案 A = 多个 Claude Code 会话各盯各的标的池并行盯盘，**单持仓互斥**保证全局任意时刻至多一笔在场（风控语义不变、仍是单笔口径），资金并行留待方案 B（未立项）。
+> 方案背景：单会话盯盘在多标的时「段间分析串行」是时间利用率的瓶颈——40 秒采样段结束后要串行分析所有标的，只数越多每只分析越浅、破位到决策的链路越长。方案 A = 多个 pi 会话各盯各的标的池并行盯盘，**单持仓互斥**保证全局任意时刻至多一笔在场（风控语义不变、仍是单笔口径），资金并行留待方案 B（未立项）。
 
 ## 一、方案边界（做什么 / 不做什么）
 
@@ -40,7 +40,7 @@
 
 ## 三、公共模块 trade_mutex.py（港美共用，一次实现两市场复用）
 
-> 位置：`.claude/skills/trade/scripts/trade_mutex.py`。港股 `open_position_tiger.py` 与美股 `open_position_tiger_us.py` 各自引用，避免两份逻辑漂移。**全局一把锁、不分市场**——分市场两把锁会放过「港股持仓违规过夜 + 美股会话开新仓」的跨市场叠加路径；港美时段不重叠使全局锁的实际代价为零。
+> 位置：`.pi/skills/trade/scripts/trade_mutex.py`。港股 `open_position_tiger.py` 与美股 `open_position_tiger_us.py` 各自引用，避免两份逻辑漂移。**全局一把锁、不分市场**——分市场两把锁会放过「港股持仓违规过夜 + 美股会话开新仓」的跨市场叠加路径；港美时段不重叠使全局锁的实际代价为零。
 
 ### 3.1 第一层：flock 文件锁（内核级，把临界区序列化）
 
@@ -83,7 +83,7 @@
 | 3 | `scripts/monitor_segment.py` | 每轮采样加持仓数检测 + 告警（3.4，读 config 白名单） | 四层 |
 | 4 | `config.json` | 增 `risk.resident_positions` 白名单（标的 + 方向 + 数量） | 二、四层 |
 | 5 | `scripts/preflight.py` | 输出当前互斥状态（intent 日志有无 pending、当日开仓链状态），多会话启动时一眼看到「谁在场」 | 辅助 |
-| 6 | `.claude/skills/keep-awake/scripts/off.sh` | caffeinate 改**引用计数**：停盯收尾时若 `tmp/monitor_sessions.txt` 还有其它注册会话则不 kill，仅注销自己；最后一人关灯 | 跨会话 |
+| 6 | `.pi/skills/keep-awake/scripts/off.sh` | caffeinate 改**引用计数**：停盯收尾时若 `tmp/monitor_sessions.txt` 还有其它注册会话则不 kill，仅注销自己；最后一人关灯 | 跨会话 |
 | 7 | `scripts/resume.py` | 断层检测按市场 scope（只查本市场 log 的最晚采样时间） | 跨会话 |
 | 8 | `references/monitoring.md` | 补「多会话并行盯盘」节：启动序列、标的池分配约定、互斥行为说明 | 文档 |
 | 9 | `SKILL.md` 硬性护栏第 4 条 | 补一句「单持仓由脚本级互斥闸强制（多会话并行时先到先得）」，纪律 + 工程双保险 | 文档 |
