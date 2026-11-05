@@ -8,7 +8,9 @@
 - **改了什么**（2026-11-03）：新增 `.github/workflows/validate.yml`（PR 与 main push 触发，检查名 `validate`）与 `.github/scripts/validate.py`（仓库卫生检查：必备文件存在、敏感文件未被跟踪、被跟踪文件不超过 10 MB、README 相对链接有效、Python / Shell 语法检查）；main 分支保护补挂 required check `validate` 并设 `strict=true`。
 - **边界**：检查只做确定性、低误报的项目（required check 一旦误报就会卡住正常 PR，所以宁可少查）；不改动仓库任何原有内容。
 
-## [Unreleased]
+## [0.9.0] - 2026-11-05
+
+本版聚焦「执行反馈的真实性」与「无人盯盘时的兜底」：撤单不再等同于未成交（T173）、持仓看护脱离 AI 会话独立运行（T157）、时间判断统一以 ET 为权威口径、盯盘启动改为先建 worktree。
 
 ### 修复（红色待办集中处理：T173 撤单后回查真实成交 / T157 持仓看护外部叫醒 / T176 IP 池判定统一，2026-11-05）
 
