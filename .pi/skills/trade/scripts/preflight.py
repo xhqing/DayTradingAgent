@@ -1,0 +1,485 @@
+#!/usr/bin/env python3
+"""盯盘开盘前检查：当前时间 / 港股美股时段 / 富途 OpenD。
+用法: python3 preflight.py
+一行汇总就绪状态,避免开盘才发现数据源掉线或时间误判。"""
+import datetime, socket
+
+now = datetime.datetime.now()
+hhmm = now.hour * 60 + now.minute
+wd = now.weekday()  # 0=Mon..6=Sun
+print(f"⏰ {now.strftime('%Y-%m-%d %H:%M:%S %A')}")
+
+# 港股时段 (UTC+8, 与北京同时区)
+if wd >= 5:
+    hk = "周末休市"
+elif 570 <= hhmm < 720:
+    hk = "港股早市 09:30-12:00"
+elif 780 <= hhmm < 960:
+    hk = "港股午市 13:00-16:00"
+else:
+    hk = "盘外"
+# 美股时段（2026-08-18 修订：美股可交易窗口扩为「盘前 + 盘中」= 美东 04:00-16:00——
+#   盘前 04:00-09:30 与盘中 09:30-16:00 都可开仓 / 平仓 / 移损 / 发信号，16:00 收盘边界不变；
+#   2026-07-19 旧规「仅盘中 09:30-16:00」废止。换算北京时间随美东夏/冬令时切换：
+#     夏令时 EDT(UTC-4)：美东 04:00-16:00 = 北京 16:00-次日 04:00（跨午夜）
+#     冬令时 EST(UTC-5)：美东 04:00-16:00 = 北京 17:00-次日 05:00（跨午夜）
+#   直接用 zoneinfo 把当前时间转到美东时区判「周末 / 时段 / DST」，不再用北京本地反推——
+#   冬令时盘中跨午夜段（北京周六凌晨 00:00-05:00 实为美东周五盘中）不会被本地周末判断误伤。
+#   zoneinfo 不可用时回退北京夏令时估并标注。）
+def _us_status():
+    try:
+        from zoneinfo import ZoneInfo
+        us_now = now.astimezone(ZoneInfo("America/New_York"))
+    except Exception:
+        # zoneinfo 不可用：回退北京本地估夏令时（仅兜底，冬令时段可能不准）
+        if wd >= 5:
+            return "周末休市"
+        # 夏令时估：美东 04:00-16:00 = 北京 16:00-次日 04:00（跨午夜）
+        if 960 <= hhmm < 1440 or hhmm < 240:
+            return "美股可交易(夏令时估·zoneinfo不可用)·盘前+盘中均可(美东04:00-16:00)"
+        return "美股盘外(夏令时估·zoneinfo不可用)·不发信号"
+    us_wd = us_now.weekday()
+    us_hhmm = us_now.hour * 60 + us_now.minute
+    tz_tag = "EDT夏令时" if bool(us_now.dst()) else "EST冬令时"
+    if us_wd >= 5:
+        return "周末休市"
+    if 240 <= us_hhmm < 960:  # 美东 04:00-16:00（盘前 04:00-09:30 + 盘中 09:30-16:00）
+        phase = "盘前" if us_hhmm < 570 else "盘中"
+        return f"美股可交易({phase}·{tz_tag})·可发信号(美东04:00-16:00，盯到用户喊停或收盘)"
+    return f"美股盘外({tz_tag})·不发信号"
+
+us = _us_status()
+print(f"📈 港股:{hk} | 美股:{us}")
+
+# 富途 OpenD 端口（盯盘行情主力源，须登录成功才监听 11111）
+def port_open(p):
+    s = socket.socket(); s.settimeout(1)
+    try:
+        s.connect(('127.0.0.1', p)); s.close(); return True
+    except Exception:
+        return False
+print(f"📊 富途OpenD:11111 {'✅' if port_open(11111) else '❌(未登录/未启动)'}")
+
+# 风险比例 + 权益（按模式取 equity：auto 走账户 API、signal 走 equity-log；2026-08-01 双模式重构）
+import json as _json, os as _os, sys as _sys
+try:
+    _sys.path.insert(0, _os.path.dirname(__file__))
+    from trade_utils_tiger import load_equity as _le, parse_mode as _pm
+    _mode = _pm()
+    # 账户选择（2026-08-20 立，实盘盯盘配套）：--account live 切实盘账户取净值——2026-08-20
+    # 事故：实盘盯盘时 preflight 固定走默认模拟账户（约 789 万 HKD）算 B、实盘净值远小于模拟
+    # 净值（量级见本机实查）、偏差 68 倍。修复 = 取净值与下单同账户（load_equity 透传）。
+    # 2026-09-12 解耦：auto + 模拟盘（默认 / --account paper）equity 读 equity-log 纸面权益
+    # （与 signal 同源，见 trade_utils_tiger.paper_sizing_reference）——不再依赖实盘当日快照。
+    _acct = None
+    for _i, _a in enumerate(_sys.argv[1:]):
+        if _a == '--account' and _i + 1 < len(_sys.argv[1:]):
+            _acct = _sys.argv[1:][_i + 1].lower()
+            _acct = _acct if _acct in ('live', 'paper') else None
+    _cfg_path = _os.path.join(_os.path.dirname(__file__), '..', 'config.json')
+    with open(_cfg_path) as _f:
+        _risk = _json.load(_f).get('risk', {})
+    _frac = _risk.get('risk_fraction'); _fmax = _risk.get('f_max', _frac)
+    _lev = _risk.get('max_leverage', 10)
+    _eq_now, _cur, _eq_src = _le(_mode, account=_acct)
+    # 2026-09-12 解耦（模拟盘与实盘资产解耦）：auto 模拟盘算仓位 equity 从 equity-log 纸面
+    # 权益读（与 signal 同源），购买力 = 纸面权益 × 模拟盘总融资杠杆 × 标的保证金率——全程
+    # 不碰实盘、无快照依赖，实盘资产为 0 / 资金取出不影响模拟盘交易。旧「实盘参考快照联动」
+    # （2026-09-03 立：实盘会话刷快照、模拟盘会话缺快照即拒单）废止；--refresh-live-reference
+    # CLI 保留作诊断工具。
+    if _frac is not None and _eq_now is not None:
+        _M = _frac * _eq_now
+        print(f"💰 模式 {_mode} | 风险比例 {_frac*100:.1f}% × 当前 equity {_eq_now:,.2f} {_cur} = 单笔预算 B {_M:,.2f}（f_max 硬上限 {_fmax*100:.1f}%，max_loss 不得突破）")
+        print(f"   equity 来源：{_eq_src}")
+        print(f"⚖️  开仓市值上限 = equity × {_lev} 倍杠杆 = {_eq_now * _lev:,.2f} {_cur}（权益 {_eq_now:,.0f} → 最高开仓 {_eq_now * _lev:,.0f} 市值；选仓位时 max_loss 与市值两约束同时满足）")
+    elif _mode == "auto" and _acct != "live" and _eq_now is None:
+        # auto 模拟盘且实盘快照取不到：B 行已在上面 🚨 警示里说明原因，这里不再重复打。
+        pass
+    else:
+        print(f"💰 ⚠️ config 缺 risk_fraction，盘中算仓位前务必手动确认")
+except Exception as _e:
+    print(f"💰 ⚠️ 读取 config/equity 失败({_e})，盘中算仓位前务必手动确认 risk.risk_fraction")
+
+# positions 检查已移除（2026-07-15 信号模式：假设执行、不查 positions，见 SKILL「信号模式总则」第 1 条）
+
+# 防系统睡眠（2026-07-25 立 → 2026-07-27 修订 → 2026-11-03 修正能力边界）
+# 根因：盯盘期间系统睡眠会暂停所有进程——富途 OpenD 的 get_market_snapshot 无 timeout、
+# 卡到 TCP 超时 ~15 分钟才返回、整段采样空窗。
+# ⚠️ **能力边界（2026-11-03 日志实测修正）**：caffeinate -s 只能防「空闲睡眠 / 维护睡眠」，
+# **防不住合盖睡眠（Clamshell Sleep）**——电池供电下合盖是 macOS 硬件强制睡眠，
+# caffeinate 断言仍在依旧会睡（旧注释误写「防合盖 Clamshell」，已纠正）。
+# 2026-11-03 00:02 实录：合盖 + 电池（31%）→ `Entering Sleep state due to 'Clamshell Sleep'`，
+# 富途请求被挂起 33 分钟、会话停摆近 4 小时，停盯收尾靠一次 45 秒的 DarkWake 窗口才侥幸完成。
+# 故 preflight 额外发一条飞书电源提醒（_power_reminder）：要求合盖前接通电源（两头都插）。
+def _ensure_awake():
+    import subprocess as _sp, time as _t
+    if _sp.run(["pgrep", "-f", "caffeinate -s"], stdout=_sp.DEVNULL).returncode == 0:
+        print("☕ caffeinate -s 已在跑（盯盘防系统睡眠；停盯时自动解除）")
+        return
+    try:
+        _sp.Popen(["caffeinate", "-s"], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+        _t.sleep(0.5)
+        if _sp.run(["pgrep", "-f", "caffeinate -s"], stdout=_sp.DEVNULL).returncode == 0:
+            print("☕ caffeinate -s 已启动（盯盘防系统睡眠；停盯时自动解除）")
+        else:
+            print("⚠️ caffeinate 启动失败（盯盘期间注意别让系统睡眠）")
+    except Exception as _e:
+        print(f"⚠️ 启用防睡眠失败（{_e}）（盯盘期间注意别让系统睡眠）")
+
+
+def _power_reminder():
+    """飞书提醒「插电源」（2026-11-03 用户立，盯盘前置动作）。
+
+    背景：2026-11-02 美股盯盘（北京 11-03 凌晨）因 **MacBook 端电源线忘了插**、靠电池供电，
+    合盖后进入 Clamshell Sleep，盯盘中段中断约 4 小时；停盯收尾恰好撞上一次 45 秒的
+    DarkWake 窗口才发出去（飞书 04:30:28 发送成功、04:30:32 又被眠），属侥幸。
+    caffeinate -s 拦不住合盖睡眠（硬件强制），唯一可靠做法 = 合盖前接交流电。
+
+    为什么放在 preflight（工具强制）：用户明确要求「盯盘的前置动作里加一条任务」——
+    启动即执行，不依赖 AI 记忆（本项目「文档规定必须尽可能配工具强制」）。
+    --no-mark：不写停盯总结的漏发标记、不覆盖其内容存档。
+    """
+    import os as _os, subprocess as _sp, sys as _sys
+    notify = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "notify_feishu.py")
+    text = (
+        "🔌 **盯盘前请插上电源：电源线两头都要插牢**\n\n"
+        "① 插座 / 排插那一端\n"
+        "② MacBook 那一端\n\n"
+        "上次就是因为 MacBook 这一端忘了插、靠电池供电，合盖后电脑进入休眠，"
+        "盯盘中断近 4 小时，收尾差点漏掉。\n\n"
+        "插好电源后合盖也不会休眠，盯盘才能连续跑完整个交易时段。"
+    )
+    try:
+        r = _sp.run([_sys.executable, notify, "--text", text, "--no-mark"],
+                    capture_output=True, text=True, timeout=90)
+        if r.returncode == 0:
+            print("🔌 飞书电源提醒已发送（电源线两头都要插）")
+        elif r.returncode == 3:
+            print("🔌 飞书电源提醒跳过（飞书未配置或已停用）——请自行确认电源线两头都已插好")
+        else:
+            lines = (r.stderr or r.stdout or "").strip().splitlines()
+            print(f"⚠️ 飞书电源提醒发送失败（exit {r.returncode}）："
+                  f"{lines[-1][:160] if lines else '无输出'}")
+            print("   ⚠️ 请自行确认：电源线两头（插座端 + MacBook 端）都已插好")
+    except Exception as _e:
+        print(f"⚠️ 飞书电源提醒异常（{_e}）——请自行确认电源线两头都已插好")
+
+
+_ensure_awake()
+
+
+def _worktree_check():
+    """盯盘必须在 worktree 里跑（2026-11-03 用户立，工具在场提醒）。
+
+    用户原话：「本项目盯盘任务必然会在工作区写入文件，为了减少盘中干扰，在用户发出盯盘指令
+    的时候直接先准备好 worktree 并切换到 worktree 开始盯盘。」
+
+    为什么：盯盘持续写 `actions/` `signals/` 等被 git 跟踪的文件，而主工作区（main）自
+    2026-11-02 起禁止 `git add` / `git commit`（`git-main-guard.ts` 硬拦）——在主工作区跑
+    会把改动积在 main 上、最后提交不了，只能手工搬去 worktree。
+
+    判定：`--git-dir` 与 `--git-common-dir` 不同 → 在 worktree（前者在
+    `<common>/worktrees/<name>`）；相同 → 主工作区。
+    """
+    import os as _os, subprocess as _sp
+    try:
+        r1 = _sp.run(["git", "rev-parse", "--git-dir"], capture_output=True, text=True, timeout=5)
+        r2 = _sp.run(["git", "rev-parse", "--git-common-dir"], capture_output=True, text=True, timeout=5)
+        r3 = _sp.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=5)
+        if r1.returncode or r2.returncode or r3.returncode:
+            return  # 非 git 仓库：不管
+        gd = _os.path.realpath(r1.stdout.strip())
+        cd = _os.path.realpath(r2.stdout.strip())
+        top = _os.path.realpath(r3.stdout.strip())
+        if gd == cd:
+            print("⚠️ 盯盘未在 worktree 里：当前是主工作区（main 分支）——盯盘会写 actions/ signals/，"
+                  "而 main 已禁止 add / commit，改动最后提交不了。")
+            print("   正确动作（2026-11-03 用户立）：先跑 "
+                  "`python3 .pi/skills/trade/scripts/worktree_start.py --market us|hk`，"
+                  "再用它输出的 WORKTREE 路径重跑本脚本及后续所有盯盘命令。")
+        else:
+            print(f"🧵 盯盘 worktree：{top}")
+    except Exception:
+        pass  # 检查失败不阻断 preflight
+
+
+_worktree_check()
+_power_reminder()
+
+# D12（2026-08-04）：盯盘启动密采样入口提醒——防 AI 用 cron / 直接 snapshot 绕过 monitor_segment 降频
+# （2026-08-04 教训，多层防护见 monitoring.md「不因市况降频」节 + hooks/monitor_guard.py）。
+print("🔒 密采样提醒：盯盘密采样唯一入口是 monitor_segment.py 40 秒循环，禁用 cron / 直接 snapshot 替代。")
+
+# ── 刷新窗口 ①：盯盘启动时刷新本地 IP 池（2026-10-30 用户立）─────────────────
+# 用户口径：**只有两个窗口允许拉取 JMS 订阅**——① 收到盯盘指令时（就是这里）；
+# ② 收盘后写总结前（stop_summary.py）。盘中一律禁止拉订阅（jms_pool.fetch_subscription
+# 会直接返回 blocked_intraday），只用本地 IP 池、失败就在池内换端口。
+# 这里必须传 allow_intraday=True：盯盘启动往往正好在交易时段内。
+try:
+    import jms_pool as _J
+    _r = _J.refresh(force=True, allow_intraday=True)
+    if _r.get('ok'):
+        import ip_pool as _P
+        _m = _P.start_multi(force=True)
+        print(f"🌐 IP 池已刷新（{len(_r.get('nodes') or {})} 个节点 / "
+              f"{len(_r.get('ips') or [])} 个 IP，池内 {len(_m or [])} 个端口）"
+              + ("　⚠️ 用的是缓存兜底（订阅源本次没拉到）" if _r.get('stale') else ""))
+    else:
+        print(f"⚠️ IP 池刷新失败（{_r.get('reason')}）——将使用本地缓存；"
+              f"盘中不再重试（2026-10-30 口径）")
+except Exception as _e:
+    print(f"⚠️ IP 池刷新技术异常（{_e}）——将使用本地缓存")
+
+# 交易互斥状态（2026-08-17 立，多会话并行盯盘·方案 A）：启动时一眼看到「谁在场」——
+# intent 日志有无 pending（有 = 后到开仓会被拒，先处理）、常驻白名单、在场注册会话数。
+try:
+    from trade_mutex import pending_intents, resident_positions as _rp
+    _pend = pending_intents()
+    if _pend:
+        print(f"⚠️ 互斥状态：intent 有 {len(_pend)} 条 pending（后到开仓会被拒）——先查当日订单确认无在途单，"
+              f"再 python3 scripts/trade_mutex.py --clear-intent <行号> 清掉")
+    else:
+        print("🔒 互斥状态：intent 链干净（开仓闸门放行）；单持仓由 trade_mutex 强制（多会话先到先得）")
+    _rp_list = _rp()
+    if _rp_list:
+        print(f"📌 常驻持仓白名单（不进开仓链）：{_rp_list}")
+except Exception as _e:
+    print(f"🔒 互斥状态：读取失败（{_e}）——trade_mutex.py status 手动确认")
+# 实盘熔断状态在场打印（2026-09-12 立实盘熔断机制）：熔断中则实盘开仓一律被拒，
+# 盯盘启动时让状态在场（散文规定会衰减，工具在场打印全守住——2026-08-18 实证）。
+try:
+    import circuit_breaker as _CB
+    _cb = _CB.read_state()
+    if _cb.get("status") == "tripped":
+        print(f"🛑 实盘熔断中（{_cb.get('tripped_at', '?')} 触发：{(_cb.get('reason') or '')[:80]}）"
+              f"——实盘开仓一律拒单（blocked_by: circuit_breaker）；平仓/移损/移盈不受限；"
+              f"模拟盘/信号照常（修整验证场）。解除：复盘重启流程 reset --confirmed-by-user")
+    else:
+        print("🟢 实盘熔断：未触发（实盘开仓正常，仍需 live 授权解锁 + 一级降频闸等既有闸）")
+except Exception as _e:
+    print(f"⚠️ 实盘熔断状态读取失败（{_e}）——python3 scripts/circuit_breaker.py status 手动确认")
+try:
+    _reg = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), "..", "..", "..", "..", "tmp", "monitor_sessions.txt"))
+    if _os.path.isfile(_reg):
+        _n = sum(1 for _l in open(_reg) if _l.strip())
+        print(f"👀 在场盯盘会话数：{_n}（含本会话；多会话并行时 caffeinate 引用计数、最后停盯才解除防睡眠）")
+except Exception:
+    pass
+
+# 美股收尾截止检查（2026-09-15 用户立，工具强制·决策时刻在场打印层）：美股收尾硬截止 =
+# 美东 24:00（12 midnight ET；夏令时北京次日 12:00 / 冬令时次日 13:00）——美股交易日全部收尾
+# 工作（停盯总结 / 漏写补记 / 注销清理）最迟在此前完成、不漏进下一个美东日历日。美股交易日跨
+# 北京午夜、会话易中断（模型切换 / 断链），停盯当场没收上尾的，恢复会话 / 次日首个会话第一件事
+# 补办——preflight 启动时检测并提醒。启发式口径（已知盲区、宁可少报不误报）：已完结的美股
+# 交易日（今日 ET 之前，或今日 ET 且已过 16:00 收盘）的 -ET- 记录文件含动作记录（⏰）但无
+# 「停盯总结」字样 → 提醒 / 过线 🚨 催补；多会话日只要任一会话写过总结即不报（单会话粒度
+# 无凭据、不可检测）；零记录日不产生文件、天然不报。港股 12:00 / 16:00 边界当场闭环、不查。
+def _us_wrapup_check():
+    try:
+        from zoneinfo import ZoneInfo
+        _us_now = datetime.datetime.now().astimezone(ZoneInfo("America/New_York"))
+    except Exception as _e:
+        print(f"⏹️ 美股收尾截止检查跳过（时区库不可用：{_e}）——手动核对上一美股交易日停盯总结是否已写")
+        return
+    _root = _os.path.abspath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                                            "..", "..", "..", ".."))
+    _days = []
+    # 回看最近 7 个自然日内的 ET 交易日（截止线已全部过线 → 🚨）
+    for _back in range(1, 8):
+        _d = _us_now.date() - datetime.timedelta(days=_back)
+        if _d.weekday() < 5:
+            _days.append((_d, True))
+    # 今日 ET：已过 16:00 收盘则当日也已完结（截止线今晚美东 24:00 → 未过线提醒）
+    if _us_now.weekday() < 5 and _us_now.hour >= 16:
+        _days.append((_us_now.date(), False))
+    for _d, _passed in _days:
+        for _dir, _name in (("signals", f"{_d.isoformat()}-ET-signals.md"),
+                            ("actions", f"{_d.isoformat()}-ET-actions.md")):
+            _fp = _os.path.join(_root, _dir, _name)
+            try:
+                _txt = open(_fp, encoding="utf-8").read()
+            except Exception:
+                continue
+            if "⏰" in _txt and "停盯总结" not in _txt:
+                if _passed:
+                    print(f"🚨 美股收尾已过截止线：{_d.isoformat()} ET 的 {_dir}/{_name} 有动作记录但无"
+                          f"停盯总结——按硬规（美东 24:00 收尾截止）立即补写总结，不等")
+                else:
+                    print(f"⏹️ 美股收尾提醒：{_d.isoformat()} ET 的 {_dir}/{_name} 尚无停盯总结——当日收尾"
+                          f"最迟美东 24:00（夏令时北京次日 12:00 / 冬令时次日 13:00）前完成")
+
+_us_wrapup_check()
+
+# 飞书汇报漏发检查（2026-10-13 用户立）：每次停盯都要把停盯总结（业务版）推送到飞书，
+# 本检查看「最近一个已完结的美股交易日」已在 signals/actions 写入停盯总结、但
+# notify_feishu.py 的发送标记（state/feishu_sent_us_<交易日>.txt）不存在 → 提醒补发。
+# 2026-11-04 修：标记自状态/临时目录分离（2026-11-03）后写在 state/，本检查原先仍读 tmp/
+# （worktree 的 tmp/ 独立、恒为空）→ 每次都误报漏发；改为 state/ 优先、tmp/ 兼容兜底。
+# 只查 ET（停盯总结进文件与上方 _us_wrapup_check 同口径）；港股停盯当场闭环、暂不查。
+# 功能上线（2026-10-13）之前的交易日无标记属正常（历史记录不追责）。
+def _feishu_check():
+    try:
+        from zoneinfo import ZoneInfo
+        _us_now = datetime.datetime.now().astimezone(ZoneInfo("America/New_York"))
+    except Exception:
+        return
+    _d = _us_now.date()
+    if not (_us_now.weekday() < 5 and _us_now.hour >= 16):
+        _d = _d - datetime.timedelta(days=1)
+        while _d.weekday() >= 5:
+            _d = _d - datetime.timedelta(days=1)
+    if _d < datetime.date(2026, 10, 13):
+        return
+    _root = _os.path.abspath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                                          "..", "..", "..", ".."))
+    _has_summary = False
+    for _dir, _name in (("signals", f"{_d.isoformat()}-ET-signals.md"),
+                        ("actions", f"{_d.isoformat()}-ET-actions.md")):
+        try:
+            if "停盯总结" in open(_os.path.join(_root, _dir, _name), encoding="utf-8").read():
+                _has_summary = True
+                break
+        except Exception:
+            continue
+    if not _has_summary:
+        return
+    _markers = [_os.path.join(_root, d, f"feishu_sent_us_{_d.isoformat()}.txt")
+                for d in ("state", "tmp")]
+    if not any(_os.path.isfile(m) for m in _markers):
+        print(f"📨 飞书汇报提醒：{_d.isoformat()} ET 的停盯总结已写但未见飞书推送记录——按用户规定"
+              f"（每次停盯必发业务版）补发：python3 scripts/notify_feishu.py --file <业务版文件> --market us")
+
+_feishu_check()
+
+# 标的池划分状态（2026-08-19 立，TODO「标的池自动划分」）：多会话并行时启动序列内
+# 方向研判定出候选池后跑 `python3 scripts/pool_claim.py claim <候选>` 认领（互斥划分，
+# 同一标的不落两会话）；此处打印当前全局划分让 AI / 用户启动即见「谁盯哪些」。
+# 停盯收尾跑 release --all 释放（monitor_unregister.sh 已联动，但显式跑一次更稳）。
+# 2026-08-20 起认领是无条件步骤（不再只「多会话并行时」）——signal / auto 同规，
+# 认领表有活认领时不认领会被 monitor_guard 拦（当日港股实录：signal 会话跳过认领、
+# 与 auto 会话重复盯一小时）。在场打印提醒见下（决策时刻工具在场层）。
+try:
+    import subprocess as _sp3
+    _r3 = _sp3.run(["python3", _os.path.join(_os.path.dirname(__file__), "pool_claim.py"), "status"],
+                   capture_output=True, text=True, timeout=10)
+    _out3 = (_r3.stdout or "").strip()
+    if _out3:
+        print(_out3)
+        if "无认领" not in _out3 and "本会话当前无认领" in _out3:
+            print("⚠️ 表里有别人的认领、本会话还没认领——采样前先跑 "
+                  "`python3 scripts/pool_claim.py claim <候选标的逗号分隔>`，"
+                  "否则启动采样段会被 monitor_guard 拦（2026-08-20 立三层互斥）")
+except Exception as _e3:
+    print(f"🤝 标的池划分状态读取失败（{_e3}）——python3 scripts/pool_claim.py status 手动确认")
+
+# 密采样守护 watcher 自动开启（2026-08-20 立；取代同日 09:58「默认不开启」决定——同日 11 时
+# watcher 已删中断警报 + 掩蔽提示、收缩为「空转警报 + 老虎白名单漂移检测」两个低频警告后，
+# 用户立：这两个低频警告不扰民，盯盘开始默认开启；2026-08-21 空转警报再删、仅剩白名单漂移
+# 检测，默认开启不变）：确保 launchd 项 com.daytrading.monitor-watcher
+# 处于 load 状态——已 load 跳过、未 load 自动 launchctl load（幂等，重复跑无副作用）。
+# 盘外 watcher 自身会跳过（in_trading_session 判断），故这里无条件确保 load 也无妨。
+# 停盯**不联动 unload**（watcher 只剩白名单漂移一个低频提醒、常驻无害；盘外自动静默），用户明确说
+# 「关守卫 / unload watcher」时才手动卸载。
+def _ensure_watcher():
+    """确保两个 launchd 守护项都已部署并 load（幂等）。
+
+    2026-11-05 扩为两个（T157）：
+      - `com.daytrading.monitor-watcher`：旧密采样守护，2026-10-30 白名单功能移除后已无
+        检查项（脚本直接 return），保留进程只为可回溯，这里仍照旧 ensure（不额外报错）。
+      - `com.daytrading.position-watchdog`：**持仓看护（外部叫醒）**——盘中有持仓但密采样
+        断链、疑似被动平仓、收盘仍有持仓三类情况弹窗提醒。这是 T157 的修复主体：2026-09-16
+        夜盘止损被动成交无人感知，就是因为所有持仓核对都挂在「活着的 AI 会话」里。
+    """
+    import subprocess as _sp
+    import shutil as _sh
+
+    def _ensure_one(label, human):
+        _ls = _sp.run(["launchctl", "list"], capture_output=True, text=True)
+        if label in (_ls.stdout or ""):
+            print(f"🛡️ {human} 已在跑（低频、盘外静默）")
+            return
+        _plist = _os.path.expanduser(f"~/Library/LaunchAgents/{label}.plist")
+        _root = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), "..", "..", "..", ".."))
+        if not _os.path.isfile(_plist):
+            _src = _os.path.join(_root, ".claude", "hooks", f"{label}.plist")
+            if _os.path.isfile(_src):
+                # 2026-11-05：复制时把项目根路径替换成**当前实际仓库根**——worktree 场景下
+                # （盯盘在 worktree 里跑）不能把 plist 钉死在主仓库绝对路径，否则指向的文件
+                # 可能是旧版本甚至不存在。
+                try:
+                    _txt = open(_src, encoding="utf-8").read()
+                    _txt = _txt.replace("/Users/xhq/Developer/DayTradingAgent", _root)
+                    with open(_plist, "w", encoding="utf-8") as _f:
+                        _f.write(_txt)
+                    print(f"🛡️ 已部署 {human} plist（{_src} → {_plist}，根={_root}）")
+                except OSError as _e:
+                    _sh.copyfile(_src, _plist)
+                    print(f"🛡️ 已部署 {human} plist（复制失败后直接拷贝：{_e}）")
+            else:
+                print(f"⚠️ {human} plist 不存在（{_src}）——该项未开启")
+                return
+        _r = _sp.run(["launchctl", "load", _plist], capture_output=True, text=True)
+        if _r.returncode == 0:
+            print(f"🛡️ {human} 已开启（盘外自动静默）")
+        else:
+            print(f"⚠️ {human} load 失败（{_r.stderr.strip() or _r.stdout.strip()}）——手动跑 "
+                  f"launchctl load {_plist}")
+
+    _ensure_one("com.daytrading.monitor-watcher", "密采样守护 watcher（历史项、已无检查项）")
+    _ensure_one("com.daytrading.position-watchdog",
+                "持仓看护 watchdog（持仓无人盯 / 疑似被动平仓 / 收盘仍有仓）")
+
+_ensure_watcher()
+
+# 盯盘会话注册（2026-08-11 立；2026-08-12 收窄为仅港股注册）：把本会话会话 ID
+# （pi 宿主注入 PI_SESSION_ID）
+# 写入 tmp/monitor_sessions.txt，纳入密采样守护 watcher（launchd 每 10 秒）的守护范围。
+# ⚠️ **仅港股盯盘注册、美股不注册**（2026-08-12 用户立）：watcher 的 in_trading_session()
+# 只在港股盘中检查（美股时段用户休息不打扰），若美股会话也注册、第二天港股开盘 watcher 仍会
+# 检查到它 → jsonl 停更 8 小时 > 阈值 → 一直报。故注册源头按市场收窄：只在港股盘中（含盘前
+# 09:30 前 30 分钟预启动阶段，覆盖盘前预热场景）注册，美股 / 夜间 / 盘外一律跳过。
+# 停盯时由 trade 停盯流程调 scripts/monitor_unregister.sh 注销（正常停盯不被误报）；
+# 即便忘注销，watcher 的死会话自动剔除（jsonl 停更 > 30 分钟）也会兜底清理。
+def _register_monitor_session():
+    import os as _os
+    import datetime as _dt
+    _sid = _os.environ.get("PI_SESSION_ID", "")
+    if not _sid:
+        return  # 非 agent 会话内（如手动跑脚本）→ 跳过
+    # 港股盘中判断（与 preflight 主流程的 hk 变量口径一致：周一至周五 09:30-12:00 / 13:00-16:00）。
+    # 额外允许 09:00 起注册（盘前 30 分钟，覆盖盘前预热启动 monitor_segment 的场景）。
+    _now = _dt.datetime.now()
+    if _now.weekday() >= 5:
+        print("👀 美股/盘外：watcher 不注册（watcher 仅港股盘中守护、美股时段不打扰用户）")
+        return
+    _t = _now.time()
+    _hk_session = (_dt.time(9, 0) <= _t < _dt.time(12, 0)) or (_dt.time(13, 0) <= _t < _dt.time(16, 0))
+    if not _hk_session:
+        print("👀 美股/盘外：watcher 不注册（watcher 仅港股盘中守护、美股时段不打扰用户）")
+        return
+    _root = _os.path.abspath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "..", "..", ".."))
+    _reg = _os.path.join(_root, "tmp", "monitor_sessions.txt")
+    # T142（2026-09-09）：重新盯盘 = 撤销本会话当日停盯标记（前一交易日段内停盯后同会话重启盯盘，
+    # 标记不撤会让 monitor_guard 判③继续放行「已停盯」、漏拦真断采样）。标记文件按日期命名、
+    # 跨日自然失效，此处只处理「同日停盯后同会话重启」的窄场景。
+    _stopped = _os.path.join(_root, "tmp", f"stopped_sessions_{_now.strftime('%Y%m%d')}.txt")
+    try:
+        if _os.path.isfile(_stopped) and _sid in open(_stopped).read().splitlines():
+            _lines = [l for l in open(_stopped).read().splitlines() if l != _sid]
+            with open(_stopped, "w") as _f:
+                _f.write("".join(l + "\n" for l in _lines))
+            print("🔄 本会话当日停盯标记已撤销（重新盯盘）")
+    except Exception:
+        pass  # 标记撤销失败不阻断注册（守卫侧标记判空 / 缺文件均视为未停盯，宁可多提醒）
+    try:
+        _os.makedirs(_os.path.dirname(_reg), exist_ok=True)
+        _exists = _os.path.isfile(_reg) and _sid in open(_reg).read().splitlines()
+        if not _exists:
+            with open(_reg, "a") as _f:
+                _f.write(_sid + "\n")
+        print(f"👀 港股盯盘会话已注册（密采样 watcher 守护；停盯时自动注销）")
+    except Exception as _e:
+        print(f"⚠️ 盯盘会话注册失败（{_e}），watcher 不守护本会话")
+
+
+_register_monitor_session()

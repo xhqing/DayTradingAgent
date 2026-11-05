@@ -15,7 +15,7 @@
 
 **Victor** is a personified AI day-trading execution agent for Hong Kong and US equities. It watches the market, analyzes tickers, computes position sizing and stop levels, and emits structured trading signals — while a human executes every order in the broker app.
 
-> This is **not** a traditional software project. There is no application to `npm install` or `cargo run`. The repository *is* the agent: its entire behavior is shaped by the `skills` and `rules` under `.claude/`, which the agent harness loads as Victor's operating discipline.
+> This is **not** a traditional software project. There is no application to `npm install` or `cargo run`. The repository *is* the agent: its entire behavior is shaped by the `trade` skill under `.pi/skills/` and the project rules in `AGENTS.md`, which the **pi** agent harness loads as Victor's operating discipline.
 
 ---
 
@@ -41,15 +41,15 @@ The operating principle, in one line: **losing money on a trade is acceptable ri
 | **Signal mode** | Since 2026-07-07, Victor only emits signals (🟢 open / 🔵 add / 🟠 reduce / 🔴 close / 🟡 trailing stop). It never calls any order-placement command. |
 | **EV-driven** | Every entry requires win-rate > 50% **and** payoff ratio ≥ 1.2; otherwise no signal. |
 | **Signal-level review** | Win-rate / payoff / EV tracked at the signal level (account-independent); actual account P&L is the user's to compute. |
-| **Knowledge sedimentation** | Hard rules distill into `rules/` and `skills/`. AutoMemory was deprecated 2026-07-20 (its content folded into SKILL.md; the `.claude/memory/` directory and `autoMemoryDirectory` config were removed). |
+| **Knowledge sedimentation** | Hard rules distill into `AGENTS.md` and the `trade` skill's references. AutoMemory was deprecated 2026-07-20 (its content folded into SKILL.md). |
 
 ---
 
 ## How Victor Works
 
-Victor is activated by the agent harness whenever the user asks to **watch the market, emit a signal, run a post-trade review, or analyze a ticker**. On activation it loads the `trade` skill and runs its guardrails.
+Victor is activated by pi whenever the user asks to **watch the market, emit a signal, run a post-trade review, or analyze a ticker**. On activation it loads the `trade` skill and runs its guardrails.
 
-**Standard watch sequence** (scripts under `.claude/skills/trade/scripts/`):
+**Standard watch sequence** (scripts under `.pi/skills/trade/scripts/`):
 
 1. `preflight.py` — verify time, market session, Futu OpenD port
 2. `hot_list.py` — pull the heat board (the mandatory first step for ticker selection)
@@ -65,49 +65,40 @@ When a setup meets the EV bar, Victor emits a signal as a table in the chat (emo
 
 ```
 DayTradingAgent/
-├── CLAUDE.md                      # Entry point — points the harness at the rules & trade skill
+├── AGENTS.md                      # Project rules — the agent's operating discipline (entry point)
 ├── LICENSE.md                     # MIT
 ├── README.md                      # This file (English)
 ├── README_cn.md                   # Chinese README
 │
-├── .claude/
-│   ├── settings.local.json        # Local-only: permissions (gitignored)
-│   ├── settings.local.example.json # Template for settings.local.json (tracked)
-│   │
-│   ├── rules/                     # General working discipline (cross-domain)
-│   │   ├── verify-facts-before-stating.md
-│   │   └── output-and-writing-style.md
-│   │
+├── .pi/                           # pi harness configuration
+│   ├── settings.json              # Provider / model defaults
+│   ├── extensions/                # Project-level pi extensions
+│   │   ├── trade-guards.ts        # Bridges pi events to the Python guardrails in hooks/
+│   │   └── ask-question.ts        # AskUserQuestion tool (structured confirmations)
 │   └── skills/
 │       └── trade/                 # Domain execution spec — the heart of Victor
 │           ├── SKILL.md           # Master file: execution spec + hard guardrails
-│           ├── classify_hk_security.py   # HK security-type classifier (stock/ETF/REIT/derivative)
+│           ├── references/        # Strategy, risk, monitoring, review, host integration
 │           ├── config.example.json       # Risk / monitoring config template
 │           ├── accounts.example.json     # Tiger credential template
-│           ├── accounts.md               # Data-source config + HK code format
-│           ├── tiger-websocket.md        # Tiger SDK WebSocket skeleton
-│           ├── hk-level2-sources.md      # HK Level-2 data-source survey
-│           ├── futu-opend-level2.md      # Futu OpenD Level-2 skeleton
-│           └── scripts/                  # Watch-market script library
-│               ├── preflight.py          # Pre-flight: time/session/OpenD + risk config + anti-sleep
-│               ├── hot_list.py           # Heat board (mandatory first step for ticker selection)
-│               ├── snapshot.py           # Market snapshot
-│               ├── kline.py              # K-line + Fibonacci retracement
-│               ├── monitor.py            # Dense sampling (single ticker)
-│               ├── monitor_segment.py    # Background segmented sampling (multi-ticker — the main watch loop)
-│               ├── monitor_summary.py    # Full-day summary + market-regime classification
-│               ├── capital.py            # Capital flow (Futu)
-│               ├── review.py             # Post-trade review stats (R-multiple, Bayesian NIG)
-│               ├── bayes_evolution.py    # Sequential Bayesian evolution charts
-│               └── alert.sh              # Write signal file + sound alert
+│           └── scripts/           # Watch-market + order + review script library
 │
-├── signals/                      # Per-day signal logs (HK/US split, HKT/ET suffix) + ring-log.csv + equity-log.csv
-├── reviews/                      # Post-trade review reports + per-review CSV/PNG attachments
-├── notes/                        # Long-form derivations (Kelly sizing plan, cumulative-return math)
+├── hooks/                         # Guardrail scripts (single source, spawned by the pi bridge)
+│   ├── secret_guard.py            # Credential-read blocking
+│   ├── monitor_guard.py           # Sampling discipline / mutex / disconnect reminders
+│   ├── changelog_guard.py         # CHANGELOG / TODO hygiene reminders
+│   ├── jms_guard.py               # Blocks subscription refresh during trading hours
+│   └── live_auth_witness.py       # Live-account authorization witness
+│
+├── signals/                       # Per-day signal logs (HK/US split, HKT/ET suffix) + ring-log.csv + equity-log.csv
+├── reviews/                       # Post-trade review reports + per-review CSV/PNG attachments
+├── notes/                         # Long-form derivations (Kelly sizing plan, cumulative-return math)
+├── state/                         # Persistent runtime state (gitignored): circuit breaker, pool claims, mutex WAL
+├── tmp/                           # Throwaway runtime files (gitignored): sampling logs, heartbeats, bg task logs
 └── archive/                       # Local-only history (gitignored): pre-refactor memory snapshots + old reviews
 ```
 
-> The real `config.json` and `accounts.json` (containing Tiger credentials) are **gitignored** — only the `*.example.json` templates ship in the repo. The `archive/` directory is likewise local-only.
+> The real `config.json` and `accounts.json` (containing Tiger credentials) are **gitignored** — only the `*.example.json` templates ship in the repo. The `state/`, `tmp/` and `archive/` directories are likewise local-only.
 
 ---
 
@@ -142,11 +133,11 @@ Victor self-checks these before emitting any signal (full list in `SKILL.md`):
 
 To actually run Victor, you need — outside this repo:
 
-- An AI agent harness — the runtime that loads this repo's `.claude/` skills and rules
+- The **pi** agent harness — the runtime that loads this repo's `.pi/` skills, extensions and `AGENTS.md` rules
 - **Tiger** SDK (`tigeropen`) configured at `~/.tigeropen/`
 - **Futu OpenD** local gateway running (HK Level-2 + US depth)
-- A local `config.json` and `accounts.json` filled in from the `*.example.json` templates (accounts.json only needs the Tiger section); optionally copy `.claude/settings.local.example.json` → `.claude/settings.local.json` to add extra command pre-approvals
-- **Windows users** (scripts and guardrails are dual-platform since 2026-08-09): install Git for Windows (check "Add to PATH" during setup) and add Python 3 to PATH; where docs show `python3`, run `python` instead (both are pre-approved in `settings.json`)
+- A local `config.json` and `accounts.json` filled in from the `*.example.json` templates (accounts.json only needs the Tiger section)
+- **Windows users** (scripts and guardrails are dual-platform since 2026-08-09): install Git for Windows (check "Add to PATH" during setup) and add Python 3 to PATH; where docs show `python3`, run `python` instead
 
 Without these, the repo still reads as a complete spec of *how* a disciplined trading agent should behave.
 

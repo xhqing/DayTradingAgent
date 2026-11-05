@@ -8,6 +8,36 @@
 - **改了什么**（2026-11-03）：新增 `.github/workflows/validate.yml`（PR 与 main push 触发，检查名 `validate`）与 `.github/scripts/validate.py`（仓库卫生检查：必备文件存在、敏感文件未被跟踪、被跟踪文件不超过 10 MB、README 相对链接有效、Python / Shell 语法检查）；main 分支保护补挂 required check `validate` 并设 `strict=true`。
 - **边界**：检查只做确定性、低误报的项目（required check 一旦误报就会卡住正常 PR，所以宁可少查）；不改动仓库任何原有内容。
 
+### 变更（项目改为 pi-only：移除 Claude Code / ZCode / CodeBuddy 相关文件与兼容层，2026-11-05）
+
+- **为什么改**：用户 2026-11-05 立规「本项目只使用 pi-harness，清理掉其它 Harness 相关文件和内容，只要确保在 pi-harness 下面所有 skill / extensions 等功能能跑通就行」。改造前项目是「一个内容实体 + 多个宿主软链」的结构：`.claude/` 是唯一实体（`CLAUDE.md` 项目规则 + `skills/trade/` 交易规范与脚本 + `hooks/` 护栏 + `settings.json` hooks 挂载），`.pi/skills`、`.zcode/skills`、`.codebuddy/skills` 都软链到 `.claude/skills`，另有 `.zcode/config.json`、`.codebuddy/settings.json` 两套宿主配置。这种结构让「脚本里到处写死 `.claude/`」成为常态，且 ZCode / CodeBuddy 的兼容分支（工具名别名、XML tool_response 解析、`sess_` 前缀 transcript 判活、`CLAUDE_CODE_SESSION_ID` 双读）散落在交易护栏里，长期维护面越来越大。
+- **改了什么（结构迁移）**：
+  - `.claude/skills/` → **`.pi/skills/`**（真实目录，不再是软链）；`.pi/skills` 原软链删除。
+  - `.claude/hooks/` → **项目根 `hooks/`**（pi 扩展 spawn 的 Python 护栏，单一源不变）。为什么不放 `.pi/` 下：全局规矩「`.pi/` 只放 pi 自己要读的东西」——hooks 是被扩展 spawn 的脚本、pi 本身不读这个目录，且 pi 启动会把 `.pi/hooks/` 当成废弃的旧版钩子目录弹警告。
+  - `.claude/CLAUDE.md`（29 KB 项目规则实体）→ 仓库根 **`AGENTS.md`**（原 `AGENTS.md → .claude/CLAUDE.md` 软链删除；pi 会加载同目录的 `AGENTS.md` 或 `CLAUDE.md`，`AGENTS.md` 也是子项目 TradingProofs 身份层软链的指向目标，必须是实体）。
+  - 删除 `.claude/settings.json`（CC hooks 挂载）、`.zcode/`（config.json + skills 软链）、`.codebuddy/`（settings.json + CODEBUDDY.md/skills 软链）。
+- **改了什么（路径与层级修正）**：
+  - 全量替换代码与文档里的 `.claude/skills` → `.pi/skills`、`.claude/hooks` → `hooks`（约 35 个文件：`hooks/*.py|plist`、`.pi/skills/trade/scripts/*`、`.pi/extensions/*`、`SKILL.md` 与 references、`README.md` / `README_cn.md` / `PLAN*.md` / `notes/*.md`）。
+  - **hooks 的项目根推导由「上两级」改为「上一级」**（7 个脚本：`changelog_guard` / `equity_guard` / `jms_guard` / `live_auth_witness` / `monitor_guard`（两处）/ `monitor_watcher`）——目录从 `.claude/hooks/` 变成 `hooks/` 少了一层，不改会让 `_PROJECT_ROOT` 指到项目外、所有 `relative_to(项目根)` 失效（`changelog_guard` 2026-09-03 就踩过同类坑）。
+  - `scripts/` 下脚本的层级推导**不用改**（`.claude/skills/trade/scripts` 与 `.pi/skills/trade/scripts` 都是四层），只需替换字符串段；`preflight.py` 的 plist 源路径、`jms_guard` / `live_auth_witness` 的 `os.path.join(_PROJECT_ROOT, ".claude", ...)` 已同步改成 `.pi` / `hooks`。
+  - `.pi/extensions/lib/hooks.ts` 的项目根探测标志由 `.claude/hooks/monitor_guard.py` 改为 `hooks/monitor_guard.py`，spawn 路径同步（不改的话 pi 扩展根本找不到脚本）。
+- **改了什么（代码层宿主兼容清理）**：
+  - 删除 CC / ZCode / CodeBuddy 分支：`monitor_guard._claim_holder_alive` 与 `pool_claim._jsonl_age` 只查 pi 会话目录（`<agent_dir>/sessions/--<slug>--/*_<sid>.jsonl` + `PI_SESSION_FILE`），不再查 `~/.claude/projects/` 与 `~/.zcode/cli/rollout/`；`live_auth_witness` 删 CodeBuddy XML `tool_response` 解析与 `ask_followup_question` 别名；`changelog_guard` 删驼峰 `filePath` 兼容；全部脚本的会话 ID 由「`CLAUDE_CODE_SESSION_ID` 优先 + `PI_SESSION_ID` 兜底」改为**只读 `PI_SESSION_ID`**（脚本、注释、提示文案同步）。
+  - `_emit_reminder` / `_emit_note` 的输出说明改为「stderr 给人看 + stdout JSON 给 pi 扩展桥消费」，不再描述 CC / ZCode 的通道差异；`monitor_guard` 的跑法拦截文案去掉「Claude Code / ZCode / CodeBuddy：`Bash(run_in_background=true)`」。
+- **改了什么（文档）**：
+  - `AGENTS.md`「hooks 四宿主」整节重写为「hooks：单一源在项目根 `hooks/`，由 pi 扩展桥接」，「ZCode 修订」整段删除（随 ZCode 退出而失效）。
+  - `references/host-integration.md` 由「四宿主映射表」重写为「pi 宿主」单列（速查表 + 细节 + 验证状态）；`SKILL.md`「宿主适配」节改为「宿主（只有一个：pi）」。
+  - 中英双语 `README` 的结构树按实际结构重绘（`AGENTS.md` / `.pi/` / `hooks/` / `state/` / `tmp/`），删掉已不存在的 `CLAUDE.md`、`settings.local.json`、`rules/` 等条目。
+- **改了什么（配置与待办）**：`.gitignore` 的忽略项由 `.claude/skills/trade/...` 改为 `.pi/skills/trade/...`，删掉 `.claude/settings.local.json` 一条；`TODO.md` 的 T140（ZCode 项目级 hooks 待办）移入 `TODO-archive.md` 标「已放弃」（ZCode 已退出本项目），T123 / T159 的「CC / CodeBuddy 会话执行」「替代 CC 的 run_in_background」等表述改为 pi 口径。
+- **验证（2026-11-05，worktree 内实测）**：
+  - Python：`python3 -m compileall hooks .pi/skills/trade/scripts` 全通过；7 个 hooks 逐个 import 实测 `_PROJECT_ROOT` 均正确指向项目根。
+  - TypeScript：`node ~/.pi/agent/patch/ts-syntax-check/check.mjs .pi/extensions` → 3 个扩展文件全部通过（pi 加载器同款解析器）。
+  - pi 实际加载：在 worktree 里 `pi -p "只回复 OK"` 正常回复（扩展全部加载无报错）；`pi -p` 让它执行 `cat ~/.tigeropen/config.yaml` → 被 `secret_guard`（经 `trade-guards.ts` 桥接）拦下并把拦截文案回给 AI，端到端证明「扩展 → hooks → 阻断」链路可用。
+  - hooks 单测式抽查：`secret_guard` 拦凭证读（exit 2）、`monitor_guard stop` 盘外静默（exit 0）、`changelog_guard` 对项目内真实文件输出提醒 JSON、`jms_guard` 盘外放行。
+  - skill description：`check_description.py` → 395/1024，PASS。
+- **回归风险评估**：① 交易策略、下单脚本逻辑、风控参数**一行未改**（只改路径字符串、宿主判断与注释），护栏判定规则与阈值全部保持；② 最大风险面是「路径迁移漏改」——已用全库 grep 收敛到 0 处 `.claude` 残留（`CHANGELOG` / `TODO-archive` 的历史记录除外，属历史事实不改写），并用 pi 端到端实测兜底；③ `hooks/` 层级改动已逐个 import 验证；④ 本机私有文件（`config.json` / `accounts.json` / `live-unlock.*.local` / `feishu.local.json`）不在 git 内，迁移由本机另行搬运（本机私有内容目录与 private-links 清单同步改到 `.pi/skills/` 路径）；⑤ launchd plist 的 `~/Library/LaunchAgents/` 副本路径需同步更新后再 reload（否则 monitor-watcher / position-watchdog 指向不存在的旧脚本）。
+- **边界**：本次不动交易规则、不碰账户与凭证内容、不重算历史统计；ZCode / CodeBuddy 退出后，盯盘 / 实盘执行一律在 pi 会话进行（原「ZCode 会话不用于盯盘 / 实盘执行」约束自然消失）。
+
 ## [0.9.0] - 2026-11-05
 
 本版聚焦「执行反馈的真实性」与「无人盯盘时的兜底」：撤单不再等同于未成交（T173）、持仓看护脱离 AI 会话独立运行（T157）、时间判断统一以 ET 为权威口径、盯盘启动改为先建 worktree。

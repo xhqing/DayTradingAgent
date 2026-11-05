@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 密采样守护 watcher launchd 配置（2026-08-04 立；2026-08-10 撤销；2026-08-11 恢复；
+     2026-08-12 判定逻辑重构；2026-08-20 删「中断警报 + 掩蔽提示」、收缩为两个低频警告，
+     并改为盯盘开始（preflight）默认 load；2026-08-21 删空转警报、仅剩白名单漂移检测）。
+     作用：每 10 秒触发 monitor_watcher.py，港股盘中做一个低频检查：
+       老虎 IP 白名单漂移检测：proxy_guard.py 盘中兜底（漂出自动切回白名单内节点 + 弹窗）。
+     不再检查会话中断 / 掩蔽（2026-08-20 删）、空转警报（2026-08-21 删）、不再读会话注册表。
+     盘外 watcher 自动跳过（in_trading_session 判断），周末 / 夜间 / 午休 / 美股时段不查、不发通知。
+
+     部署（自动）：preflight.py 的 _ensure_watcher() 会在盯盘启动时自动部署 + load 本 plist
+     （~/Library/LaunchAgents/ 缺文件时从项目 hooks/ 复制过去）。手动：
+       launchctl load ~/Library/LaunchAgents/com.daytrading.monitor-watcher.plist
+     卸载（仅用户明确要求时）：launchctl unload ~/Library/LaunchAgents/com.daytrading.monitor-watcher.plist
+     ⚠️ 卸载后下次 preflight 会自动重新 load——要彻底关闭须改 preflight 或删 plist。
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.daytrading.monitor-watcher</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/python3</string>
+        <string>/Users/xhq/Developer/DayTradingAgent/hooks/monitor_watcher.py</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>10</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/daytrading-monitor-watcher.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/daytrading-monitor-watcher.err</string>
+</dict>
+</plist>

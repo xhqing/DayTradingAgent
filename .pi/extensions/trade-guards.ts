@@ -1,24 +1,24 @@
 /**
  * DayTradingAgent pi 宿主守卫桥（2026-09-29 立）。
  *
- * 职责：把 pi 的扩展事件合成成 Claude Code 钩子协议的 payload，spawn `.claude/hooks/`
- * 下的同一批 Python 守卫（单一源），执行结果按 pi 的语义落地：
+ * 职责：把 pi 的扩展事件合成成 hook 协议（tool_name / tool_input /
+ * tool_response / session_id 字段）的 payload，spawn `hooks/` 下的同一批 Python 守卫
+ * （单一源），执行结果按 pi 的语义落地：
  *
  * 1. `tool_call`（bash / background_run 命令）→ `secret_guard.py pretool`（凭证读取拦截）
  *    + `monitor_guard.py pretool`（密采样跑法 / 连跑 / 空转 / 标的池互斥拦截）。
  *    guard 退出码 2 = pi 返回 { block: true, reason: stderr }，工具调用被拦下、原因回给 AI。
- * 2. `tool_call`（read 工具）→ 补 CC 端 `permissions.deny` 的等价物：accounts.json /
- *    ~/.tigeropen 等凭证文件的 Read 在 pi 里没有 settings 层禁用，这里直接拦。
- *    （secret_guard 只管 Bash 命令行读数，管不到 pi 的 read 工具——不补的话 AI 在 pi
+ * 2. `tool_call`（read 工具）→ 凭证文件鉴权拦截：accounts.json / ~/.tigeropen 等凭证文件的
+ *    Read 在 pi 里没有 settings 层禁用，这里直接拦。
+ *    （secret_guard 只管 bash 命令行读数，管不到 pi 的 read 工具——不补的话 AI 在 pi
  *    会话里可以直接 read 到完整账户号与私钥，是实打实的防线缺口。）
  * 3. `tool_result`（edit / write）→ `changelog_guard.py`（CHANGELOG / TODO 卫生提醒），
  *    提醒文本追加进工具结果内容（模型下一轮就能看到，不额外触发回合）。
  * 4. `agent_settled`（回合静止、不再自动继续时）→ `monitor_guard.py stop`：盘中盯盘
- *    会话若密采样断链，把提醒作为自定义消息注入并唤醒一轮（对应 CC 的 Stop hook）。
+ *    会话若密采样断链，把提醒作为自定义消息注入并唤醒一轮。
  *
- * 规则本身一行都不在本文件里——改规则改 `.claude/hooks/*.py`，CC / ZCode / CodeBuddy /
- * pi 四宿主同步生效（为什么不让 pi 端读 `.claude/settings.json`：pi 没有 CC 的 hooks
- * 配置机制，扩展是 pi 的官方扩展点，桥接脚本是最小重复的方案）。
+ * 规则本身一行都不在本文件里——改规则只改 `hooks/*.py`，立即生效。pi 没有内建 hooks
+ * 机制，扩展是 pi 的官方扩展点，桥接脚本是最小重复的方案（规则单一源）。
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { additionalContext, runHook } from "./lib/hooks.ts";
@@ -31,7 +31,7 @@ const MONITOR_TRIGGER = /monitor_segment|ws_segment|futu_ws_segment|snapshot|hot
 // jms_guard pretool 拦「盘中拉取 JMS 订阅」（2026-10-30 用户立：盘中只用本地 IP 池，
 // 订阅只在「收到盯盘指令」与「收盘前写总结」两个窗口刷新）。
 const JMS_TRIGGER = /jms_pool\.py|ip_pool\.py/;
-// read 工具禁止直接读的凭证文件（对齐 CC 端 permissions.deny 的口径并覆盖 ~/.tigeropen）。
+// read 工具禁止直接读的凭证文件（覆盖 ~/.tigeropen）。
 // 路径写法兼容绝对 / 相对（`accounts.json` 裸文件名也算）与 Windows 反斜杠。
 const READ_DENY = [
 	/(^|[\\/])accounts\.json$/,
@@ -64,7 +64,7 @@ export default function tradeGuards(pi: ExtensionAPI) {
 		try {
 			const toolName = (event as PiToolCallLike).toolName;
 
-			// read 工具的凭证文件硬拦（pi 没有 CC 的 permissions.deny 层）
+			// read 工具的凭证文件硬拦（pi 没有内置的文件读写鉴权层）
 			if (toolName === "read") {
 				const pathArg = (event as PiToolCallLike).input?.["path"];
 				if (typeof pathArg === "string" && READ_DENY.some((re) => re.test(pathArg))) {
@@ -80,7 +80,7 @@ export default function tradeGuards(pi: ExtensionAPI) {
 			const payload = {
 				hook_event_name: "PreToolUse",
 				session_id: sessionId,
-				tool_name: "Bash", // pi 的 bash / background_run 对守卫统一按 CC 的 Bash 语义处理
+				tool_name: "Bash", // pi 的 bash / background_run 对守卫统一按 Bash 语义处理
 				tool_input: { command },
 			};
 
@@ -138,7 +138,7 @@ export default function tradeGuards(pi: ExtensionAPI) {
 		}
 	});
 
-	// —— ③ TaskStop 桥：background_stop 后的密采样停盯提醒（对应 CC 的 PreToolUse/TaskStop）——
+	// —— ③ TaskStop 桥：background_stop 后的密采样停盯提醒 ——
 	// 本项目规则「密采样停盯前确认边界」的原实现挂在 background-tasks 扩展内部；
 	// 2026-10-11 该扩展上移全局（通用能力）后，项目联动迁回本项目守卫桥这里，
 	// 语义不变：不阻断、只把 monitor_guard 的提醒带回给 AI（随下一次模型请求进入上下文）。
@@ -148,7 +148,7 @@ export default function tradeGuards(pi: ExtensionAPI) {
 			const payload = {
 				hook_event_name: "PreToolUse",
 				session_id: ctx.sessionManager.getSessionId(),
-				tool_name: "TaskStop", // 对齐 CC 的 TaskStop 语义（monitor_guard taskstop 按此分支）
+				tool_name: "TaskStop", // monitor_guard taskstop 按此分支处理
 				tool_input: {},
 			};
 			const r = await runHook("monitor_guard.py", ["taskstop"], payload);
@@ -161,7 +161,7 @@ export default function tradeGuards(pi: ExtensionAPI) {
 		}
 	});
 
-	// —— ④ Stop 桥：回合静止时检查盯盘密采样是否断链（对应 CC 的 Stop hook）——
+	// —— ④ Stop 桥：回合静止时检查盯盘密采样是否断链 ——
 	pi.on("agent_settled", async (_event, ctx) => {
 		try {
 			const payload = {
@@ -171,7 +171,7 @@ export default function tradeGuards(pi: ExtensionAPI) {
 			const r = await runHook("monitor_guard.py", ["stop"], payload);
 			const note = additionalContext(r.stdout);
 			if (note) {
-				// 与 CC Stop hook 的 additionalContext 效果对齐：注入提醒并让会话继续一轮。
+				// 注入提醒并让会话继续一轮。
 				// 守卫内部已按「盯盘会话」门槛过滤（非盯盘会话静默），不会造成每回合反复唤醒。
 				pi.sendMessage(
 					{

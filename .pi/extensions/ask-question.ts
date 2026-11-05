@@ -3,11 +3,10 @@
  *
  * 为什么需要它：trade skill 里多处硬性要求「结构化提问」——切实盘授权、熔断重启确认
  * 等场景必须由用户显式点选选项（不许纯文本提问，防 AI 把含糊回复当默认同意）。
- * Claude Code / ZCode / CodeBuddy 自带 `AskUserQuestion` 工具；pi 没有内建问询工具
- * （README 明说 permission popups / built-in MCP 等一律不做，扩展自理），本扩展用
- * `ctx.ui.select / confirm` 提供同名工具，行为与 CC 对齐。
+ * pi 没有内建问询工具（README 明说 permission popups / built-in MCP 等一律不做，扩展自理），
+ * 本扩展用 `ctx.ui.select / confirm` 提供 `AskUserQuestion` 工具。
  *
- * 关键安全链：用户点选确认后，把「真实点击」合成成 CC 的 PostToolUse AskUserQuestion
+ * 关键安全链：用户点选确认后，把「真实点击」合成成 PostToolUse AskUserQuestion
  * payload（tool_response.answers 由此工具在进程内生成、AI 伪造不了），spawn
  * `live_auth_witness.py` 见证——实盘授权凭证（HMAC、密钥在 accounts.json 内 AI 读不到）
  * 照旧产出。即 pi 宿主同样要求「用户真的点了确认授权」，AI 无法凭对话文本绕过。

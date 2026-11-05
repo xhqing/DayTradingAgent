@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 持仓看护 launchd 配置（2026-11-05 立，T157）。
+     作用：每 60 秒触发 scripts/position_watchdog.py，做三件事——
+       ① 有仓无人盯：盘中有持仓、但密采样停更超过阈值 → 弹窗 + 响铃（盯盘会话可能已死）；
+       ② 疑似被动平仓：记录里还有持仓、账户实持已归零（止损/止盈条件单被动成交）→ 提醒补记；
+       ③ 收盘仍有持仓：刚收盘的窗口内还有未平仓 → 提醒跨夜敞口风险。
+     与 monitor-watcher 的区别（别混）：monitor-watcher 已停用（2026-10-30 白名单功能移除后
+     无检查项）；本项是**独立于 AI 会话**的持仓看护，专治「会话死了、持仓裸奔无人感知」
+     （2026-09-16 SPCX 止损被动成交无人知晓的事故形态，见 T157）。
+     空仓日完全静默、零 API 调用；盘外静默退出。
+
+     部署（自动）：preflight.py 的 _ensure_watcher() 会在盯盘启动时自动部署 + load 本 plist
+     （~/Library/LaunchAgents/ 缺文件时从项目 hooks/ 复制过去）。手动：
+       launchctl load ~/Library/LaunchAgents/com.daytrading.position-watchdog.plist
+     卸载（仅用户明确要求时）：launchctl unload ~/Library/LaunchAgents/com.daytrading.position-watchdog.plist
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.daytrading.position-watchdog</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/python3</string>
+        <string>/Users/xhq/Developer/DayTradingAgent/.pi/skills/trade/scripts/position_watchdog.py</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>60</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/daytrading-position-watchdog.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/daytrading-position-watchdog.err</string>
+</dict>
+</plist>
