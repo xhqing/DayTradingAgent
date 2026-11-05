@@ -176,7 +176,7 @@ def main():
     if args.write_csv:
         path = args.write_csv
         if not os.path.isabs(path):
-            # 相对项目根（从脚本位置回溯：scripts → trade → skills → .claude → 项目根）
+            # 相对项目根（从脚本位置回溯：scripts → trade → skills → .pi → 项目根）
             root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
             path = os.path.join(root, path)
         new_file = not os.path.exists(path)

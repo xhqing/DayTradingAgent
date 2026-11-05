@@ -43,7 +43,7 @@ if [ -z "$TYPE" ]; then
   exit 1
 fi
 
-# 定位项目根 = 脚本所在 scripts/ 上四级（scripts→trade→skills→.claude→项目根）
+# 定位项目根 = 脚本所在 scripts/ 上四级（scripts→trade→skills→.pi→项目根）
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/../../../.." && pwd)}"
 SIGNALS_DIR="$PROJECT_ROOT/signals"

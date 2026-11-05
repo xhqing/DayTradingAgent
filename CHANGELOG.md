@@ -38,6 +38,13 @@
 - **回归风险评估**：① 交易策略、下单脚本逻辑、风控参数**一行未改**（只改路径字符串、宿主判断与注释），护栏判定规则与阈值全部保持；② 最大风险面是「路径迁移漏改」——已用全库 grep 收敛到 0 处 `.claude` 残留（`CHANGELOG` / `TODO-archive` 的历史记录除外，属历史事实不改写），并用 pi 端到端实测兜底；③ `hooks/` 层级改动已逐个 import 验证；④ 本机私有文件（`config.json` / `accounts.json` / `live-unlock.*.local` / `feishu.local.json`）不在 git 内，迁移由本机另行搬运（本机私有内容目录与 private-links 清单同步改到 `.pi/skills/` 路径）；⑤ launchd plist 的 `~/Library/LaunchAgents/` 副本路径需同步更新后再 reload（否则 monitor-watcher / position-watchdog 指向不存在的旧脚本）。
 - **边界**：本次不动交易规则、不碰账户与凭证内容、不重算历史统计；ZCode / CodeBuddy 退出后，盯盘 / 实盘执行一律在 pi 会话进行（原「ZCode 会话不用于盯盘 / 实盘执行」约束自然消失）。
 
+#### 追加修正（同日收尾复查，2026-11-05）
+
+- **为什么改**：主迁移提交（PR #28）之后做了全库收尾复查，发现三类漏改：① `preflight.py` 的 launchd plist 兜底部署路径还用分段写法 `os.path.join(_root, ".claude", "hooks", ...)`（字符串批量替换匹配不到这种分段形态），会导致「本机缺 plist 时不会从项目复制」——功能缺口；② `reviews/README.md` 与 `monitoring.md` 的当前文档链接仍指 `.claude/skills/trade/scripts/review.py`（断链）；③ 多个脚本的注释把项目根层级描述成 `skills → .claude → 项目根`（实际已是 `.pi`，误导后来者）。
+- **改了什么**：`preflight.py` 的 plist 源路径改为 `os.path.join(_root, "hooks", ...)`；`reviews/README.md`、`monitoring.md` 的链接改 `.pi/skills/trade/...` 与 `AGENTS.md`；`futu_ws_segment.py` / `ws_segment.py` / `mark_stop_done.py` / `monitor_register.sh` / `monitor_unregister.sh` / `keepawake_off.sh` / `ring.sh` / `token_cost.py` / `trade_utils_tiger.py` / `circuit_breaker.py` / `stop_summary.py` / `pool_claim.py` 的层级注释改 `.pi`；`hooks/changelog_guard.py`、`.pi/extensions/lib/hooks.ts` 的迁移注释去掉旧路径字面。
+- **验证**：Python `compileall` 全通过；TS 扩展语法通过；全库 grep `.claude` 在当前文件（排除 CHANGELOG / TODO-archive / 历史复盘报告 / tmp）中为 0 处。
+- **边界**：同样只改路径与注释，无判定逻辑变更；历史复盘报告（`reviews/YYYY-MM-DD-*.md`）里的旧路径链接按「历史记录不改写」原则保留。
+
 ## [0.9.0] - 2026-11-05
 
 本版聚焦「执行反馈的真实性」与「无人盯盘时的兜底」：撤单不再等同于未成交（T173）、持仓看护脱离 AI 会话独立运行（T157）、时间判断统一以 ET 为权威口径、盯盘启动改为先建 worktree。

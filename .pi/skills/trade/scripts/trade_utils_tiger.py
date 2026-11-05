@@ -2125,7 +2125,7 @@ FULL_LOSS_R = -0.95   # 亏满型阈值：净 R ≤ -0.95（规则原文 |R|≥0
 
 def _losing_streak_path():
     from pathlib import Path
-    # scripts/ 的上四级 = 项目根（scripts → trade → skills → .claude → 项目根）
+    # scripts/ 的上四级 = 项目根（scripts → trade → skills → .pi → 项目根）
     return Path(__file__).resolve().parent.parent.parent.parent.parent / "state" / LOSING_STREAK_FILE
 
 

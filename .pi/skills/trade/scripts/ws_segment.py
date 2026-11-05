@@ -58,7 +58,7 @@ from trade_utils_tiger import apply_socket_proxy  # WS 链路 socks 化（IP 白
 
 _PROPS = os.path.expanduser('~/.tigeropen/')
 MODE = None   # main 里经 parse_mode 赋值（兼容 --mode 与旧 MODE 环境变量两种来源）
-# scripts/ → trade → skills → .claude → 项目根（上四级）
+# scripts/ → trade → skills → .pi → 项目根（上四级）
 TMP = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', '..', 'tmp')
 TMP = os.path.abspath(TMP)
 

@@ -43,7 +43,7 @@ if [ -z "${SESSION_ID}" ]; then
     echo "⚠️ 未拿到会话 ID（PI_SESSION_ID；非 agent 会话内？），跳过注销" >&2
     exit 1
 fi
-# scripts/ 向上 4 级 = 项目根（scripts -> trade -> skills -> .claude -> 项目根）
+# scripts/ 向上 4 级 = 项目根（scripts -> trade -> skills -> .pi -> 项目根）
 REG_FILE="$SCRIPT_DIR/../../../../state/monitor_sessions.txt"
 if [ -f "$REG_FILE" ]; then
     grep -vxF "${SESSION_ID}" "$REG_FILE" > "$REG_FILE.tmp" 2>/dev/null || true
