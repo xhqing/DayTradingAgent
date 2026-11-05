@@ -386,7 +386,7 @@ def ensure(account='paper', quiet=False, allow_switch=True, budget=ENSURE_BUDGET
 
     out = {'ok': False, 'action': 'failed', 'egress': None, 'in_pool': None,
            'proxy_port': None, 'node': None, 'whitelist_gap': None, 'reason': None,
-           'tried': [], 'elapsed': 0.0, 'mirror_stale': False}
+           'tried': [], 'tried_details': [], 'elapsed': 0.0, 'mirror_stale': False}
 
     # ① 确保本地端口池在跑（节点源 = JMS 缓存；热路径绝不联网——2026-10-30 用户立）
 
@@ -452,6 +452,13 @@ def ensure(account='paper', quiet=False, allow_switch=True, budget=ENSURE_BUDGET
         st2, d2 = probe_tiger(account, port=port)
         out['egress'] = e2
         out['in_pool'] = None
+        # 逐个候选的失败明细（2026-11-05 立，T176 遗留项）：旧实现只记「试了 N 个端口」，
+        # 事后查不到「哪个节点、什么错」——2026-10-29 那次「候选 3 个全部未过验证」
+        # 就因此无从定位。现在每个候选都留 port / node / 出口 / 网关状态 / 错误摘要。
+        out['tried_details'].append({
+            'port': port, 'node': nid, 'egress': e2,
+            'tiger': st2, 'detail': (d2 or '')[:160],
+            'ok': st2 == 'ok'})
         if st2 == 'ok':
             out['ok'] = True
             out['action'] = 'switched'
@@ -504,7 +511,14 @@ def ensure(account='paper', quiet=False, allow_switch=True, budget=ENSURE_BUDGET
     out['action'] = 'failed'
     out['reason'] = out['reason'] or (f'池内端口全部失败（试了 {len(out["tried"])} 个）——'
                                       f'很可能 JMS 池里有 IP 尚未在老虎白名单内')
-    _log(f'ensure 失败：{out["reason"]}；最后出口 {out["egress"]}')
+    # 失败日志带候选明细（T176）：每个端口一行 port / 节点 / 出口 / 网关 / 错误摘要，
+    # 下次再遇「全部未过验证」时能从日志直接看出是「节点不通」「出口没测出」还是
+    # 「网关拒」，不用重现现场。
+    _detail_lines = '; '.join(
+        f'port {d["port"]} node {d["node"]} egress {d["egress"]} tiger {d["tiger"]}'
+        + (f' ({d["detail"]})' if d.get('detail') else '')
+        for d in out['tried_details']) or '无候选端口可试'
+    _log(f'ensure 失败：{out["reason"]}；最后出口 {out["egress"]}；候选明细：{_detail_lines}')
     out['elapsed'] = round(time.time() - t0, 2)
     return out
 

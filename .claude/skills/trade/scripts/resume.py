@@ -322,6 +322,20 @@ try:
 except Exception as e:
     print(f"\n🔁 actions 闭环检查未跑成（{e}）——手动跑 python3 actions_check.py")
 
+# ---------- 全局账户对账（2026-11-05 立，T157 修复方向 ②）----------
+# 断层恢复时容易只看到「本会话视角」——① 会话死亡期间被其它会话 / 条件单平掉的仓；
+# ② 用户手动在 App 开的仓（actions 无记录）。两种都会让恢复后的判断建立在错误前提上。
+# 上面 actions_check 只核对「未闭环标的」的实持，这里补一次全账户对账（含实盘）。
+# 查不到账户不阻断恢复（返回空 dict 时只打印提醒）。
+try:
+    import position_watchdog as _pw
+    print("\n🧾 全局账户对账（记录持仓 vs 账户实持）：")
+    _lines, _ = _pw.global_reconcile()
+    for _ln in _lines:
+        print("   " + _ln)
+except Exception as _e:
+    print(f"\n🧾 全局账户对账未跑成（{_e}）——手动跑 python3 position_watchdog.py --reconcile")
+
 print(
     f"\n✅ 恢复协议完成。AI 据以上判断：是否在盘中可继续盯盘 / 是否需读今日 signals 重建持仓 / "
     f"有无悬空项要处理；发信号前再过「发信号硬前置」（距上次 date/snapshot >2min 必须刷新）。"
