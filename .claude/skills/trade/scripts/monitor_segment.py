@@ -517,10 +517,24 @@ def main():
         for _mkt in ("HK", "US"):
             if any(s.startswith(f"{_mkt}.") for s in syms):
                 _mins = minutes_to_session_end(_mkt)
+                # 2026-11-05 用户立：时间判断统一以 ET 为权威口径，北京为附注。
+                # 直接把「现在几点 / 收盘几点」打出来，AI 照抄不推算（防夏令时/冬令时算错）。
+                # 起因：2026-11-04 美股停盯，AI 按夏令时 12 小时差误判收盘北京 04:00，提前 65 分钟收尾。
+                try:
+                    from zoneinfo import ZoneInfo
+                    if _mkt == "US":
+                        _now_us = datetime.now(ZoneInfo("America/New_York"))
+                        _tz_label = (f"现在 ET {_now_us.strftime('%H:%M')}｜收盘 ET 16:00"
+                                     f"（北京现在 {datetime.now().strftime('%H:%M')}）")
+                    else:
+                        _tz_label = (f"现在 北京 {datetime.now().strftime('%H:%M')}"
+                                     f"｜收盘 北京 12:00 / 16:00")
+                except Exception:
+                    _tz_label = ""
                 if 0 < _mins <= 60:
                     if _mins > OPEN_WINDOW_MIN:
                         print(
-                            f"⏰ 距{_mkt}停盯边界 {_mins:.0f} 分钟（>5）：开仓资格仍在——按压缩止盈"
+                            f"⏰ [{_mkt}] {_tz_label}｜相距{_mkt}停盯边界 {_mins:.0f} 分钟（>5）：开仓资格仍在——按压缩止盈"
                             f"实算净赔率 ≥{min_net_odds_from_config():g} 照常评估（config 权威值），禁止自设「临近收盘/午休不开仓」截止线"
                             f"（2026-08-18 用户立；下单脚本另有 ≤5 分钟时间闸硬拦）。"
                             f"⛔ 同时：空仓 / 无信号 ≠ 停盯理由——盯到用户喊停或收盘（取先到），"
@@ -529,7 +543,7 @@ def main():
                         )
                     else:
                         print(
-                            f"⏰ 距{_mkt}停盯边界 {_mins:.0f} 分钟（≤5）：绝对不开仓窗口，"
+                            f"⏰ [{_mkt}] {_tz_label}｜相距{_mkt}停盯边界 {_mins:.0f} 分钟（≤5）：绝对不开仓窗口，"
                             f"持仓按停盯流程处理、空仓只盯到停盯。",
                             flush=True,
                         )
@@ -602,7 +616,17 @@ def main():
     # N 分钟」一律照抄脚本实测输出（本行 + 停盯边界提醒行）、禁止 AI 心算推算——
     # 长会话中 AI 自推时间累计漂移可达 25 分钟（09-18 实录），直接污染压缩止盈窗口
     # 的净赔率实算与停盯收尾时机判断。
-    print(f'🕐 段结束墙钟 {time.strftime("%H:%M:%S")}（判断行时间标签照抄本行，禁止推算）', flush=True)
+    # 2026-11-05 用户立：飞书汇报 / 盯盘时间判断统一以 **ET 为权威口径**，北京为附注。
+    # 起因：2026-11-04 美股停盯，AI 误按夏令时 12 小时差把 16:00 收盘算成北京 04:00
+    # （实为冬令时 13 小时差、北京 05:00），提前 65 分钟做了停盯收尾。根治 = 脚本直
+    # 接打出「北京 + ET」双时区，AI 照抄不推算。
+    try:
+        from zoneinfo import ZoneInfo
+        _et_hm = datetime.now(ZoneInfo("America/New_York")).strftime("%H:%M:%S")
+        _et_part = f" = {_et_hm} ET"
+    except Exception:
+        _et_part = ""
+    print(f'🕐 段结束墙钟 {time.strftime("%H:%M:%S")} 北京{_et_part}（ET 为权威口径；判断行时间标签照抄本行，禁止推算）', flush=True)
     # 段结束完整采样统计（2026-08-03 立）：段结束自带「从开盘到当前的完整统计」，
     # AI 看段结束即见整体（点数/开/末/high/low/买卖比均/量比均/近5点），不只看本段 4-5 点。
     # 为什么：曾只看段结束当前段、漏整体趋势（2026-08-03 用户三次纠正：降频/没拉全貌/没看完整log）。
