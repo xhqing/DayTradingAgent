@@ -19,7 +19,7 @@
 
 死会话判定（同 monitor_watcher.py 口径）：会话 jsonl 停更 > 30 分钟 = 已结束，其认领
   自动释放。jsonl 路径按 pi 会话目录探测：
-  `~/.claude/projects/<slug>/<sid>.jsonl`；pi `<agent_dir>/sessions/--<slug>--/*_<sid>.jsonl`
+  `<agent_dir>/sessions/--<slug>--/*_<sid>.jsonl`
   （文件名带 ISO 时间前缀，用 glob 按后缀匹配；另接 PI_SESSION_FILE 应对自定义 session-dir）。
 
 用法（盯盘启动序列内，方向研判定候选池之后、启动采样之前）：

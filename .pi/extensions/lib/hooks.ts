@@ -6,7 +6,7 @@
  * 复用的内部工具库（原三个之一 background-tasks 已于 2026-10-11 上移全局，不再走本库）。
  *
  * 核心思路（为什么这么设计）：本项目所有护栏逻辑都写在项目根 `hooks/*.py`
- * （唯一源，2026-11-05 从 `.claude/hooks/` 迁出）。pi 端**不重写一套 TS 判定**，
+ * （唯一源，2026-11-05 迁到项目根）。pi 端**不重写一套 TS 判定**，
  * 而是把 pi 的事件合成成 hook 协议风格的 JSON（tool_name / tool_input /
  * tool_response / session_id 字段同名），spawn 同一个 Python 脚本、读它的
  * exit code（2 = 阻断）与 stdout（hookSpecificOutput.additionalContext = 提醒文本）。

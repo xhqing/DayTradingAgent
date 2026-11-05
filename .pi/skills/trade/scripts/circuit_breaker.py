@@ -53,7 +53,7 @@ HISTORY_KEEP = 20   # 历史最多保留条数（防止无限增长）
 
 
 def state_path():
-    """状态文件路径：scripts/ 的上四级 = 项目根（scripts → trade → skills → .claude → 项目根）。"""
+    """状态文件路径：scripts/ 的上四级 = 项目根（scripts → trade → skills → .pi → 项目根）。"""
     return SCRIPTS_DIR.parent.parent.parent.parent / "state" / STATE_FILE
 
 

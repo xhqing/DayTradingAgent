@@ -37,7 +37,7 @@ _EXCLUDE_NAMES = {'accounts.json', 'CHANGELOG.md', 'VERSION', '.commit-cache.md'
 _EXCLUDE_SUFFIXES = ('.local', '.local.json', '.local.yaml', '.local.yml')
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-# ⚠️ 两层 parent：hooks/ → 项目根（2026-11-05 从 .claude/hooks/ 迁到项目根 hooks/ 后由三层改为两层）。
+# ⚠️ 两层 parent：hooks/ → 项目根（2026-11-05 迁到项目根 hooks/ 后由三层改为两层）。
 # 历史教训（2026-09-03 修 T138 验证时发现）：曾经多写一层 = 算到某个子目录，
 # 项目根下的文件 relative_to 全部抛 ValueError → 一律不提醒（hook 从未真正触发过）。
 

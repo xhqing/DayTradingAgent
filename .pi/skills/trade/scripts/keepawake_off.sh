@@ -21,7 +21,7 @@
 # 会话 ID：pi 宿主注入 PI_SESSION_ID。
 SESSION_ID="${PI_SESSION_ID:-}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# trade/scripts -> trade -> skills -> .claude -> 项目根
+# trade/scripts -> trade -> skills -> .pi -> 项目根
 REG_FILE="$SCRIPT_DIR/../../../../state/monitor_sessions.txt"
 
 # —— 停盯边界时间闸：盘中拒绝解除防睡眠（用户喊停 --force 放行）——

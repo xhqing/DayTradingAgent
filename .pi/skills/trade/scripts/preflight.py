@@ -401,7 +401,7 @@ def _ensure_watcher():
         _plist = _os.path.expanduser(f"~/Library/LaunchAgents/{label}.plist")
         _root = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), "..", "..", "..", ".."))
         if not _os.path.isfile(_plist):
-            _src = _os.path.join(_root, ".claude", "hooks", f"{label}.plist")
+            _src = _os.path.join(_root, "hooks", f"{label}.plist")
             if _os.path.isfile(_src):
                 # 2026-11-05：复制时把项目根路径替换成**当前实际仓库根**——worktree 场景下
                 # （盯盘在 worktree 里跑）不能把 plist 钉死在主仓库绝对路径，否则指向的文件

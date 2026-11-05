@@ -40,9 +40,9 @@ BJ_FMT = "%Y-%m-%d %H:%M:%S"
 
 
 def project_root():
-    """项目根 = .pi/skills/trade/scripts 上溯四层（scripts→trade→skills→.claude→根）。
+    """项目根 = .pi/skills/trade/scripts 上溯四层（scripts→trade→skills→.pi→根）。
 
-    与 stop_summary.project_root() 同一口径；少写一层会落到 .claude/ 下，标记就写错地方。
+    与 stop_summary.project_root() 同一口径；少写一层会落到 .pi/ 下，标记就写错地方。
     """
     return os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                         "..", "..", "..", ".."))

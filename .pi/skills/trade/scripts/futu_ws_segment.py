@@ -57,7 +57,7 @@ from trade_utils_tiger import parse_mode  # --mode / 环境变量统一解析（
 # 环境变量 MODE 兜底（parse_mode 内已补环境变量分支）、默认 signal，与另两个脚本同口径。
 MODE = parse_mode()
 TODAY = date.today().strftime('%Y%m%d')
-# scripts/ → trade → skills → .claude → 项目根（上四级）
+# scripts/ → trade → skills → .pi → 项目根（上四级）
 TMP = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', '..', 'tmp')
 TMP = os.path.abspath(TMP)
 

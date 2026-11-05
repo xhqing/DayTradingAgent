@@ -62,7 +62,7 @@ BJ = ZoneInfo("Asia/Shanghai")
 
 
 def project_root():
-    """项目根 = .pi/skills/trade/scripts 上溯四层（scripts→trade→skills→.claude→根）。"""
+    """项目根 = .pi/skills/trade/scripts 上溯四层（scripts→trade→skills→.pi→根）。"""
     return os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", ".."))
 
 
