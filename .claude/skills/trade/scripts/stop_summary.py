@@ -593,7 +593,13 @@ def main():
     L.append("")
     L.append("════════════════════════════════════")
     L.append(f"🔵🔵🔵 停盯总结 · {a.market.upper()} {date} 交易日（auto 模式 · 账户 {masked}）🔵🔵🔵")
-    L.append(f"> ⏰ 脚本生成：{datetime.now(BJ).strftime('%Y-%m-%d %H:%M')}（北京）｜数据源：券商 API 实际成交（非 AI 记忆）")
+    # 2026-11-05 用户立：飞书汇报时间判断统一以 ET 为权威口径，北京时间为附注。
+    # 起因：2026-11-04 美股停盯，AI 误按夏令时 12 小时差把收盘算成北京 04:00（实为冬令时
+    # 13 小时差、收盘北京 05:00），提前 65 分钟执行了停盯收尾。根治办法 = 脚本直接把两个
+    # 时区都算好打出来，AI 照抄、不自己推算（工具强制，不靠记忆）。
+    _bj_now = datetime.now(BJ).strftime('%Y-%m-%d %H:%M')
+    _et_now = datetime.now(ET).strftime('%Y-%m-%d %H:%M')
+    L.append(f"> ⏰ 脚本生成：ET {_et_now}（权威口径）= 北京 {_bj_now}｜数据源：券商 API 实际成交（非 AI 记忆）")
     L.append(f"> 🆔 会话：{sid8 or 'anon'}｜口径：{scope_note or scope}")
     L.append("════════════════════════════════════")
     L.append("")
