@@ -418,8 +418,20 @@ def submit_stop_order_us(config, symbol, side, quantity, trigger_price, retries=
 check_order_filled_us = T.check_order_filled_tiger
 # 已成交数量查询（部分成交复查，2026-08-16 立；不分市场复用）
 get_order_filled_qty_us = T.get_order_filled_qty_tiger
+# 撤单后回查真实成交（2026-11-05 立，T173；不分市场复用）——「挂起超时→撤单」分支必调
+verify_order_after_cancel_us = T.verify_order_after_cancel_tiger
 # 撤单（不分市场，复用）
 cancel_order_us = T.cancel_order_tiger
+
+
+def has_active_stop_order_us(config, symbol):
+    """查该美股标的当日是否还有**活着的止损保护单**（2026-11-05 立，T173 配套）。
+
+    逻辑与港股 `has_active_stop_order_tiger` 同源（共用 `_active_stop_orders`），
+    只是 symbol 归一化走美股口径。用途：T173 场景回查到「订单实际已成交」后，
+    顺带确认附加止损腿还在不在——若随撤单一并撤掉就是裸仓无止损。
+    """
+    return T.has_active_stop_order_tiger(config, symbol, _us=True)
 
 
 def has_active_open_order_us(config, symbol, side=None):

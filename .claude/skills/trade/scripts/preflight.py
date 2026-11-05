@@ -381,29 +381,53 @@ except Exception as _e3:
 # 停盯**不联动 unload**（watcher 只剩白名单漂移一个低频提醒、常驻无害；盘外自动静默），用户明确说
 # 「关守卫 / unload watcher」时才手动卸载。
 def _ensure_watcher():
+    """确保两个 launchd 守护项都已部署并 load（幂等）。
+
+    2026-11-05 扩为两个（T157）：
+      - `com.daytrading.monitor-watcher`：旧密采样守护，2026-10-30 白名单功能移除后已无
+        检查项（脚本直接 return），保留进程只为可回溯，这里仍照旧 ensure（不额外报错）。
+      - `com.daytrading.position-watchdog`：**持仓看护（外部叫醒）**——盘中有持仓但密采样
+        断链、疑似被动平仓、收盘仍有持仓三类情况弹窗提醒。这是 T157 的修复主体：2026-09-16
+        夜盘止损被动成交无人感知，就是因为所有持仓核对都挂在「活着的 AI 会话」里。
+    """
     import subprocess as _sp
-    _label = "com.daytrading.monitor-watcher"
-    _ls = _sp.run(["launchctl", "list"], capture_output=True, text=True)
-    if _label in (_ls.stdout or ""):
-        print("🛡️ 密采样守护 watcher 已在跑（低频、盘外静默）")
-        return
-    _plist = _os.path.expanduser(f"~/Library/LaunchAgents/{_label}.plist")
-    if not _os.path.isfile(_plist):
-        _src = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), "..", "..", "..", "..",
-                                             ".claude", "hooks", f"{_label}.plist"))
-        if _os.path.isfile(_src):
-            import shutil as _sh
-            _sh.copyfile(_src, _plist)
-            print(f"🛡️ 已部署 watcher plist（{_src} → {_plist}）")
-        else:
-            print(f"⚠️ watcher plist 不存在（{_src}），密采样守护未开启")
+    import shutil as _sh
+
+    def _ensure_one(label, human):
+        _ls = _sp.run(["launchctl", "list"], capture_output=True, text=True)
+        if label in (_ls.stdout or ""):
+            print(f"🛡️ {human} 已在跑（低频、盘外静默）")
             return
-    _r = _sp.run(["launchctl", "load", _plist], capture_output=True, text=True)
-    if _r.returncode == 0:
-        print("🛡️ 密采样守护 watcher 已开启（白名单漂移检测，低频不扰民；盘外自动静默）")
-    else:
-        print(f"⚠️ watcher load 失败（{_r.stderr.strip() or _r.stdout.strip()}）——手动跑 "
-              f"launchctl load {_plist}")
+        _plist = _os.path.expanduser(f"~/Library/LaunchAgents/{label}.plist")
+        _root = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), "..", "..", "..", ".."))
+        if not _os.path.isfile(_plist):
+            _src = _os.path.join(_root, ".claude", "hooks", f"{label}.plist")
+            if _os.path.isfile(_src):
+                # 2026-11-05：复制时把项目根路径替换成**当前实际仓库根**——worktree 场景下
+                # （盯盘在 worktree 里跑）不能把 plist 钉死在主仓库绝对路径，否则指向的文件
+                # 可能是旧版本甚至不存在。
+                try:
+                    _txt = open(_src, encoding="utf-8").read()
+                    _txt = _txt.replace("/Users/xhq/Developer/DayTradingAgent", _root)
+                    with open(_plist, "w", encoding="utf-8") as _f:
+                        _f.write(_txt)
+                    print(f"🛡️ 已部署 {human} plist（{_src} → {_plist}，根={_root}）")
+                except OSError as _e:
+                    _sh.copyfile(_src, _plist)
+                    print(f"🛡️ 已部署 {human} plist（复制失败后直接拷贝：{_e}）")
+            else:
+                print(f"⚠️ {human} plist 不存在（{_src}）——该项未开启")
+                return
+        _r = _sp.run(["launchctl", "load", _plist], capture_output=True, text=True)
+        if _r.returncode == 0:
+            print(f"🛡️ {human} 已开启（盘外自动静默）")
+        else:
+            print(f"⚠️ {human} load 失败（{_r.stderr.strip() or _r.stdout.strip()}）——手动跑 "
+                  f"launchctl load {_plist}")
+
+    _ensure_one("com.daytrading.monitor-watcher", "密采样守护 watcher（历史项、已无检查项）")
+    _ensure_one("com.daytrading.position-watchdog",
+                "持仓看护 watchdog（持仓无人盯 / 疑似被动平仓 / 收盘仍有仓）")
 
 _ensure_watcher()
 

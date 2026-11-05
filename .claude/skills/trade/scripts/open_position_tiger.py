@@ -32,7 +32,7 @@ order_type 传枚举对象序列化失败（须传字符串 'LMT'）；② 成�
 下单失败自动降档重试（2026-08-11 立，00100 待办）：目标量被拒（Invalid / 提交异常）时
 按降档序列（逐次减半取整手）自动重试到可下上限，每次失败输出 reason；成交量 < 目标量时
 输出 downscaled=true + target_quantity + failed_attempts + warning（仓位缩水提示）。
-不降档的两种失败：cross-trading（账户已有同标的未成交挂单，改单或撤单后重挂）/ 挂起超时（撤单退出由 AI 决策）。
+不降档的两种失败：cross-trading（账户已有同标的未成交挂单，改单或撤单后重挂）/ 挂起超时（撤单退出由 AI 决策；⚠️ 2026-11-05 起撤单后强制回查真实成交——撤单请求发出 ≠ 没成交，回查到已成交就按已建仓上报 `ok:true` + `post_cancel_fill`，T173）。
 
 输出 JSON：
   成功：{ok, action, order_id, fill_price, method:"market+attached_stop"|"limit+attached_stop",
@@ -812,12 +812,43 @@ def main():
                 break
             if "Invalid" not in status:
                 # 挂起超时 / 轮询异常 / 其它非被拒状态：撤单退出（不降档，让 AI 决策）
+                #
+                # ⚠️ 撤单后必须回查真实成交（2026-11-05 立，T173，与美股版同源）：撤单请求
+                # 发出 ≠ 没成交。2026-10-22 美股 META 实录（美股版同位置）：脚本报 ok:false +
+                # 「已撤主单」，但包商侧主单实际 FILLED 27 股。港股同为这一执行链，一并修——
+                # 不论撤单成功还是失败，都回查实际成交股数，成交了就按建仓处理。
                 try:
                     U.cancel_order_tiger(config, order_id)
                     cancel_note = "已撤主单及附加止损"
                 except Exception as ce:
                     cancel_note = f"撤单失败需手动撤 {order_id}: {ce}"
-                failures.append({"qty": qty, "status": status, "reason": reason or "", "cancel_note": cancel_note})
+                verify = U.verify_order_after_cancel_tiger(config, order_id)
+                verified_qty = int(verify.get("filled") or 0)
+                verify_note = verify.get("note") or ""
+                if verified_qty > 0:
+                    fill_price = verify.get("avg_fill_price")
+                    status = verify.get("status") or status
+                    if verified_qty >= qty or status == "Filled":
+                        filled = True
+                    else:
+                        part_filled_qty = verified_qty
+                    # 顺带确认止损腿是否还在（T173 配套）：被撤单连带撤掉 = 裸仓无止损
+                    try:
+                        _has_stop, _stop_ids = U.has_active_stop_order_tiger(config, symbol)
+                    except Exception as _se:
+                        post_cancel_stop = f"止损单回查失败（{str(_se)[:80]}）——须人工确认停损保护是否还在"
+                    else:
+                        post_cancel_stop = (f"止损腿在（{_stop_ids}）" if _has_stop
+                                            else "⚠️ 未见活动止损单（可能随撤单一并撤掉了）——立即补挂止损")
+                    failures.append({"qty": qty, "status": status,
+                                     "filled_qty": verified_qty,
+                                     "reason": verify_note, "cancel_note": cancel_note,
+                                     "post_cancel_verify": verify_note,
+                                     "stop_protection": post_cancel_stop})
+                    break
+                failures.append({"qty": qty, "status": status, "reason": reason or "",
+                                 "cancel_note": cancel_note,
+                                 "post_cancel_verify": verify_note})
                 break
             # Invalid（被拒）→ 记录失败原因并降档继续
             hint = ""
@@ -847,12 +878,19 @@ def main():
 
     if not filled:
         if part_filled_qty:
+            _pc = next((f.get("post_cancel_verify") for f in failures
+                        if f.get("post_cancel_verify") and (f.get("filled_qty") or 0) > 0), None)
             # 部分成交：如实上报实际成交量（不是失败到零、也不是全额成功）
             result_base.update({"ok": True, "part_filled": True, "quantity": part_filled_qty,
                                 "order_id": order_id,
                                 "fill_price": fill_price,
-                                "warning": f"部分成交 {part_filled_qty}/{quantity} 股（超时未全成）——已按实际成交量上报，请复核持仓与残留附加止损腿",
+                                "warning": f"部分成交 {part_filled_qty}/{quantity} 股（超时未全成）——已按实际成交量上报，请复核持仓与残留附加止损腿"
+                                           + (f"（本次为撤单后回查确认：{_pc}）" if _pc else ""),
                                 "failures": failures, "main_status": status,
+                                **({"post_cancel_fill": True,
+                                    "stop_protection": next((f.get("stop_protection") for f in failures
+                                                             if f.get("stop_protection")), None)}
+                                   if _pc else {}),
                                 "method": f"{order_type}+attached_stop"})
             # 开仓响铃（2026-08-19 立）：部分成交也是已建仓，同样响铃提醒（note 注明）
             U.ring_after_fill("HK", symbol,
@@ -873,7 +911,19 @@ def main():
         print(json.dumps(result_base, ensure_ascii=False))
         sys.exit(1)
 
-    if len(failures) > 0:
+    # 撤单后回查发现的成交（2026-11-05 立，T173，与美股版同源）：这笔**不是**降档成交，
+    # 不能走下面那条「目标量被拒、仓位缩水」的叙事。
+    _verify_fill = next((f for f in failures
+                         if f.get("post_cancel_verify") and (f.get("filled_qty") or 0) > 0), None)
+    if _verify_fill:
+        result_base["post_cancel_fill"] = True
+        result_base["post_cancel_verify"] = _verify_fill["post_cancel_verify"]
+        result_base["stop_protection"] = _verify_fill.get("stop_protection")
+        result_base["warning"] = (
+            "⚠️ 撤单后回查发现订单实际已成交（不是「挂起超时未成交退出」）——已按成交上报。"
+            f"止损保护：{_verify_fill.get('stop_protection')}。"
+            "勿重复下单；先按本次真实成交写 actions 记录。")
+    elif len(failures) > 0:
         # 降档成交：保留目标量字段、更新实际量，提示仓位缩水
         result_base["target_quantity"] = quantity
         result_base["quantity"] = attempts[len(failures)] if len(failures) < len(attempts) else qty

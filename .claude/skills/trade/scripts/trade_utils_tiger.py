@@ -1142,6 +1142,93 @@ def get_order_filled_qty_tiger(config, order_id):
     return None
 
 
+def verify_order_after_cancel_tiger(config, order_id, timeout=10, poll_interval=1):
+    """撤单后回查订单真实结果（2026-11-05 立，T173）。
+
+    ## 为什么需要这个函数（要解决的问题）
+
+    「挂起超时 → 撤单」这条分支的旧实现是：撤单请求发出就认为「单子没成交、已撤掉」，
+    直接返回 `ok:false`。但券商侧有真实存在的时间窗——撤单请求到达之前订单可能已经成交
+    （或者撤单请求被券商拒绝 / 延迟），此时账户**已经建仓**，而脚本告诉 AI「没开成仓」。
+
+    2026-10-22 美股 META 空单实录：开仓脚本返回 `ok:false` +
+    `cancel_note:"已撤主单及附加止损"`，但券商侧主单实际 **FILLED 27 股**、双腿（止损 / 止盈）
+    HELD 正常。AI 依据 `ok:false` 差点重复下单（被 `active_open_order` 闸拦下才没成双倍仓），
+    复盘时才发现真相。**这类「反馈与事实相反」的缺口是直接亏钱面**：相信 `ok:false` 要么
+    重复开仓（双倍风险），要么漏记持仓（裸仓无记录、复盘数据失真）。
+
+    ## 怎么用
+
+    只在「撤单请求已经发出」之后调用（无论撤单成功或失败都要调——撤单失败更可能实际已成交）。
+    做法：轮询 `get_orders()` 直到状态进入终态（Filled / Cancelled / Inactive / Invalid /
+    Expired）或超时，然后按「已成交量（Order.filled）」给出结论——**不以订单状态字面为准，
+    以实际成交股数为准**（状态可能是 Cancelled 但 filled > 0 的部分成交）。
+
+    返回 dict：
+      {"found": 是否在当日订单里找到该订单,
+       "status": 状态字符串（终态或超时时的最后状态；查不到为空串）,
+       "filled": 实际成交股数（int，未知填 0）,
+       "avg_fill_price": 成交均价（float 或 None）,
+       "reason": 订单 reason 字段,
+       "note": 给人看的一句话结论}
+
+    ⚠️ 调用方纪律：`filled > 0` 就必须按「已建仓」处理（写持仓记录、报 ok:true、响铃），
+    **不得**因为 status 里带 Cancelled 就认为没成交；查询异常时不得重试下单，应先人工核对。
+    """
+    tc = new_trade_client(config)
+    terminal = ("Filled", "Cancelled", "Inactive", "Invalid", "Expired")
+    deadline = time.time() + timeout
+    last = {"found": False, "status": "", "filled": 0, "avg_fill_price": None,
+            "reason": "", "note": ""}
+    last_err = None
+    while True:
+        try:
+            orders = tc.get_orders() or []
+        except Exception as e:
+            last_err = e
+            orders = None
+        if orders is not None:
+            for o in orders:
+                if str(getattr(o, "id", "")) != str(order_id) and \
+                   str(getattr(o, "order_id", "")) != str(order_id):
+                    continue
+                status_obj = getattr(o, "status", "")
+                status = status_obj.value if hasattr(status_obj, "value") else str(status_obj)
+                try:
+                    filled_qty = int(getattr(o, "filled", 0) or 0)
+                except (TypeError, ValueError):
+                    filled_qty = 0
+                avg = getattr(o, "avg_fill_price", None)
+                last = {"found": True, "status": status, "filled": filled_qty,
+                        "avg_fill_price": (float(avg) if avg else None),
+                        "reason": getattr(o, "reason", None) or "", "note": ""}
+                if any(t in status for t in terminal):
+                    break
+            if last["found"] and any(t in last["status"] for t in terminal):
+                break
+        if time.time() >= deadline:
+            break
+        time.sleep(poll_interval)
+    if not last["found"]:
+        last["note"] = (f"回查未找到订单 {order_id}"
+                        + (f"（查询异常：{str(last_err)[:100]}）" if last_err else "")
+                        + "——订单状态未知，须人工查当日订单后再决定是否重下")
+        return last
+    if last["filled"] > 0:
+        last["note"] = (f"撤单后回查发现订单**实际已成交 {last['filled']} 股**"
+                        f"（状态 {last['status']}，均价 {last['avg_fill_price']}）——"
+                        f"已建仓，按成交处理，不得重复下单")
+    elif not any(t in last["status"] for t in terminal):
+        # 非终态 = 撤单根本没生效，订单还活在场——随时可能成交（2026-11-05 补，
+        # 原实现把这种情况归入「确认未成交」，属于把危险当安全报，方向反了）
+        last["note"] = (f"⚠️ 撤单未生效：订单仍在挂单（状态 {last['status']}），随时可能成交——"
+                        f"须手动撤单并复核持仓，不得当成未成交处理")
+    else:
+        last["note"] = (f"撤单后回查确认未成交（状态 {last['status']}，成交 0 股）——"
+                        f"可按未成交处理")
+    return last
+
+
 def has_active_open_order_tiger(config, symbol, side=None):
     """重复下单防抖检查（2026-08-16 立）：查该标的当日是否已有**开仓方向**的活动委托单。
 
@@ -1241,6 +1328,54 @@ def cancel_order_tiger(config, order_id):
         tc.cancel_order(id=order_id)
     finally:
         pass
+
+
+def has_active_stop_order_tiger(config, symbol, _us=False):
+    """查该标的当日是否还有**活着的止损保护单**（2026-11-05 立，T173 配套）。
+
+    为什么需要：T173 场景（「挂起超时 → 撤单」后回查发现主单实际已成交）下，附加止损腿
+    可能被那条撤单请求一并撤掉，结果就是**裸仓无止损**——比重复下单更危险。无人盯盘时
+    包商端条件单是唯一兜底（T158 / T157 同源），所以回查到「已成交」后必须顺带确认止损
+    腿还在不在，不在就高声提醒补挂。
+
+    判据与 `cancel_all_stop_orders_tiger` 同源（STP / STOP / TRAIL 类型，或带 LOSS 腿），
+    并排除已终态的订单（Filled / Cancelled / Inactive / Invalid / Expired / PendingCancel）。
+    返回 (has_active, ids)。
+
+    _us（2026-11-05，给 trade_utils_tiger_us.has_active_stop_order_us 复用）：符号归一化
+    走美股口径（to_tiger_symbol_us）而不是港股口径——两边的宗代码形态不同（HK 去 HK.
+    前缀、US 去 US. 前缀），不能共用一套。
+    """
+    tc = new_trade_client(config)
+    if _us:
+        # 延迟导入避开循环依赖（trade_utils_tiger_us 在模块级 import 本模块）
+        from trade_utils_tiger_us import to_tiger_symbol_us as _to_us
+        target = _to_us(symbol)
+    else:
+        target = to_tiger_symbol(symbol)
+    active = []
+    for o in (tc.get_orders() or []):
+        contract = getattr(o, "contract", None)
+        order_sym = str(getattr(contract, "symbol", "") if contract else "")
+        if order_sym != target:
+            continue
+        status_obj = getattr(o, "status", "")
+        status_val = status_obj.value if hasattr(status_obj, "value") else str(status_obj)
+        if any(s in status_val for s in ("Filled", "Cancelled", "Inactive", "Invalid",
+                                         "Expired", "PendingCancel")):
+            continue
+        otype_obj = getattr(o, "order_type", "")
+        otype_val = otype_obj.value if hasattr(otype_obj, "value") else str(otype_obj)
+        legs = getattr(o, "order_legs", None) or []
+        is_stop = ("STP" in otype_val.upper() or "STOP" in otype_val.upper()
+                   or "TRAIL" in otype_val.upper()
+                   or any(str(getattr(leg, "leg_type", "")).upper() == "LOSS" for leg in legs))
+        if not is_stop:
+            continue
+        oid = getattr(o, "id", None) or getattr(o, "order_id", None)
+        if oid is not None:
+            active.append(oid)
+    return bool(active), active
 
 
 def cancel_all_stop_orders_tiger(config, symbol, exclude_order_id=None):
