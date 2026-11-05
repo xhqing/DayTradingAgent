@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """CHANGELOG 记录提醒 hook（2026-09-02 立，PostToolUse Edit|Write）。
 
-为什么：全局 CLAUDE.md「CHANGELOG 记录纪律」（2026-07-30 立、2026-08-21 修订「记录不用问」）
+为什么：全局 AGENTS.md「CHANGELOG 记录纪律」（2026-07-30 立、2026-08-21 修订「记录不用问」）
 规定每次文件增删改查都要顺手记入 CHANGELOG、不先问用户。但散文规定在上下文压缩后会衰减
 （2026-08-18 用户对照实验：工具在场全守住、靠 AI 记忆全失守）——2026-09-02 stability 撤销
 涉及 4+ 文件改动时，AI 改到收尾把「记 CHANGELOG」搁置、还反问用户「要不要记」，正是该纪律
