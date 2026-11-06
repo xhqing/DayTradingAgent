@@ -180,6 +180,13 @@ def _jsonl_age(sid):
         candidates += glob.glob(os.path.join(PI_SESSIONS_DIR, "*_" + sid + ".jsonl"))
     except Exception:
         pass
+    # 兜底（2026-11-06）：脚本从 worktree 跑时 PROJECT_ROOT 是 worktree、slug 与
+    # 会话启动目录（主仓库）不同，本目录 glob 找不到活跃会话 → 误判死会话、互删认领。
+    # 再把全部 session 目录按 sid 后缀扫一遍（文件名后缀精确匹配，不误认别的会话）。
+    try:
+        candidates += glob.glob(os.path.join(_PI_AGENT_DIR, "sessions", "*", "*_" + sid + ".jsonl"))
+    except Exception:
+        pass
     env_file = os.environ.get("PI_SESSION_FILE", "")
     if env_file and env_file.endswith("_" + sid + ".jsonl"):
         candidates.append(env_file)

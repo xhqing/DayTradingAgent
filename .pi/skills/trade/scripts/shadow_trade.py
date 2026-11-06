@@ -55,6 +55,10 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "..", "..", ".."))
 SIGNALS_DIR = os.path.join(PROJECT_ROOT, "signals")
 TMP_DIR = os.path.join(PROJECT_ROOT, "tmp")
+# 2026-11-06 修：STATE_DIR 未定义（NameError），且按项目口径「删了会让功能失效的状态」
+# 应放 state/ 而非 tmp/——影子仓状态属必须跨中断保留的持久状态（见 AGENTS.md
+# 「tmp/ 与 state/ 的口径划分」）。
+STATE_DIR = os.path.join(PROJECT_ROOT, "state")
 SHADOW_STATE = os.path.join(STATE_DIR, "shadow_positions.json")
 
 MARKETS = ("HKT", "ET")
