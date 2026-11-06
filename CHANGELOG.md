@@ -4,6 +4,13 @@
 
 ## [0.9.1] - 2026-11-06
 
+### 修复（影子交易脚本 `STATE_DIR` 未定义导致完全不可用，2026-11-06 盘中实测）
+
+- **为什么改**：2026-11-06 美股盘中，本会话开仓被单持仓互斥闸拦下（`blocked_by=open_exposure_today`，另一会话持有 AMD），按规则应转【影子交易】记录纸面样本；执行 `shadow_trade.py open` 直接抛 `NameError: name 'STATE_DIR' is not defined`（脚本定义了 `TMP_DIR` 却引用未定义的 `STATE_DIR`），影子仓一笔都记不了——等于影子交易这条分支路径自 2026-08-27 建立以来在「状态文件路径」这一行就断了，此前可能长期未被触发所以没暴露。
+- **改了什么**：`scripts/shadow_trade.py` 第 57-58 行补 `STATE_DIR = os.path.join(PROJECT_ROOT, "state")`，`SHADOW_STATE` 指向 `state/shadow_positions.json`（与项目「tmp/ 与 state/ 的口径划分」一致——影子仓状态是「删了会让功能失效」的持久状态，必须放 `state/`；`preflight.py` 的 state 清单里本来就列着它）。
+- **验证**：修复后 `shadow_trade.py open ET US.TQQQ long 53.76 53.15 55.0 482 --blocked-by open_exposure_today` 正常落盘，`close` 正常结算（净 −US$257 / −0.842R），`signals/2026-11-06-ET-signals.md` 追加【影子】条目成功。
+- **回归风险**：无（原脚本在该行必崩，不存在依赖旧路径的可用路径）。
+
 本版聚焦「多个盯盘会话共用同一个 worktree 时的会话隔离」：分析心跳、方向重估标记、飞书发送标记按会话分文件；另含规则文件本体统一为 `AGENTS.md`、项目改为 pi-only、CI 门禁补齐等前几日的未发布改动。
 
 ### 变更（多会话并行盯盘：分析心跳 / 方向重估标记 / 飞书发送标记按会话分文件，2026-11-06）
