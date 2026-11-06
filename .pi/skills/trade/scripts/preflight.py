@@ -343,9 +343,16 @@ def _feishu_check():
             continue
     if not _has_summary:
         return
-    _markers = [_os.path.join(_root, d, f"feishu_sent_us_{_d.isoformat()}.txt")
-                for d in ("state", "tmp")]
-    if not any(_os.path.isfile(m) for m in _markers):
+    # 标记名 2026-11-06 起带会话短 ID（`feishu_sent_us_<交易日>_<sid8>.txt`，多会话各发各的），
+    # 本检查用 glob 通配兼容带 / 不带后缀两种。**口径保持「任意会话发过即算」而不是按会话收**：
+    # 这里查的是「上一个已完结交易日」，多数会话根本不跨那个交易日，按会话收会反复误报催补发；
+    # 会话级的「我发没发」由 monitor_guard 的停盯收尾检查（按 sid 匹配 stop_done）承担。
+    import glob as _glob
+    _markers = []
+    for _dir in ("state", "tmp"):
+        _markers += _glob.glob(_os.path.join(_root, _dir,
+                                             f"feishu_sent_us_{_d.isoformat()}*.txt"))
+    if not _markers:
         print(f"📨 飞书汇报提醒：{_d.isoformat()} ET 的停盯总结已写但未见飞书推送记录——按用户规定"
               f"（每次停盯必发业务版）补发：python3 scripts/notify_feishu.py --file <业务版文件> --market us")
 

@@ -66,7 +66,7 @@ RUNNING_SECONDS = 120   # log 近 2 分钟有更新 = 视为在跑
 STALE_SECONDS = 300     # 超过 5 分钟无更新 = 确定断
 
 # 空转防护（2026-08-17 立红灯「盯盘空转」修法④）：AI 要重启密采样段时，若分析心跳
-# （tmp/analysis_beat_{date}_{mode}.csv，AI 每段分析时追加）停更超过此阈值 → PreToolUse
+# （tmp/analysis_beat_{date}_{mode}[_{sid8}].csv，AI 每段分析时追加）停更超过此阈值 → PreToolUse
 # 阻断，逼 AI 先补「一行式判断 + 写心跳」再重启采样。为什么做成 hook 硬门：2026-08-17
 # 实录空转一下午（52 次纯重启采样、0 分析文本），用户纠正后 10 分钟复发——reference
 # 软约束会衰减，工具级阻断才拦得住「只重启不分析」的路径。
@@ -76,18 +76,25 @@ STALE_SECONDS = 300     # 超过 5 分钟无更新 = 确定断
 ANALYSIS_BEAT_STALE_SECONDS = 180
 
 
-def analysis_beat_status():
+def analysis_beat_status(sid=""):
     """分析心跳状态（2026-08-17 立）。返回 (state, age_seconds)：
     - ("fresh", 秒)：心跳新鲜（< 阈值）。
     - ("stale", 秒)：心跳停更超阈值（空转形态①：分析过、后来死了）。
     - ("none", None)：当天无心跳文件。调用方结合采样 log 时长判断——log 也不足阈值
       = 刚启动放行；log 已跑 ≥ 阈值仍零心跳 = 从未分析过（空转形态②）。
-    signal/auto 任一 mode 的心跳新鲜即 fresh（guard 拿不到本会话 mode，任一路分析
-    在跑 = 不是全空转，与 watcher 同口径）。
+
+    会话口径（2026-11-06 立）：心跳文件按会话分（`analysis_beat_{date}_{mode}_{sid8}.csv`）。
+    **本会话有当日心跳 → 只认本会话**（本会话空转、别会话在分析，不能替他过关）；
+    **本会话无文件 → 退回任意同日心跳**（兼容改造前的无会话后缀文件名，也兼容 guard 拿不到
+    sid 的场景，避免只认本会话时反而误拦）。
     """
     import glob
     today = datetime.now().strftime("%Y%m%d")
-    beats = glob.glob(os.path.join(TMP_DIR, f"analysis_beat_{today}_*.csv"))
+    sid8 = (sid or "")[:8]
+    beats = (glob.glob(os.path.join(TMP_DIR, f"analysis_beat_{today}_*_{sid8}.csv"))
+             if sid8 else [])
+    if not beats:
+        beats = glob.glob(os.path.join(TMP_DIR, f"analysis_beat_{today}_*.csv"))
     if not beats:
         return ("none", None)
     newest = max(os.path.getmtime(p) for p in beats)
@@ -725,14 +732,15 @@ def main():
         # exec_seg）时检查分析心跳——心跳停更 > 3 分钟 = 分析链死了还只顾重启采样，阻断，
         # 逼 AI 先给「一行式判断 + 写心跳」再重启。刚启动（无心跳且采样 log < 3 分钟）放行。
         if len(exec_seg) == 1:
-            bstate, bage = analysis_beat_status()
+            bstate, bage = analysis_beat_status(sid)
+            _beat_sfx = f"_{sid[:8]}" if sid else ""  # 心跳文件名的会话后缀（与采样脚本写入口径一致）
             if bstate == "stale":
                 print(
                     f"⚠️ 密采样守卫阻断（空转防护）：检测到重启密采样，但分析心跳已停更 "
                     f"{int(bage)} 秒（> {ANALYSIS_BEAT_STALE_SECONDS}s）——采样链活着、分析链死了"
                     f"（2026-08-17 空转实录形态）。先补做本段分析：① 用一行式模板给判断"
                     f"（现价/关键位/VWAP/结论/下次段时间）；② 追加分析心跳 "
-                    f"echo \"$(date '+%H:%M:%S'),<标的>,<判断>\" >> tmp/analysis_beat_{datetime.now().strftime('%Y%m%d')}_<mode>.csv；"
+                    f"echo \"$(date '+%H:%M:%S'),<标的>,<判断>\" >> tmp/analysis_beat_{datetime.now().strftime('%Y%m%d')}_<mode>{_beat_sfx}.csv；"
                     f"③ 再重启下一段。模板见 references/monitoring.md「每段最小输出模板 + 分析心跳」。",
                     file=sys.stderr,
                 )
@@ -744,7 +752,7 @@ def main():
                         f"⚠️ 密采样守卫阻断（空转防护）：当天采样已运行约 {int(run_sec)} 秒，"
                         f"但分析心跳为零（analysis_beat 文件不存在）——只采样、从未分析"
                         f"（2026-08-17 空转实录形态）。先给本段一行式判断并写分析心跳"
-                        f"（tmp/analysis_beat_YYYYMMDD_<mode>.csv），再重启下一段。"
+                        f"（tmp/analysis_beat_YYYYMMDD_<mode>{_beat_sfx}.csv），再重启下一段。"
                         f"模板见 references/monitoring.md「每段最小输出模板 + 分析心跳」。",
                         file=sys.stderr,
                     )

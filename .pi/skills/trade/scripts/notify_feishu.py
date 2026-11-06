@@ -18,8 +18,8 @@ SKILL.md「停盯总结 · 飞书汇报（业务版）」节。
     echo "……" | python3 scripts/notify_feishu.py --market hk
     python3 scripts/notify_feishu.py --file x.md --dry-run   # 只校验与预览，不发送
 
-发送成功：写标记 state/feishu_sent_<market>_<交易日>.txt（preflight 凭此检查漏发），
-并在 state/feishu_sent/ 留发送内容存档。退出码：0 成功 / 2 内容被过滤拦下 /
+发送成功：写标记 state/feishu_sent_<market>_<交易日>[_<sid8>].txt（preflight 凭此检查漏发），
+并在 state/feishu_sent/ 留发送内容存档（同样带会话短 ID）。退出码：0 成功 / 2 内容被过滤拦下 /
 3 未配置或已停用 / 1 发送失败。
 
 **消息最前面自动加 session_id（2026-10-21 用户立：跳代码追踪）**：默认在消息首行插入
@@ -244,11 +244,16 @@ def main():
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     out_dir = os.path.join(PROJECT_ROOT, "state", "feishu_sent")
     os.makedirs(out_dir, exist_ok=True)
-    marker = os.path.join(PROJECT_ROOT, "state", f"feishu_sent_{market}_{date_str}.txt")
+    # 会话短 ID（2026-11-06 立）：同一市场 / 同一交易日的多个盯盘会话各发各的业务版，
+    # 标记与存档都按会话分文件——否则 A 会话发完落标记后，B 会话的漏发检查会误判「已发」
+    # 而不再提醒。拿不到 PI_SESSION_ID（人工终端）时为空、文件名退回原样（历史标记兼容）。
+    _sid8 = (os.environ.get("PI_SESSION_ID") or "")[:8]
+    _sfx = f"_{_sid8}" if _sid8 else ""
+    marker = os.path.join(PROJECT_ROOT, "state", f"feishu_sent_{market}_{date_str}{_sfx}.txt")
     try:
         with open(marker, "w", encoding="utf-8") as fh:
             fh.write(f"{now}\t{market}\t{date_str}\t{message_id}\n")
-        with open(os.path.join(out_dir, f"{market}_{date_str}.md"), "w", encoding="utf-8") as fh:
+        with open(os.path.join(out_dir, f"{market}_{date_str}{_sfx}.md"), "w", encoding="utf-8") as fh:
             fh.write(message)
     except Exception as exc:
         print(f"⚠️ 已发送成功，但标记 / 存档写入失败（{exc}）")

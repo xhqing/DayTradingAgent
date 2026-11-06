@@ -233,6 +233,13 @@ def main():
     _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
     _PROJECT_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", "..", "..", ".."))
     LOG_DIR = os.path.join(_PROJECT_ROOT, "tmp")
+    # 会话短 ID（2026-11-06 立）：多个盯盘会话常共用同一个 worktree（worktree 按「市场 +
+    # 交易日」划分、不按会话），于是 tmp/ 是共用的一份。重估标记这类「当日痕迹」若只按
+    # 日期 + mode 分文件，会跨会话串台——一个会话写了 10 分钟刻度，另一个会话读同一个
+    # 标记文件就被去重跳过、拿不到重估提醒。加会话短 ID 后各写各的。拿不到 PI_SESSION_ID
+    # （人工终端直接跑脚本）时为空，文件名退回原样，向后兼容。
+    _SID8 = (os.environ.get("PI_SESSION_ID") or "")[:8]
+    _SESS = f"_{_SID8}" if _SID8 else ""
     # log 文件按市场对应交易日命名（2026-08-04 修 bug）：原统一用「北京 -12h」算美东交易日（为美股跨北京午夜），
     # 但对港股早盘失效——港股盘中北京 09:30-12:00，减 12h = 昨天 21:30 → log 落昨天日期，今天采样污染昨天 log、
     # 完整采样统计混入昨天数据（如开=123.60 是昨天的价）+ 哨兵读昨天末行误报断层（1069 分钟）。改为按市场区分：
@@ -476,7 +483,7 @@ def main():
     # 盯盘容易固守开盘方向、忘记 skill 的「动态修正方向」规定（2026-07-27 MU 午盘守偏空 4 小时
     # 没重估、错过 ~9700 HKD）。靠工具强制提醒，不靠记忆。
     try:
-        marker_file = os.path.join(LOG_DIR, f"reassess_marker_{date_str}_{mode}.txt")
+        marker_file = os.path.join(LOG_DIR, f"reassess_marker_{date_str}_{mode}{_SESS}.txt")
         reminded = set()
         if os.path.exists(marker_file):
             with open(marker_file) as mf:
