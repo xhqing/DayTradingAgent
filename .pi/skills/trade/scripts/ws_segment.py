@@ -62,6 +62,12 @@ MODE = None   # main 里经 parse_mode 赋值（兼容 --mode 与旧 MODE 环境
 TMP = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', '..', 'tmp')
 TMP = os.path.abspath(TMP)
 
+# 会话短 ID（2026-11-06 立）：多会话并行可能共用同一个 worktree（worktree 按「市场 + 交易日」
+# 划分），tmp/ 因此是共用的一份。重估标记按会话分文件，避免一个会话写过刻度后另一个会话
+# 被去重跳过。拿不到 PI_SESSION_ID（人工终端）时为空、文件名退回原样。
+SID8 = (os.environ.get('PI_SESSION_ID') or '')[:8]
+SESS = f'_{SID8}' if SID8 else ''
+
 # 模块级状态（finish 由硬超时回调调用，需访问）
 seg = {}
 targets = []
@@ -301,7 +307,7 @@ def finish():
     try:
         syms = [t[0] for t in targets]
         first_log = logs[syms[0]]
-        marker_file = os.path.join(TMP, f'reassess_marker_{trading_date_str(syms[0])}_{MODE}.txt')
+        marker_file = os.path.join(TMP, f'reassess_marker_{trading_date_str(syms[0])}_{MODE}{SESS}.txt')
         reminded = set()
         if os.path.exists(marker_file):
             with open(marker_file) as mf:
@@ -403,7 +409,7 @@ def finish():
     # ① 收到段结束通知只重启采样不分析（空转）；② 先启下一段再回来分析（把最新数据放旧）。
     print(
         '👉 空转防护：拿到本段数据立刻分析（期间不做任何别的事，不先启下一段）；分析后有机会当场执行'
-        '（下单不排队），没机会才写分析心跳（echo 追加 tmp/analysis_beat_日期_模式.csv）+ 重启下一段采样。',
+        '（下单不排队），没机会才写分析心跳（echo 追加 tmp/analysis_beat_日期_模式_会话短id.csv）+ 重启下一段采样。',
         flush=True,
     )
 

@@ -61,6 +61,12 @@ TODAY = date.today().strftime('%Y%m%d')
 TMP = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', '..', 'tmp')
 TMP = os.path.abspath(TMP)
 
+# 会话短 ID（2026-11-06 立）：多会话并行可能共用同一个 worktree（worktree 按「市场 + 交易日」
+# 划分），tmp/ 因此是共用的一份。重估标记按会话分文件，避免一个会话写过刻度后另一个会话
+# 被去重跳过。拿不到 PI_SESSION_ID（人工终端）时为空、文件名退回原样。
+SID8 = (os.environ.get('PI_SESSION_ID') or '')[:8]
+SESS = f'_{SID8}' if SID8 else ''
+
 # 订阅时刻（epoch 秒）：TickerSink 只统计订阅时刻之后发生的逐笔（2026-08-19 立）。
 # 背景：富途 subscribe TICKER 成功瞬间会推一批**历史缓冲逐笔**（含开盘以来成交）——当日
 # 实录：小米段低被污染成 26.0（日低实为 26.38）、段 9 段低 27.06（last 序列最低 27.30）、
@@ -392,7 +398,7 @@ def finish():
     # ⏰ 每 10 分钟方向重估提醒（2026-08-17 补，逻辑对齐 monitor_segment / ws_segment）。
     try:
         syms = [t[0] for t in targets]
-        marker_file = os.path.join(TMP, f'reassess_marker_{TODAY}_{MODE}.txt')
+        marker_file = os.path.join(TMP, f'reassess_marker_{TODAY}_{MODE}{SESS}.txt')
         reminded = set()
         if os.path.exists(marker_file):
             with open(marker_file) as mf:
@@ -506,7 +512,7 @@ def finish():
     # 立刻分析 → 有机会当场下单 → 没机会才写心跳 + 重启下一段。
     print(
         '👉 空转防护：拿到本段数据立刻分析（期间不做任何别的事，不先启下一段）；分析后有机会当场执行'
-        '（下单不排队），没机会才写分析心跳（echo 追加 tmp/analysis_beat_日期_模式.csv）+ 重启下一段采样。',
+        '（下单不排队），没机会才写分析心跳（echo 追加 tmp/analysis_beat_日期_模式_会话短id.csv）+ 重启下一段采样。',
         flush=True,
     )
 
