@@ -349,23 +349,48 @@ def sampling_process_alive():
     return False, None
 
 
-def sampling_log_age(now=None):
-    """最新 monitor_log 距今秒数；无 log 返回 None。供断链判定（不参与「在跑」判断）。"""
-    now = now or datetime.now()
+def _log_dirs():
+    """采样日志可能所在的目录：主仓库 `tmp/` + 所有 `<repo>-watch-*/tmp/`。
+
+    为什么需要多目录（2026-11-07 实测）：盯盘跑在 worktree 里，采样脚本写的是
+    **worktree 的 tmp/**（worktree_start.py 刻意让 tmp/ 每场独立）；而 hook 是由主工作区
+    的 pi 扩展 spawn 的、PROJECT_ROOT = 主工作区，只看主仓库 tmp/ 会读到几天前的日志
+    ——断链判定虽然方向仍对（进程不在就是断了），但「刚结束的段」与「几天前的旧日志」
+    无法区分，SEGMENT_RESTART_GRACE 的 20 秒宽限就失效了（正常重启窗口内也会误唤醒）。
+    """
+    dirs = [TMP_DIR]
     try:
-        if not os.path.isdir(TMP_DIR):
-            return None
-        newest = 0.0
-        for f in os.listdir(TMP_DIR):
-            if f.startswith("monitor_log_") and f.endswith(".csv"):
-                mtime = os.path.getmtime(os.path.join(TMP_DIR, f))
-                if mtime > newest:
-                    newest = mtime
-        if newest <= 0:
-            return None
-        return now.timestamp() - newest
+        root = PROJECT_ROOT.rstrip(os.sep)
+        parent, base = os.path.dirname(root), os.path.basename(root)
+        for p in glob.glob(os.path.join(parent, base + "-watch-*", "tmp")):
+            if os.path.isdir(p) and p not in dirs:
+                dirs.append(p)
+    except Exception:
+        pass
+    return dirs
+
+
+def sampling_log_age(now=None):
+    """最新 monitor_log 距今秒数（跨主仓库 tmp 与各 worktree tmp）；无 log 返回 None。
+
+    只供断链判定辅助（不参与「段在不在跑」——那是 sampling_process_alive 的事）。
+    """
+    now = now or datetime.now()
+    newest = 0.0
+    try:
+        for d in _log_dirs():
+            if not os.path.isdir(d):
+                continue
+            for f in os.listdir(d):
+                if f.startswith("monitor_log_") and f.endswith(".csv"):
+                    mtime = os.path.getmtime(os.path.join(d, f))
+                    if mtime > newest:
+                        newest = mtime
     except Exception:
         return None
+    if newest <= 0:
+        return None
+    return now.timestamp() - newest
 
 
 def monitor_segment_running(now=None):
