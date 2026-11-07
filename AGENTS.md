@@ -146,6 +146,20 @@
 - **（已移交）NewsScoreStudy**：面试实操题研究仓库，2026-10-26 由用户决定**改由 Mark（QuantStrategistAgent）负责**，已从本清单移除并登记到该项目名下（仓库仍在 `/Users/xhq/Developer/NewsScoreStudy`，其 `AGENTS.md` 软链接已改指 `../QuantStrategistAgent/`）。
 - **智能体专属文件归属（2026-10-30 用户修订，取代 2026-10-17 的「`.pi` 也挂软链接」）**：`AGENTS.md` / `AGENTS.override.md` / 项目级 `.pi/` 这类「会话启动时按工作目录加载、表征智能体身份」的项目级文件的**实体只在本项目（Agent 项目）**，子项目不得放实体副本、也不得复制内容进去。**子项目 TradingProofs 根目录按两层处理**：① **身份层——`AGENTS.md → ../DayTradingAgent/AGENTS.md` 软链接**（保持不变；pi 的上下文文件没有 include 机制，超集只能靠复制、复制必然漂移，且子项目里开会话仍是同一个 agent，身份本不该分叉）；② **能力层——真实 `.pi/` 目录**（不再是软链接），其 `.pi/settings.json` 用路径引用本项目的四个资源目录（`extensions` / `skills` / `prompts` / `themes`），本地独有内容放子项目自己的 `./extensions`、`./skills` 等目录，子项目专属规则用 `.pi/APPEND_SYSTEM.md` 追加（不得用 `.pi/SYSTEM.md`，那是整体替换）。**一条纪律**：子项目 `.pi` 只允许追加、不允许重述或覆盖基座规则。**为什么要改**：旧做法下子项目往 `.pi` 写任何东西都直接落进本项目、污染全部兄弟子项目并进本仓库的 git 历史；改为目录引用后，本项目的资源照样自动带过去（新增技能 / 扩展零同步），子项目写自己的目录又不会回流。两条（软链接与 `settings.json`）随子项目仓库提交，在本项目仓库里看不到。**验证**：2026-10-29 在 TradingProofs 目录跑 `pi --approve -p`，技能（`trade` 等）与项目级扩展（`AskUserQuestion`）均从本项目目录加载成功。子项目的工作（读文件、跑命令、开发、提交）在本项目的会话里按路径跨目录操作（如 `git -C /Users/xhq/Developer/TradingProofs`）；通过 intercom / `agent_call` / `agent_wake` 为后台 pi 会话指定工作目录时，仍只能以本项目根目录为准（工具按注册表校验），不得指向子项目目录。
 
+## 待办编号带市场后缀（2026-11-07 用户立）
+
+本项目同时盯港股与美股，待办（`TODO.md` / `TODO-archive.md` / `MEMO.md`）的编号除全局递增序号外，**必须带市场后缀**：
+
+- **港股专用** → `T123HK`
+- **美股专用** → `T180US`
+- **港美通用**（机制 / 基础设施 / 不分局） → `T145HKUS`
+
+为什么：一眼分清「这条影响哪个市场」。2026-11-07 实测过不带后缀的代价——红色 11 条里港股 5 / 美股 3 / 通用 3，要靠逐条读描述才能判断归属（用户当场问「能否区分港股还是美股的问题」）。
+
+边界：后缀直接跟在数字后面、不加分隔符；数字部分仍按全局递增、永不复用（`T123HK` 与 `T124US` 不冲突）；已归档条目保持原样（历史留痕不返工）；跨项目引用用「项目 + 完整编号」形式（如 `DayTradingAgent T123HK`）。
+
+工具强制：`hooks/changelog_guard.py` 的 TODO 卫生检测新增第 ③ 项——编辑 `TODO.md` / `TODO.local.md` 后扫描 `- [ ] **T<数字>**` 形式的条目，编号未带 `HK` / `US` / `HKUS` 后缀即提醒补标（不阻断，与既有 ①② 项同层）。
+
 ## commit skill 检测缓存
 
 <!-- commit-skill: readme-standard = ok -->

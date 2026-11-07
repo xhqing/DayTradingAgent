@@ -112,6 +112,23 @@ def _todo_hygiene_issues(file_path):
                 f'（第 {", ".join(str(x) for x in at)} 行）——每个紧急度只应有一个分节，'
                 f'请合并重复标题下的条目到同一节后再继续'
             )
+    # ③ 待办编号缺市场后缀（2026-11-07 用户立）：T123HK（港股）/ T180US（美股）/
+    # T145HKUS（通用）——本项目港美股同盯，不标后缀要靠逐条读描述才能判断影响哪个市场
+    # （2026-11-07 实测：红色 11 条里港股 5 / 美股 3 / 通用 3，混在一起看不出归属）。
+    # 正则只命中「编号后面直接跟 **」的旧形态；已带 HK / US / HKUS 后缀的不会匹配。
+    bad_ids = []
+    for i, l in enumerate(lines, 1):
+        m = re.match(r'^- \[ \]\s*\*\*(T\d+)\*\*', l)
+        if m:
+            bad_ids.append((i, m.group(1)))
+    if bad_ids:
+        shown = '、'.join(f'{tid}（第 {ln} 行）' for ln, tid in bad_ids[:5])
+        more = ' 等' if len(bad_ids) > 5 else ''
+        issues.append(
+            f'检测到 {len(bad_ids)} 条待办编号缺市场后缀：{shown}{more}——'
+            f'本项目港美股同盯，编号必须带后缀（2026-11-07 用户立）：'
+            f'港股 T123HK / 美股 T180US / 通用 T145HKUS，请补标后继续'
+        )
     return issues
 
 
