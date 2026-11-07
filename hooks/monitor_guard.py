@@ -360,7 +360,7 @@ def _log_dirs():
     """
     dirs = [TMP_DIR]
     try:
-        root = PROJECT_ROOT.rstrip(os.sep)
+        root = _PROJECT_ROOT.rstrip(os.sep)
         parent, base = os.path.dirname(root), os.path.basename(root)
         for p in glob.glob(os.path.join(parent, base + "-watch-*", "tmp")):
             if os.path.isdir(p) and p not in dirs:
