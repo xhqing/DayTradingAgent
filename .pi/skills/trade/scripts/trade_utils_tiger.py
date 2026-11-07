@@ -2429,6 +2429,42 @@ def check_losing_streak_gate(account=None, now=None):
     return False, detail
 
 
+def mark_session_market(market, sid8=None):
+    """落一行「本会话 ↔ 盯盘市场」映射，供 `hooks/monitor_guard.py` 的 stop 分支按会话选时段窗口。
+
+    为什么需要（T179，2026-11-07 立）：采样日志文件名 `monitor_log_{SYMBOL}_{DATE}_{MODE}.csv`
+    **不含会话 id**，而纯信号盯盘会话（没开仓、没认领、不在港股盯盘注册表）从日志侧推不出
+    「本会话盯的是哪个市场」。于是「港股盘中 + 美股隔夜」时，美股会话回合结束会被守卫判成
+    「盘中但密采样没在跑」而反复误报（2026-11-05 北京 13:25 实录：美股已收盘 8.5 小时）。
+
+    三个采样脚本（`monitor_segment` / `ws_segment` / `futu_ws_segment`）在段启动时各调一次，
+    写入 `tmp/monitor_market_{sid8}.json`（含 market / date / updated）；guard 读它即可按会
+    话定市场，文件缺失时退回「今日采样过哪些市场」的集合判断。
+
+    market 由调用方按标的代码前缀给（'HK' / 'US'）；拿不到会话 id 或写盘失败一律静默
+    （返回 False）——观测数据绝不影响采样。
+    """
+    try:
+        sid = (sid8 if sid8 is not None else os.environ.get('PI_SESSION_ID', ''))[:8]
+        mk = str(market or '').upper()
+        if not sid or mk not in ('HK', 'US'):
+            return False
+        import json as _json
+        import time as _time
+        from datetime import datetime as _dt
+        skill_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        # skill_dir = .pi/skills/trade → 上三级 = 项目根（trade → skills → .pi → 根）
+        tmp_dir = os.path.abspath(os.path.join(skill_dir, '..', '..', '..', 'tmp'))
+        os.makedirs(tmp_dir, exist_ok=True)
+        with open(os.path.join(tmp_dir, f'monitor_market_{sid}.json'), 'w') as f:
+            _json.dump({'market': mk, 'sid8': sid,
+                        'date': _dt.now().strftime('%Y-%m-%d'),
+                        'updated': _time.time()}, f, ensure_ascii=False)
+        return True
+    except Exception:
+        return False
+
+
 def parse_mode(argv=None):
     """解析执行模式 --mode（auto / signal），默认 signal（与 trade skill 一致）。
 

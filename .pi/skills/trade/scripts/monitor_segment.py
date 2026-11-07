@@ -285,6 +285,16 @@ def main():
         log_file = os.path.join(LOG_DIR, f"monitor_log_{sym.replace('.', '_')}_{trading_date_str(sym)}_{mode}.csv")
         state[sym] = {"log_file": log_file, "last_high": None, "last_low": None, "up": t["up"], "dn": t["dn"]}
 
+    # 本会话盯的市场（T179，2026-11-07 立）：落一行映射给 hooks/monitor_guard.py 的 stop
+    # 分支选时段窗口——采样日志文件名不含会话 id，纯信号盯盘会话从日志侧推不出市场，
+    # 「港股盘中 + 美股隔夜」时美股会话会被误报「盘中密采样没在跑」（2026-11-05 实录）。
+    # 写失败静默，不影响采样。
+    try:
+        from trade_utils_tiger import mark_session_market
+        mark_session_market("US" if syms[0].startswith("US.") else "HK", _SID8)
+    except Exception:
+        pass
+
     def append_log(log_file, row):
         os.makedirs(LOG_DIR, exist_ok=True)
         write_header = not os.path.exists(log_file)
