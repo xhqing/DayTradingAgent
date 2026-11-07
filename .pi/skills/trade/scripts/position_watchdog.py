@@ -72,6 +72,7 @@ PANEL_BIN = os.path.join(TMP_DIR, "alert_panel")
 DEFAULT_STALE_SECONDS = 300       # 采样停更阈值（40 秒一段 × 7 倍余量）
 DEFAULT_CLOSE_GRACE_MIN = 20      # 收盘后收尾检查窗口（分钟）
 NOTIFY_COOLDOWN_SECONDS = 600     # 同类事件每标的 10 分钟冷却
+DEFAULT_RESUME_COOLDOWN = 90      # 断链自愈冷却（秒）：同市场不重复拉起，防进程堆积
 
 HK_TZ = "Asia/Hong_Kong"
 US_TZ = "America/New_York"
@@ -222,6 +223,65 @@ def _log(line):
             f.write(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "\t" + line + "\n")
     except OSError:
         pass
+
+
+def _resume_cooldown_left(state, key, cooldown=None):
+    import time
+    cd = DEFAULT_RESUME_COOLDOWN if cooldown is None else cooldown
+    last = (state.get("last_resume") or {}).get(key) or 0
+    return max(0, cd - (time.time() - last))
+
+
+def _mark_resume(state, key):
+    import time
+    state.setdefault("last_resume", {})[key] = time.time()
+
+
+def _resume_sampling(market, symbols, state, dry_run=False):
+    """采样断链自愈（T145，2026-11-07 立）：盘中有持仓且采样停更时，主动拉起一段采样。
+
+    为什么需要：持仓看护（T157）只能**喊人**；若盯盘会话因上下文压缩 / 死亡而掉线、
+    又没人看到弹窗，采样就一直断着——2026-09-11 正是这样错过港股午休平仓边界
+    （500 股 HK.00700 持仓跨进午休，12:00-13:00 不可交易、止损单也不触发）。
+    本条让守护进程不只是喊，还**顺手把数据采集接上**：拉一段 40 秒的
+    `monitor_segment.py`（下一次 watchdog 60 秒后再续），把「数据断流」从无限长压到
+    最长 ~20 秒空档。
+
+    三条边界（勿改）：
+      ① **只在「盘中有持仓」时触发**（由 `evaluate()` 的 unattended 告警驱动）——
+         2026-08-21 用户立规删掉的「空仓也报」空转警报不得回归；
+      ② **不重启 AI 会话、不改任何交易状态**，只补数据采集（AI 醒来后照样读 log 分析）；
+      ③ 同一市场 `DEFAULT_RESUME_COOLDOWN` 秒内不重复拉起（避免 watchdog 每 60 秒
+         堆积多个进程）。
+    返回是否真的拉起了一段。
+    """
+    if not symbols:
+        return False
+    key = f"resume_{market}"
+    left = _resume_cooldown_left(state, key)
+    if left > 0:
+        _log(f"[{market}] 断链自愈冷却中（{int(left)}s），跳过")
+        return False
+    script = os.path.join(SCRIPT_DIR, "monitor_segment.py")
+    if not os.path.exists(script):
+        _log(f"[{market}] 断链自愈失败：找不到 {script}")
+        return False
+    cmd = [sys.executable, "-u", script, ",".join(sorted(symbols)), "40", "10", "--mode", "auto"]
+    if dry_run:
+        _log(f"[{market}] 断链自愈（dry-run）：{' '.join(cmd)}")
+        _mark_resume(state, key)   # dry-run 也记冷却，保证行为与真跑一致（否则测试/预演会连拉）
+        return True
+    try:
+        os.makedirs(TMP_DIR, exist_ok=True)
+        logf = open(os.path.join(TMP_DIR, f"watchdog_resume_{market.lower()}.log"), "a")
+        subprocess.Popen(cmd, cwd=PROJECT_ROOT, stdout=logf, stderr=subprocess.STDOUT,
+                         start_new_session=True, close_fds=True)
+        _mark_resume(state, key)
+        _log(f"[{market}] 断链自愈：已拉起一段采样 {' '.join(sorted(symbols))}")
+        return True
+    except Exception as e:
+        _log(f"[{market}] 断链自愈失败：{e}")
+        return False
 
 
 def notify(title, message, dry_run=False):
@@ -426,7 +486,18 @@ def main(argv=None):
         if left > 0 and not args.dry_run:
             continue
         shown.append(a)
-        notify(a["title"], a["message"], dry_run=args.dry_run)
+        # T145 断链自愈（2026-11-07）：有仓无人盯时，除喊人外顺手把采样接上（只补数据、
+        # 不重启会话、不碰交易状态；同一市场 90 秒冷却防堆积）。
+        resumed = False
+        msg = a["message"]
+        if a["key"].startswith("unattended_"):
+            mk = a["market"]
+            syms = list(((info.get("markets") or {}).get(mk) or {}).get("recorded") or {})
+            resumed = _resume_sampling(mk, syms, state, dry_run=args.dry_run)
+            if resumed:
+                msg = msg + ("\n\n🔄 守护已自动拉起一段采样（40 秒）把数据接上；"
+                             "但**盯盘会话本身仍需人工检查 / 重开**——自愈只补数据采集，不恢复 AI 分析。")
+        notify(a["title"], msg, dry_run=args.dry_run)
         if not args.dry_run:
             _mark(state, a["key"])
         _log(f"[{a['market']}] {a['title']}：{a['message'].splitlines()[0]}")
