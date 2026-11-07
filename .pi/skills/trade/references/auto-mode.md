@@ -208,7 +208,8 @@ AI 拍板后调脚本下单，脚本返回 order_id 和成交价，最后 `log_a
 
 > 公共硬护栏（标的范围 / 衍生品禁令 / 单持仓 / 盯盘时段 / lot_size / 单笔预算与 max_loss 概念）见 `SKILL.md`「硬性护栏」。下面是 auto 模式专属的下单护栏。
 
-1. **开仓止损用附加止损腿（OrderLeg('LOSS')，主单成交才激活），一律市价触发（2026-07-31 用户新规）**。**⚠️ 双腿竞态与成交后强制校验（T182，2026-11-06 立）**：模拟账户实测 BRACKETS 双腿争抢同一笔可卖量，可能出现「止盈腿活、止损腿被券商置 CANCELLED」——持仓裸奔而脚本只打印 `attached LOSS @ x` 的提交意图（旧版从不校验真实状态）。因此**开仓脚本成交后强制调 `ensure_stop_protection_tiger/_us`**：查 `has_active_stop_order`，缺失则撤止盈腿（腾可卖量）+ 补独立 STP + 复验，结果写入 JSON 的 `stop_protection` 字段（`ok` / `repaired` / `steps`）。`repaired=true` = 止损已自动修复（此时止盈腿被撤，止盈改由主动平仓 / 移盈执行）；`ok=false` = 修复失败，**持仓可能裸奔，须立即人工处置（补挂或平仓）**。**AI 转录开仓记录时必须照抄 `stop_protection` 结果**，不得只看 `stop` 字段就认为已保护。
+1. **开仓止损用附加止损腿（OrderLeg('LOSS')，主单成交才激活），一律市价触发（2026-07-31 用户新规）**。**⚠️ 双腿可以并存，但止损腿可能「被别人撤掉」——成交后强制校验（T182，2026-11-07 修正版）**：BRACKETS 双腿（LOSS+PROFIT）在模拟账户能正常并存（两笔开仓实测：三单同批创建、STP HELD 与 LMT HELD 并存），**不存在「双腿竞态」**；2026-11-06 那笔裸奔的真实原因链是——① T181 导致采样/`account_status` 跨北京午夜后查不到前一天创建的止损腿 → 误报「无活动止损单」；② AI 信了误报，调 `move_stop` 时传入的触发价**与原值完全相同**，券商回 `You did not submit any change`，脚本走 fallback「先下新 STP + 撤旧」→ **把本来健康的止损腿撤掉了**；③ 新 STP 又被止盈腿占满可卖量 → `EXPIRED`，这才真正裸奔。
+   **两条纪律**：① **止损单「查不到」时，先用全量 `tc.get_orders()` 核实真实状态**（`has_active_stop_order_*` 走全量、不受 T181 影响），**绝不能用原触发价调 `move_stop`**（等于没变化，必然触发 fallback 撤旧腿）；② 开仓脚本成交后仍强制调 `ensure_stop_protection_tiger/_us`（查 `has_active_stop_order` → 缺失才撤止盈腿 + 补 STP + 复验），结果写入 JSON 的 `stop_protection` 字段——`repaired=true` 表示真没了并已修复（止盈改由主动平仓/移盈执行）、`ok=false` 须立即人工处置。**AI 转录开仓记录时必须照抄 `stop_protection`**，不得只看 `stop` 字段就认为已保护。
 
    「主订单 / 附加订单」**不是订单的固有分类**——订单本质按类型分（`LMT`/`MKT`/`STP` 等），「主/附加」只是开仓把主单 + 止损腿打包一次提交时的相对称呼（主单 = 开仓限价单 LMT（2026-08-23 用户立「下单必须用限价单」，默认且唯一）、附加 = 跟随提交的止损腿），**只在开仓场景才有**。开仓场景的操作要点：
    - **开仓**：一次提交主单（LMT 限价单 = 盘口对价，2026-08-23 用户立「下单必须用限价单」；`--order-type mkt` 已禁用拒单）+ 附加止损腿 `OrderLeg('LOSS', 止损价)`（`trade_utils_tiger.submit_order_with_stop_tiger`）。附加止损随主单提交、主单成交才激活，开仓失败止损不残留；附加腿的方向与触发符号由券商后端按主单方向自动定（与主单相反）、无需传 side。

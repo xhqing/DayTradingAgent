@@ -43,7 +43,69 @@ STP）、持仓 / 资产 / 订单查询、撤单、成交回查。
 import os
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
+
+# ---------------------------------------------------------------------------
+# 市场时区 / 交易日口径（T181 修复，2026-11-07 用户立「美股统一用 ET 作权威判断时间」）
+# ---------------------------------------------------------------------------
+# 为什么不能一律用本机（北京）日期切「当日」：美股盘中跨北京午夜（ET 11:00 整翻滚）时，
+# 09:30-11:00 ET 下的单会被判成「昨天」而被过滤掉——2026-11-06 实测直接导致
+# ① 采样 `stop_price` 列变空、`account_status` 误报「无活动止损单」（止损腿其实活着）、
+# ② 开仓互斥闸「当日在场敞口」与双持仓兜底检测失效。
+# 口径：**美股一律 America/New_York（ET）、港股 Asia/Shanghai（北京／香港同时区）**；
+# 只有对外汇报（飞书 / 对话）才把 ET 映射成北京附注。
+ET_TZ = ZoneInfo("America/New_York")
+BJ_TZ = ZoneInfo("Asia/Shanghai")
+
+
+def market_tz(market):
+    """该市场的权威时区：us（默认）→ America/New_York，hk / hkt / cn → Asia/Shanghai。
+
+    market 传 None 或空时按美股处理（调用方不传就是美股场景，见 get_today_orders_tiger）。
+    """
+    return BJ_TZ if str(market or "").lower() in ("hk", "hkt", "cn", "bj") else ET_TZ
+
+
+def market_today(market=None, ts_ms=None):
+    """该市场「今日」的 'YYYY-MM-DD'（传 ts_ms 时换算该毫秒时间戳所属的**市场日期**）。
+
+    market_today('us') → 当前美东日期；market_today('us', order_time_ms) → 该订单在美东的日期。
+    """
+    tz = market_tz(market)
+    if ts_ms is None:
+        return datetime.now(tz).strftime("%Y-%m-%d")
+    return datetime.fromtimestamp(int(ts_ms) / 1000, tz).strftime("%Y-%m-%d")
+
+
+def order_market(o):
+    """判定一条订单属于哪个市场：优先币种（HKD→hk、USD→us），缺失时按代码形态兜底
+    （港股 5 位数字代码、美股字母代码）。返回 'hk' / 'us'（无法判定时按 'us'）。
+
+    与 stop_summary._order_market 同口径；本函数给「按订单自身市场切当日」的场景用。
+    """
+    c = getattr(o, "contract", None)
+    cur = str(getattr(c, "currency", "") or "").upper()
+    sym = str(getattr(c, "symbol", "") or "")
+    if cur == "HKD":
+        return "hk"
+    if cur == "USD":
+        return "us"
+    cleaned = sym.replace(".", "").strip()
+    if cleaned.isdigit() and len(cleaned) == 5:
+        return "hk"
+    return "us"
+
+
+def order_market_date(o):
+    """订单 order_time（毫秒）→ 其所属市场的交易日字符串；无时间戳返回 ''。"""
+    tm = getattr(o, "order_time", None)
+    try:
+        return market_today(order_market(o), tm)
+    except (TypeError, ValueError, OSError):
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -1552,8 +1614,10 @@ def get_today_orders_tiger(config):
       （按 order_time 毫秒时间戳转本地日期）——但 monitor_segment / stop_gate 等其它
       调用方没过滤。现把过滤下沉到本函数（单一修复点、全部调用方受益），口径与
       trade_mutex._order_local_date 一致：按 order_time（毫秒）转本地日期 == 今日。
-      时区说明：本地（北京）时区下港股当日订单与美股当日订单（跨夜到北京次日凌晨）
-      均按各自实际下单日归组，与 trade_mutex 2026-08-20 修法同口径。
+      时区说明（T181 修复，2026-11-07）：**按每条订单自身市场切自然日**——美股取美东（ET）
+      日期、港股取北京日期（`order_market` + `market_today`）。旧版一律用本机（北京）日期，
+      美股盘中跨北京午夜（ET 11:00 整翻滚）后，09:30-11:00 ET 下的单会被判成「昨天」而
+      过滤掉——2026-11-06 实测因此误报「无活动止损单」，直接导致误动活着的止损腿（T182）。
     无 order_time 的订单（罕见）按保守原则保留（宁多不漏——多出的旧单最多让闸门
     保守拒开，漏单会让敞口检测漏报）。
     """
@@ -1563,7 +1627,6 @@ def get_today_orders_tiger(config):
     except Exception as e:
         print(f"⚠️ 老虎当日订单查询失败: {e}", file=sys.stderr)
         return []
-    today = time.strftime("%Y-%m-%d")
     out = []
     for o in orders:
         tm = getattr(o, "order_time", None)
@@ -1571,7 +1634,9 @@ def get_today_orders_tiger(config):
             out.append(o)   # 无时间戳保守保留（宁多不漏）
             continue
         try:
-            if time.strftime("%Y-%m-%d", time.localtime(int(tm) / 1000)) == today:
+            # 按订单自身市场切「今日」（美股 ET / 港股北京）——T181
+            mkt = order_market(o)
+            if market_today(mkt, tm) == market_today(mkt):
                 out.append(o)
         except (TypeError, ValueError, OSError):
             out.append(o)   # 时间戳解析失败保守保留
