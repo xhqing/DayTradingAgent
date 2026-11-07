@@ -1433,6 +1433,106 @@ def cancel_all_stop_orders_tiger(config, symbol, exclude_order_id=None):
         pass
 
 
+def cancel_profit_legs_tiger(config, symbol, side, _us=False):
+    """撤销该标的**未成交的止盈腿 / 反向非止损挂单**（T182 配套，2026-11-06 立）。
+
+    为什么要它：模拟账户的 BRACKETS 双腿（LOSS + PROFIT）争抢**同一笔可卖量**，实测
+    出现竞态——2026-11-06 美股 TQQQ 一笔 367 股多单里止盈腿活下来、止损腿被券商置
+    CANCELLED（reason 为空），持仓从此裸奔；补挂独立 STP 时券商报「N shares of your
+    position are reserved for pending orders. The maximum you can sell is 0 shares」
+    ——必须先撤掉占位的止盈腿腾出可卖量，STP 才下得出去。
+    **只在确认止损腿缺失时才调用**（正常状态不能盲目撤止盈腿，那是策略层的止盈保护）。
+
+    side：开仓方向（'Buy' 开多 / 'Sell' 开空）；平仓腿方向相反——开多要撤 SELL 挂单、
+    开空要撤 BUY 挂单（止盈腿与普通反向减仓单）。判据：方向匹配、非止损类型
+    （STP / STOP / TRAIL / 带 LOSS 腿）、状态未终结。返回 (n, ids)。
+    """
+    tc = new_trade_client(config)
+    if _us:
+        from trade_utils_tiger_us import to_tiger_symbol_us as _to_us
+        target = _to_us(symbol)
+    else:
+        target = to_tiger_symbol(symbol)
+    close_action = "SELL" if str(side).lower().startswith("b") else "BUY"
+    cancelled = []
+    for order in (tc.get_orders() or []):
+        contract = getattr(order, "contract", None)
+        order_sym = str(getattr(contract, "symbol", "") if contract else "")
+        if order_sym != target:
+            continue
+        oid = getattr(order, "id", None) or getattr(order, "order_id", None)
+        if oid is None:
+            continue
+        raw_status = getattr(order, "status", "")
+        status = raw_status.value if hasattr(raw_status, "value") else str(raw_status)
+        # 大小写不敏感（2026-11-06 T182 单测发现）：SDK 枚举 .value 是 'Filled' 首字母大写，
+        # 而 str(枚举) 形如 'OrderStatus.FILLED'——只按首字母大写子串匹配会漏过滤、误撤已成交单。
+        status_u = str(status).upper()
+        if any(s.upper() in status_u for s in ("Filled", "Cancelled", "Inactive", "Invalid",
+                                               "Expired", "PendingCancel")):
+            continue
+        raw_otype = getattr(order, "order_type", "")
+        otype = (raw_otype.value if hasattr(raw_otype, "value") else str(raw_otype) or "")
+        legs = getattr(order, "order_legs", None) or []
+        is_stop = (str(otype).upper() in ("STP", "STOP", "TRAIL")
+                   or any(str(getattr(leg, "leg_type", "")).upper() == "LOSS" for leg in legs))
+        if is_stop:
+            continue  # 止损单不撤（那是保命单）
+        action = str(getattr(order, "action", "")).upper()
+        if action != close_action:
+            continue  # 只撤与本仓位平仓方向一致的挂单（止盈腿 / 反向减仓单）
+        try:
+            tc.cancel_order(id=oid)
+            cancelled.append(oid)
+        except Exception:
+            pass
+    return len(cancelled), cancelled
+
+
+def ensure_stop_protection_tiger(config, symbol, side, quantity, stop_price, _us=False):
+    """开仓成交后**强制校验止损保护腿存活**，缺失则撤止盈腿 + 补独立 STP（T182，2026-11-06 立）。
+
+    背景（T182）：模拟账户 BRACKETS 双腿争抢同一笔可卖量，实测两笔开仓里有一笔是
+    「止盈腿活、止损腿 CANCELLED」——持仓裸奔，而 AI 以为 `attached LOSS @ x` 已生效
+    （旧版脚本只打印提交意图、不校验真实状态）。竞态在券商侧、我们改不了，只能在
+    **成交后主动校验并按需修复**：保命（止损）优先于止盈。
+
+    返回 dict：{checked, ok, repaired, stop_order_ids, steps, warning?}——开仓脚本把它
+    原样塞进 JSON 输出，AI 转录动作记录时照抄（ok=False 时须立即人工处置）。
+
+    _us：符号归一化与补挂走美股口径（延迟导入避免循环依赖）。
+    """
+    import time as _time
+    steps = []
+    has, ids = has_active_stop_order_tiger(config, symbol, _us=_us)
+    if has:
+        return {"checked": True, "ok": True, "repaired": False,
+                "stop_order_ids": ids, "steps": ["止损腿存活，无需处理"]}
+    steps.append("⚠️ 未检测到活动止损单（活动止损单表为空）→ 开始修复")
+    n, cids = cancel_profit_legs_tiger(config, symbol, side, _us=_us)
+    steps.append(f"撤除反向非止损挂单 {n} 张（腾出可卖量）：{cids}")
+    try:
+        if _us:
+            from trade_utils_tiger_us import submit_stop_order_us as _submit
+        else:
+            _submit = submit_stop_order_tiger
+        oid = _submit(config, symbol, side, quantity, stop_price)
+        steps.append(f"补挂独立止损 STP order={oid} trigger={stop_price} qty={quantity}")
+    except Exception as e:
+        steps.append(f"补挂止损失败：{e}")
+        return {"checked": True, "ok": False, "repaired": False, "stop_order_ids": [],
+                "steps": steps,
+                "warning": "止损保护修复失败——持仓可能裸奔，须立即人工核实并手工补挂"}
+    _time.sleep(0.8)
+    has2, ids2 = has_active_stop_order_tiger(config, symbol, _us=_us)
+    if has2:
+        return {"checked": True, "ok": True, "repaired": True,
+                "stop_order_ids": ids2, "steps": steps}
+    return {"checked": True, "ok": False, "repaired": False, "stop_order_ids": [],
+            "steps": steps,
+            "warning": "止损保护修复后仍未查到活动止损单——持仓可能裸奔，须立即人工核实"}
+
+
 def get_today_orders_tiger(config):
     """查老虎当日订单列表（get_orders + 当日过滤），供 monitor_segment 每轮采样提取
     最新止损价、开仓互斥闸门算当日敞口。
