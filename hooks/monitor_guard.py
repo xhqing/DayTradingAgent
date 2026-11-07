@@ -62,8 +62,29 @@ STATE_DIR = os.path.join(_PROJECT_ROOT, "state")
 #   进程在跑（pgrep）或 log <120 秒有更新 → 在跑（确定信号）；
 #   log 120-300 秒有更新 → 疑似断了（提示重启但不阻断）；
 #   log >300 秒无更新 → 断了（原口径，阻断/提醒照旧）。
-RUNNING_SECONDS = 120   # log 近 2 分钟有更新 = 视为在跑
+RUNNING_SECONDS = 120   # log 近 2 分钟有更新 = 视为在跑（⚠️ 不能用来判「段有没有断链」，
+                        # 见 sampling_process_alive：刚结束的段会被误判成「在跑」）
 STALE_SECONDS = 300     # 超过 5 分钟无更新 = 确定断
+
+# 采样链断链判定（2026-11-07 立，工具强制防「提前停止盯盘」）：
+#   SEGMENT_RESTART_GRACE —— 回合静止时给「段结束→重启下一段」留的正常窗口（秒）。
+#     段进程不在 + 最后一次采样超过这个秒数 → stop 分支注入提醒唤醒（防止回合结束后
+#     采样链静默断掉、再没人唤醒）。
+#   SAMPLING_GAP_BLOCK_SECONDS —— pretool 硬拦阈值（秒）。断链超过它时，除启动采样段 /
+#     停盯收尾 / 平仓以外的任何命令一律阻断（逼 AI 先起下一段再做别的事）。
+SEGMENT_RESTART_GRACE = 20
+SAMPLING_GAP_BLOCK_SECONDS = 60
+
+# 白名单：采样链断链时仍允许执行的操作。三类——
+#   ① 启动采样段（monitor_segment / ws_segment / futu_ws_segment）
+#   ② 停盯收尾（stop_summary / keepawake_off / monitor_unregister / notify_feishu / mark_stop_done）
+#   ③ 风控平仓（close_position_*，任何时候都要能用，不能被采样链挡住）
+SAMPLING_OR_WRAPUP_PAT = (
+    r"monitor_segment\.py|ws_segment\.py|futu_ws_segment\.py"
+    r"|stop_summary\.py|keepawake_off\.sh|monitor_unregister\.sh"
+    r"|notify_feishu\.py|mark_stop_done\.py"
+    r"|close_position_tiger\.py|close_position_tiger_us\.py"
+)
 
 # 空转防护（2026-08-17 立红灯「盯盘空转」修法④）：AI 要重启密采样段时，若分析心跳
 # （tmp/analysis_beat_{date}_{mode}[_{sid8}].csv，AI 每段分析时追加）停更超过此阈值 → PreToolUse
@@ -301,9 +322,60 @@ def _stop_done_reminder(payload=None):
         return
 
 
+def sampling_process_alive():
+    """密采样段进程是否真的在跑（2026-11-07 立，只认进程、不看 log 新鲜度）。
+
+    为什么需要它（2026-11-06 事故根因）：`monitor_segment_running` 把「log 近 120 秒
+    有更新」也算「在跑」——段结束时进程已退出、log 刚更新（<120s）→ 判「在跑」→
+    stop 提醒不发、pretool 不拦；等 120 秒过去已无任何触发点，采样链就这么永久断掉。
+    当日实录：段 53 结束后去查订单、写记录（4 个工具调用）没重启段 54，采样断在
+    ET 10:21，直到收盘后 11 小时用户发问才被发现——整场后半段无人盯盘。
+
+    「段结束 ≠ 在跑」：段是 40 秒的短进程，正常循环下两次段之间的空窗只有几秒，
+    所以「进程不在」就是「段跑完了还没起下一段」的准确信号。
+
+    返回 (alive: bool, script: str|None)。
+    """
+    for script in ("monitor_segment.py", "ws_segment.py", "futu_ws_segment.py"):
+        try:
+            out = subprocess.run(
+                ["pgrep", "-f", script],
+                capture_output=True, text=True, timeout=3,
+            )
+            if out.stdout.strip():
+                return True, script
+        except Exception:
+            pass
+    return False, None
+
+
+def sampling_log_age(now=None):
+    """最新 monitor_log 距今秒数；无 log 返回 None。供断链判定（不参与「在跑」判断）。"""
+    now = now or datetime.now()
+    try:
+        if not os.path.isdir(TMP_DIR):
+            return None
+        newest = 0.0
+        for f in os.listdir(TMP_DIR):
+            if f.startswith("monitor_log_") and f.endswith(".csv"):
+                mtime = os.path.getmtime(os.path.join(TMP_DIR, f))
+                if mtime > newest:
+                    newest = mtime
+        if newest <= 0:
+            return None
+        return now.timestamp() - newest
+    except Exception:
+        return None
+
+
 def monitor_segment_running(now=None):
     """monitor_segment（或 ws_segment / futu_ws_segment，2026-08-16 扩检测面）是否在跑：
     进程在 OR monitor_log 近 RUNNING_SECONDS 有更新。
+
+    ⚠️ 2026-11-07 起本函数**不再用于「段有没有断链」的判断**（它会把「刚结束的段」
+    误判成「在跑」，见 sampling_process_alive 的 docstring）——断链判定一律用
+    sampling_process_alive()（只认进程）。本函数保留给「snapshot/hot_list 是否可调」
+    这类容忍 log 新鲜度的场景。
 
     分层（2026-08-16 立，原单层 300 秒与自述「段间循环 <90 秒」不匹配）：
     进程在 / log <120s → (True, ...)；log 120-300s → (False, "疑似断了…")——
@@ -771,6 +843,26 @@ def main():
             )
             print(msg, file=sys.stderr)
             sys.exit(2)  # PreToolUse exit 2 = 阻断 + stderr 反馈给 AI
+        # 采样链断链硬拦（2026-11-07 立，用户要求「必须工具强制、防止下次再提前停止盯盘」）：
+        # 盘中 + 段进程不在（= 上一段跑完没起下一段）+ 最后一次采样已过 SAMPLING_GAP_BLOCK_SECONDS，
+        # 此时**除启动采样段 / 停盯收尾 / 平仓**外的一切命令一律阻断，逼 AI 先把采样接上再干别的。
+        # 为什么必须有这一层：2026-11-06 段 53 结束后 AI 连着查订单、写记录、下单建议（4 个工具调用）
+        # 却没重启段 54，采样断在 ET 10:21，11 小时无人察觉。段间循环本该 5-15 秒，任何超时操作
+        # 都必须排在「下一段已经跑起来」之后——光靠提醒（stop 分支）挡不住，必须硬拦。
+        if not sampling_process_alive()[0]:
+            _gap_age = sampling_log_age()
+            if _gap_age is not None and _gap_age >= SAMPLING_GAP_BLOCK_SECONDS:
+                if not _re.search(SAMPLING_OR_WRAPUP_PAT, command):
+                    print(
+                        f"⚠️ 密采样守卫阻断（断链硬拦，2026-11-07 立）：密采样段已停 "
+                        f"{int(_gap_age)} 秒（进程不在 = 上一段跑完没起下一段）。\n"
+                        f"盯盘期间除「启动采样段 / 停盯收尾 / 平仓」外的一切操作都要让路——"
+                        f"先 background_run 起下一段（monitor_segment.py / futu_ws_segment.py），"
+                        f"再去做查订单、写记录、下单这些动作。\n"
+                        f"（2026-11-06 教训：段 53 结束后去查订单没重启段 54，采样断 11 小时无人察觉。）",
+                        file=sys.stderr,
+                    )
+                    sys.exit(2)
         # 标的池互斥拦截（2026-08-19 立；2026-08-20 扩三层）：启动密采样段时查
         # 跨池冲突 / 本会话未认领 / 未认领标的（三层语义见 _pool_conflict docstring）。
         # 认领表见 scripts/pool_claim.py（tmp/pool_claims.json）。多会话并行盯盘互斥划分的
@@ -804,13 +896,31 @@ def main():
         # 就注入提醒。事故经过：美股 10-19 交易日 6 笔，AI 停止盯盘时只停采样、
         # 没做收尾，用户次日发现「Linda 没发通知」，且 App 只看到 1 笔（跨北京午夜）
         # 一度怀疑账目不对。强制点选在「回合静止」= 最接近停盯时刻的可检测信号。
-        if not running and _is_monitoring_session(sid):
-            msg = (
-                f"⚠️ 密采样守卫提醒：回合结束，盘中但密采样未在跑（{why}）。"
-                f"盯盘期间必须保持 monitor_segment / ws_segment 40 秒密采样循环（不得擅自停/降频，2026-08-04 教训）。"
-                f"请立即重启密采样恢复密盯，或确认已到停盯边界（港股 12:00/16:00、用户喊停）。"
-            )
-            _emit_reminder(msg, "Stop")  # Stop 提醒（stderr + hookSpecificOutput 双通道输出，pi 桥接取后者注入）
+        if _is_monitoring_session(sid):
+            # 断链强提醒（2026-11-07 立）：以「进程在不在」为准判段是否在跑——段结束后
+            # 进程退出、log 刚更新，旧口径（running=True）会当成正常而静默，等 log 变旧
+            # 后再无触发点（2026-11-06 实录：采样断 11 小时没人发现）。现在只要回合静止时
+            # 段进程不在、且最后一次采样已过 SEGMENT_RESTART_GRACE 秒，就注入提醒唤醒一轮。
+            _alive, _script = sampling_process_alive()
+            _log_age = sampling_log_age()
+            if not _alive and (_log_age is None or _log_age >= SEGMENT_RESTART_GRACE):
+                _gap_txt = "无采样记录" if _log_age is None else f"{int(_log_age)} 秒无新采样"
+                msg = (
+                    f"⚠️ 密采样守卫提醒（断链强提醒，2026-11-07 立）：回合结束，盘中但密采样段已停"
+                    f"（{_gap_txt}、段进程不在）——这是「上一段跑完没起下一段」的形态。\n"
+                    f"必须立刻 background_run 起下一段密采样，再继续其它动作；"
+                    f"若确已到停盯边界（用户喊停 / 港股 12:00·16:00 / 美股 16:00 收盘），"
+                    f"走停盯收尾（stop_summary → keepawake_off → monitor_unregister）。\n"
+                    f"（2026-11-06 教训：段结束后去查订单没重启下一段，采样断 11 小时无人察觉。）"
+                )
+                _emit_reminder(msg, "Stop")
+            elif not running:
+                msg = (
+                    f"⚠️ 密采样守卫提醒：回合结束，盘中但密采样未在跑（{why}）。"
+                    f"盯盘期间必须保持 monitor_segment / ws_segment 40 秒密采样循环（不得擅自停/降频，2026-08-04 教训）。"
+                    f"请立即重启密采样恢复密盯，或确认已到停盯边界（港股 12:00/16:00、用户喊停）。"
+                )
+                _emit_reminder(msg, "Stop")  # Stop 提醒（stderr + hookSpecificOutput 双通道输出，pi 桥接取后者注入）
         sys.exit(0)
 
     if hook_type == "taskstop":
