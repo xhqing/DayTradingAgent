@@ -635,6 +635,34 @@ def main():
     L.append(f"| **切换 IP 次数（本会话）** | **{_sw['session']} 次**（{_src}）"
              f"｜当日全会话 {_sw['total']} 次｜近 7 日 {_sw['d7_total']} 次 / "
              f"{_sw['d7_days']} 天（日均 {_sw['d7_avg']}） |")
+    # 本场 IP 池整体失能（T184，2026-11-07 立）：池内单 IP 失败有请求级自动换端口兜底、
+    # 不记；这里只报「整池不可用」（连池起不来 / 候选端口全废）——持仓期间发生等于下单 /
+    # 平仓 / 查持仓全部失能，是评估代理服务稳定性的关键证据。数据源 state/ip_pool_watch.json。
+    try:
+        import ip_pool as _IPP
+        _w = _IPP.watch_summary(a.market, date)
+    except Exception as _e:
+        _w = {'error': str(_e)}
+    if _w.get('error'):
+        L.append(f"| **本场 IP 池状态** | 读取失败（{_w['error']}）"
+                 f"——明细看本机 `state/ip_pool_watch.json` |")
+    elif _w.get('count'):
+        def _hm(ts):
+            try:
+                return datetime.fromtimestamp(float(ts)).strftime('%H:%M')
+            except Exception:
+                return '—'
+        _parts = []
+        for _ev in _w['events']:
+            _tail = '（收工时仍未恢复）' if _ev['open'] else f'→{_hm(_ev["end"])}'
+            _parts.append(f"{_hm(_ev['start'])}{_tail} {max(1, int(round(_ev['dur'] / 60)))} 分钟"
+                          f"/{_ev['source'] or '?'}")
+        L.append(f"| **本场 IP 池状态** | **⚠️ 中途整池失能 {_w['count']} 次"
+                 f"（累计 {_w['minutes']:g} 分钟）**：{'；'.join(_parts)}"
+                 f"｜探针 {_w['probe_total']} 次 / 失败 {_w['probe_fail']} 次 |")
+    else:
+        L.append(f"| **本场 IP 池状态** | 正常（整池未失能；探针 {_w.get('probe_total', 0)} 次"
+                 f" / 失败 {_w.get('probe_fail', 0)} 次，末次 {_w.get('last_state') or '—'}） |")
     L.append("")
     L.append("## 三、北京日期对照（App 对账用）")
     L.append("")

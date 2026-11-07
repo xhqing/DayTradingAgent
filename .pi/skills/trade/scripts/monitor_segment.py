@@ -681,6 +681,21 @@ def main():
     except Exception as e:
         print(f"[完整统计 err:{e}]", flush=True)
 
+    # 🌐 IP 池健康探针（T184，2026-11-07 立）：整池不可用时原来只能等下一个刷新窗口
+    # （盯盘启动 / 停盯总结），持仓期间发生等于下单 / 平仓 / 查持仓全部失能、却无人知晓
+    # （2026-11-07 盘后实测到池内 0 个可用端口）。这里按 10 分钟节流探一次老虎网关
+    # （只探、不动池、不换端口；失败只提醒，盘中不得反复重拉订阅）；连败 3 次 → 段输出
+    # 醒目行 + 弹窗（**不响铃**，2026-11-07 用户立：响铃专属于发信号，不能被网络故障占用）。
+    # 节流期内只读一次状态文件、不打印，不影响每段输出的可读性。
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import ip_pool as _IPP
+        _hp = _IPP.watch_probe(market=('us' if syms[0].startswith('US.') else 'hk'))
+        if _hp.get('line'):
+            print(_hp['line'], flush=True)
+    except Exception as _e:
+        print(f"[IP 池探针 err:{_e}]", flush=True)
+
     print(
         f"=== 分段结束 {datetime.now():%H:%M:%S}"
         f"（AI 读各标的 log 最近 N 行分析：{' / '.join(state[s]['log_file'] for s in syms)}）===",

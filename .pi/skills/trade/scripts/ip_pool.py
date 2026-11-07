@@ -37,9 +37,19 @@
         保证老虎链路可用。正常情况约 0.3~0.5s（一次网关探针 + 一次出口实测）；
         切换在本项目自己的端口池内换端口，毫秒级、不重启进程。
 
-    CLI: python3 ip_pool.py [--quiet] [--json] [--no-switch] [--account paper|live]
+    CLI: python3 ip_pool.py [--quiet] [--json] [--no-switch] [--no-alert] [--account paper|live]
 
 退出码：0 = 可用；2 = 池内没有可用端口（归因 JMS 稳定性）；3 = 节点清单取不到。
+
+## 整池失能告警（T184，2026-11-07 立）
+
+池内**单个 IP** 失败有请求级自动换端口兜底（无感）；但**整池不可用**（xray 起不来 / 订阅
+拿不到节点 / 全部节点同时不通）时，原来只能等下一个刷新窗口，持仓期间发生等于下单 / 平仓 /
+查持仓全部失能而无人知晓。现在三处提醒（**均不响铃**——响铃专属于发信号）：
+
+  ① `ensure()` 判失败 → 弹窗（`popup_alert`，冷却 15 分钟）；
+  ② 采样段每 10 分钟一次轻量网关探针（`watch_probe`，连败 3 次 → 段输出醒目行 + 弹窗）；
+  ③ 停盯总结报「本场是否中途整体失能过」（`watch_summary`，数据源 `state/ip_pool_watch.json`）。
 """
 import json
 import os
@@ -252,6 +262,294 @@ def _log(line):
         pass
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# 池子整体失能告警 + 采样段健康探针（T184，2026-11-07 立）
+#
+# 要解决的问题：池内**单个 IP** 失败有 `_IPRetryClient` 自动换端口兜底（8ms 级、无感），
+# 但**整池不可用**（xray 没起来 / JMS 订阅拿不到节点 / 全部节点同时不通）时，原来只能等
+# 下一个刷新窗口（盯盘启动 preflight、停盯 stop_summary）——若发生在持仓期间，下单 /
+# 平仓 / 查持仓全部失能，**却没有任何人知道**（2026-11-07 盘后实测到池内 0 个可用端口）。
+#
+# 用户口径（2026-11-07）：「除了响铃以外的提醒都可以」。所以这里只用**弹窗 + 采样段醒目行
+# + 停盯总结记录**三种提醒，**不响铃**——响铃在本项目专属于发信号（用户听到铃 = AI 已拍板、
+# 可以下单），给网络故障响铃会制造「该下单了」的误判，比不提醒更危险。
+#
+# 三个入口：
+#   ① `ensure()` 判定失败（连池都起不来 / 候选端口全废）→ `alert_outage()` 弹窗（冷却 15 分钟）
+#   ② 采样段每 10 分钟一次轻量网关探针 `watch_probe()`，连败 3 次 → 段输出醒目行 + 弹窗
+#   ③ 停盯总结读 `state/ip_pool_watch.json` 报「本场是否中途整体失能过」（`watch_summary()`）
+#
+# 状态文件放 `state/`（不放 `tmp/`）：它是「本场事实记录」——跨采样段累计、跨中断保留、
+# 停盯总结要读它出结论；放 tmp/ 被清掉会让总结漏报。
+# ──────────────────────────────────────────────────────────────────────────────
+WATCH_STATE = os.path.join(STATE_DIR, 'ip_pool_watch.json')
+ALERT_LOG = os.path.join(TMP_DIR, 'ip_pool_alert.log')
+PROBE_INTERVAL = 600          # 采样段探针节流（秒）：10 分钟一次（40 秒一段 ≈ 15 段一次）
+PROBE_FAIL_THRESHOLD = 3      # 连续多少次探针失败判定「整池失能」
+ALERT_COOLDOWN = 900          # 同类弹窗冷却（秒）：防采样段每 10 分钟弹一次刷屏
+
+
+def _watch_blank():
+    """健康记录的空结构。"""
+    return {'outages': [], 'probe_total': 0, 'probe_fail': 0,
+            'streak': 0, 'last_probe_ts': 0, 'last_state': None}
+
+
+def _watch_date(market):
+    """本场交易日（港股 = 香港日期 / 美股 = 美东日期，与停盯总结 trade_date 同口径）。"""
+    from datetime import datetime
+    try:
+        from zoneinfo import ZoneInfo
+        tz = 'America/New_York' if str(market or '').lower() == 'us' else 'Asia/Hong_Kong'
+        return datetime.now(ZoneInfo(tz)).strftime('%Y-%m-%d')
+    except Exception:
+        return time.strftime('%Y-%m-%d')
+
+
+def watch_load():
+    """读本场池子健康记录。文件缺失 / 损坏 → 空结构（绝不抛异常）。"""
+    try:
+        with open(WATCH_STATE) as f:
+            st = json.load(f)
+        if not isinstance(st, dict):
+            return _watch_blank()
+    except Exception:
+        return _watch_blank()
+    out = _watch_blank()
+    for k, v in st.items():
+        out[k] = v
+    if not isinstance(out.get('outages'), list):
+        out['outages'] = []
+    return out
+
+
+def _watch_save(st):
+    """写记录（失败静默——观察数据绝不影响交易链路）：只留最近 48 小时、最多 40 条失能事件。"""
+    try:
+        cutoff = time.time() - 48 * 3600
+        keep = [o for o in (st.get('outages') or [])
+                if isinstance(o, dict) and float(o.get('start_ts') or 0) >= cutoff]
+        st['outages'] = keep[-40:]
+        os.makedirs(STATE_DIR, exist_ok=True)
+        with open(WATCH_STATE, 'w') as f:
+            json.dump(st, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def _alert_log(line):
+    """追加写 tmp/ip_pool_alert.log（时间戳 + 事件行）。写失败静默。"""
+    try:
+        os.makedirs(TMP_DIR, exist_ok=True)
+        with open(ALERT_LOG, 'a') as f:
+            f.write(f'{time.strftime("%Y-%m-%d %H:%M:%S")}\t{line}\n')
+    except Exception:
+        pass
+
+
+def popup_alert(title, message, timeout_secs=180, dry_run=False):
+    """弹一个**不响铃**的提醒窗（T184，2026-11-07 用户立「除响铃外的提醒都可以」）。
+
+    载体与 position_watchdog / proxy_guard 一致：优先 alert_panel（可最小化、常驻到点击或
+    超时），面板不可用时回退 osascript display dialog（回退也不带 sound name = 不响铃）。
+
+    返回 True = 已发出（或 dry-run）；False = 已有提醒窗在屏（防叠加跳过）。
+    """
+    if dry_run:
+        print(f'  [dry-run] 将弹窗（不响铃）：{title}｜{message}', flush=True)
+        return True
+    try:
+        if G.dialog_pending():
+            _alert_log(f'弹窗跳过（已有提醒窗在屏）：{title}')
+            return False
+    except Exception:
+        pass
+    try:
+        if G.ensure_panel():
+            pending = os.path.join(TMP_DIR, 'ip_pool_alert_pending.json')
+            result = os.path.join(TMP_DIR, 'ip_pool_alert_result.json')
+            os.makedirs(TMP_DIR, exist_ok=True)
+            with open(pending, 'w') as f:
+                json.dump({'title': title, 'message': message,
+                           'button_ok': '知道了', 'button_cancel': 'none',
+                           'single': True, 'timeout_secs': int(timeout_secs)},
+                          f, ensure_ascii=False)
+            G.subprocess.Popen([G.PANEL_BIN, pending, result],
+                               stdout=G.subprocess.DEVNULL,
+                               stderr=G.subprocess.DEVNULL,
+                               start_new_session=True)
+            _alert_log(f'已弹窗（不响铃）：{title}')
+            return True
+    except Exception as e:
+        _alert_log(f'面板弹窗失败，回退 osascript：{e}')
+    try:
+        esc = str(message).replace('\\', '\\\\').replace('"', '\\"')
+        esc_t = str(title).replace('"', '\\"')
+        G.subprocess.Popen(
+            ['osascript', '-e',
+             f'display dialog "{esc}" with title "{esc_t}" '
+             f'buttons {{"知道了"}} default button "知道了" '
+             f'giving up after {int(timeout_secs)} with icon caution'],
+            stdout=G.subprocess.DEVNULL, stderr=G.subprocess.DEVNULL,
+            start_new_session=True)
+        _alert_log(f'已弹窗（osascript，不响铃）：{title}')
+        return True
+    except Exception as e:
+        _alert_log(f'弹窗失败：{e}')
+        return False
+
+
+def _watch_close(st, mkt, now=None):
+    """闭合该市场最近一条未恢复的失能事件，返回持续秒数；无未闭合事件返回 None。
+
+    注意返回 0 也是合法值（同一秒内恢复）——调用方必须用 `is not None` 判断，
+    写成 `if dur:` 会把「瞬间恢复」当成「没有事件」。
+    """
+    now = now or time.time()
+    ev = next((o for o in reversed(st.get('outages') or [])
+               if not o.get('end_ts') and o.get('market') == mkt), None)
+    if not ev:
+        return None
+    ev['end_ts'] = now
+    return max(0, int(now - float(ev.get('start_ts') or now)))
+
+
+def alert_outage(reason, source='ensure', market=None, dry_run=False, force=False):
+    """池子整体不可用时：记一次失能事件 + 弹窗（不响铃、同类 15 分钟冷却）。
+
+    什么叫「整体不可用」：`ensure()` 连池都起不来（xray / 订阅拿不到节点），或在池内换遍
+    所有候选端口仍全部失败。**单个 IP 失败不算**——那由请求级 `_IPRetryClient` 自动换端口
+    兜底，属正常噪声，不该弹窗。
+
+    返回本次的失能事件 dict（已写盘）。
+    """
+    st = watch_load()
+    mkt = str(market or _market_now() or '').lower()
+    now = time.time()
+    ev = next((o for o in reversed(st['outages'])
+               if not o.get('end_ts') and o.get('market') == mkt), None)
+    if ev is None:
+        ev = {'start_ts': now, 'end_ts': None, 'market': mkt,
+              'date': _watch_date(mkt),
+              'hkt_date': time.strftime('%Y-%m-%d'),
+              'session_id': _session_id_short(), 'source': source,
+              'reason': str(reason or '')[:300],
+              'alerts': 0, 'last_alert_ts': 0}
+        st['outages'].append(ev)
+    last_alert = float(ev.get('last_alert_ts') or 0)
+    # 冷却按「该市场最近一次确实弹过的时间」算（跳事件算，不只看本事件）——
+    # 采样段每 10 分钟探一次、每次都可能开新事件；若按单事件算，连续失能就变成
+    # 每 10 分钟弹一次。
+    try:
+        recent = max([float(o.get('last_alert_ts') or 0) for o in st['outages']
+                      if o.get('market') == mkt] or [0])
+    except Exception:
+        recent = last_alert
+    sent = False
+    if force or (now - recent >= ALERT_COOLDOWN):
+        sent = popup_alert(
+            'DayTradingAgent · IP 池不可用（不响铃提醒）',
+            f'整池不可用（来源 {source}）：{reason}\n\n'
+            f'影响：下单 / 平仓 / 查持仓都无法建立境外出口（池内换端口已无效）。\n'
+            f'归因：JMS 代理服务稳定性问题（不是老虎侧、也不需要加白）。\n'
+            f'处置：等下一个刷新窗口（停盯总结 / 下次盯盘启动）重建池；持仓期间优先确认\n'
+            f'券商侧止损单已挂好。盘中不要反复重拉订阅（会变更糟）。\n\n'
+            f'市场 {mkt.upper() or "?"}｜时间 {time.strftime("%H:%M:%S")}',
+            timeout_secs=180, dry_run=dry_run)
+        if sent:
+            ev['last_alert_ts'] = now
+            ev['alerts'] = int(ev.get('alerts') or 0) + 1
+    _watch_save(st)
+    _alert_log(f'整池失能 [{mkt}] {source}: {reason}'
+               + ('（已弹窗）' if sent else '（冷却期内，不重复弹窗）'))
+    return ev
+
+
+def watch_probe(account='paper', market=None, interval=PROBE_INTERVAL,
+                dry_run=False, force=False):
+    """采样段用的轻量健康探针（T184 ②）——只探老虎网关，不动池、不换端口。
+
+    节流：距上次探针 < interval 秒直接返回上次结果（不发请求、不打印），所以每段调用
+    的开销只有读一次状态文件。
+    连败：连续 `PROBE_FAIL_THRESHOLD` 次失败 → 记一次失能事件 + 弹窗（不响铃）；
+    恢复：探针成功且存在未闭合事件 → 闭合它，并在段输出打印恢复行。
+
+    返回 dict：{'probed': 本次是否真的探了, 'state': 'ok'/'unknown'/'forbidden',
+                'streak': 连续失败次数, 'line': 要打印的行（无需打印时为 None）}
+    """
+    st = watch_load()
+    now = time.time()
+    mkt = str(market or _market_now() or '').lower()
+    if not force and (now - float(st.get('last_probe_ts') or 0) < interval):
+        return {'probed': False, 'state': st.get('last_state'),
+                'streak': int(st.get('streak') or 0), 'line': None}
+    if dry_run:
+        return {'probed': False, 'state': 'dry-run', 'streak': 0,
+                'line': None}
+    state, detail = probe_tiger(account)
+    st['last_probe_ts'] = now
+    st['last_state'] = state
+    st['probe_total'] = int(st.get('probe_total') or 0) + 1
+    line = None
+    if state == 'ok':
+        st['streak'] = 0
+        dur = _watch_close(st, mkt, now)
+        _watch_save(st)
+        if dur is not None:
+            line = (f'✅ IP 池已恢复（失能约 {max(1, dur // 60)} 分钟，'
+                    f'探针恢复 {time.strftime("%H:%M:%S")}）')
+            _alert_log(f'整池失能恢复 [{mkt}] 持续 {dur}s')
+    else:
+        st['streak'] = int(st.get('streak') or 0) + 1
+        st['probe_fail'] = int(st.get('probe_fail') or 0) + 1
+        # 先落盘自己这份状态，再交给 alert_outage——它内部会重新读盘 + 写盘，
+        # 若本函数最后再覆盖写一次，会把它加的事件抹掉（实测踩过）。
+        _watch_save(st)
+        if st['streak'] >= PROBE_FAIL_THRESHOLD:
+            alert_outage(f'采样段探针连续 {st["streak"]} 次失败（最近 {state}｜'
+                         f'{(detail or "")[:120]}）',
+                         source='probe', market=mkt, dry_run=dry_run)
+            line = (f'🚨 IP 池整体失能：探针连续 {st["streak"]} 次失败（最近 {state}）——'
+                    f'下单 / 平仓 / 查持仓无法建立境外出口。已弹窗提醒（不响铃）；'
+                    f'盘中禁止反复重拉订阅，等刷新窗口重建池，持仓优先确认券商侧止损单。')
+        else:
+            line = (f'⚠️ IP 池探针失败 {st["streak"]}/{PROBE_FAIL_THRESHOLD} 次'
+                    f'（{state}｜{(detail or "")[:100]}）')
+    return {'probed': True, 'state': state,
+            'streak': int(st.get('streak') or 0), 'line': line}
+
+
+def watch_summary(market, date_str):
+    """停盯总结用：本场（市场 + 交易日）整池失能汇总（T184 ③）。
+
+    返回 dict：count（失能次数）/ open（是否有未恢复的）/ minutes（累计分钟数）/
+               events（明细）/ probe_total / probe_fail / last_state
+    过滤口径：事件记录的 date（该市场时区交易日）或 hkt_date（北京日期）任一等于
+    date_str 即计入——跨北京午夜的场次两边都不漏。
+    """
+    st = watch_load()
+    mkt = str(market or '').lower()
+    now = time.time()
+    evs = [o for o in (st.get('outages') or [])
+           if str(o.get('market') or '').lower() == mkt
+           and date_str in (o.get('date'), o.get('hkt_date'))]
+    total = 0.0
+    rows = []
+    for o in evs:
+        s = float(o.get('start_ts') or 0)
+        e = o.get('end_ts')
+        dur = max(0.0, (float(e) - s) if e else (now - s))
+        total += dur
+        rows.append({'start': s, 'end': e, 'dur': dur, 'open': not e,
+                     'source': o.get('source') or '',
+                     'reason': o.get('reason') or ''})
+    return {'count': len(evs), 'open': any(r['open'] for r in rows),
+            'minutes': round(total / 60, 1), 'events': rows,
+            'probe_total': int(st.get('probe_total') or 0),
+            'probe_fail': int(st.get('probe_fail') or 0),
+            'last_state': st.get('last_state')}
+
+
 def proxy_url():
     """读 config.json 的 proxy.http_proxy（本项目自己代理池的首个端口，默认 10871）。"""
     try:
@@ -351,7 +649,7 @@ def _save_state(res):
 
 
 def ensure(account='paper', quiet=False, allow_switch=True, budget=ENSURE_BUDGET,
-           quick=False, apply_port=None):
+           quick=False, apply_port=None, alert=True):
     """保证老虎链路可用：出口 IP 落在老虎白名单池内、且老虎网关放行；不可用则换端口。
 
     **2026-10-29 重构（用户定位纠正）**：与 xpilot 彻底解耦——
@@ -394,6 +692,9 @@ def ensure(account='paper', quiet=False, allow_switch=True, budget=ENSURE_BUDGET
         out['reason'] = ('no_proxy_pool（xray 不可用或 JMS 订阅取不到节点）——'
                          '交易链路无法建立境外出口')
         _log('ensure 失败：' + out['reason'])
+        # T184（2026-11-07）：整池起不来 → 弹窗（不响铃、15 分钟冷却）+ 记本场失能
+        if alert:
+            alert_outage(out['reason'], source='ensure', dry_run=False)
         out['elapsed'] = round(time.time() - t0, 2)
         return out
 
@@ -424,6 +725,13 @@ def ensure(account='paper', quiet=False, allow_switch=True, budget=ENSURE_BUDGET
         # 2026-10-31 用户立：交易过程中实际使用了哪个 JMS 节点要留一条记录
         # （正常场次没有切换，旧「只记切换」的口径下一行都没有；这里保证每场至少一条）
         log_node(cur_port, out.get('node'), reason='ensure_ok')
+        # T184：链路通了 → 若有未恢复的整池失能事件，在这里闭合（探针之外的另一个恢复入口）
+        try:
+            _ws = watch_load()
+            if _watch_close(_ws, str(_market_now() or '').lower()) is not None:
+                _watch_save(_ws)
+        except Exception:
+            pass
         out['elapsed'] = round(time.time() - t0, 2)
         _save_state(out)
         return out
@@ -518,6 +826,10 @@ def ensure(account='paper', quiet=False, allow_switch=True, budget=ENSURE_BUDGET
         + (f' ({d["detail"]})' if d.get('detail') else '')
         for d in out['tried_details']) or '无候选端口可试'
     _log(f'ensure 失败：{out["reason"]}；最后出口 {out["egress"]}；候选明细：{_detail_lines}')
+    # T184（2026-11-07）：候选端口全废 = 整池失能 → 弹窗（不响铃、15 分钟冷却）+ 记本场失能
+    if alert:
+        alert_outage(f'{out["reason"]}；候选明细：{_detail_lines}',
+                     source='ensure', dry_run=False)
     out['elapsed'] = round(time.time() - t0, 2)
     return out
 
@@ -556,8 +868,9 @@ def main(argv=None):
             account = argv[i + 1]
 
     quick = '--quick' in argv
+    # --no-alert（T184）：排查 / 盘外自检时用——失败只打印、不弹窗（弹窗会打断用户）
     res = ensure(account=account, quiet=(quiet or as_json), allow_switch=not no_switch,
-                 quick=quick)
+                 quick=quick, alert=('--no-alert' not in argv))
 
     if as_json:
         print(json.dumps(res, ensure_ascii=False))
