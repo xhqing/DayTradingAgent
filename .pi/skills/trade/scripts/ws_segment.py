@@ -54,6 +54,7 @@ from tigeropen.push.push_client import PushClient
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from trade_utils_tiger import parse_mode  # --mode / 环境变量统一解析（2026-08-16）
+from trade_utils_tiger import mark_session_market  # 会话→市场映射（T179，2026-11-07）
 from trade_utils_tiger import apply_socket_proxy  # WS 链路 socks 化（IP 白名单下 WS 直连被拒，2026-08-17）
 
 _PROPS = os.path.expanduser('~/.tigeropen/')
@@ -132,6 +133,8 @@ def main():
         fname = f'monitor_log_{code}_{trading_date_str(sym)}_{MODE}.csv'
         logs[sym] = os.path.join(TMP, fname)
     os.makedirs(TMP, exist_ok=True)
+    # 本会话盯的市场（T179）：落一行映射给 hooks/monitor_guard.py 选时段窗口（写失败静默）
+    mark_session_market('US' if symbols[0].startswith('US.') else 'HK', SID8)
 
     # 写表头（对齐 monitor_segment 列名，monitor_summary / csv.DictReader 才能解析）
     for sym in symbols:

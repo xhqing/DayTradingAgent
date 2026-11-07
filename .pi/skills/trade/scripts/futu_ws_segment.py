@@ -49,6 +49,7 @@ from futu import OpenQuoteContext, SubType, TickerHandlerBase, RET_OK
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from trade_utils_tiger import parse_mode  # --mode / 环境变量统一解析（对齐 ws_segment / monitor_segment，2026-08-21）
+from trade_utils_tiger import mark_session_market  # 会话→市场映射（T179，2026-11-07）
 
 # mode 解析（2026-08-21 修）：原只读环境变量 MODE——2026-08-16 三采样脚本统一 parse_mode 时
 # 本脚本被漏掉，导致 ① 不认 --mode auto 参数（ws_segment / monitor_segment 都认）；② 两个 auto
@@ -190,6 +191,8 @@ def main():
         fname = f'monitor_log_{code}_{TODAY}_{MODE}.csv'
         logs[sym] = os.path.join(TMP, fname)
     os.makedirs(TMP, exist_ok=True)
+    # 本会话盯的市场（T179）：落一行映射给 hooks/monitor_guard.py 选时段窗口（写失败静默）
+    mark_session_market('US' if symbols[0].startswith('US.') else 'HK', SID8)
 
     # 写表头（对齐 monitor_segment 列名，monitor_summary 的 csv.DictReader 才能解析；
     # 2026-08-19 修：此前不写表头，DictReader 把首条数据行当列名，monitor_summary 报 KeyError 'last'）

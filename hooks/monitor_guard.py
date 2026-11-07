@@ -569,6 +569,111 @@ def _claim_holder_alive(sid):
         return False
 
 
+def session_market(sid):
+    """本会话盯的是哪个市场（'HK' / 'US' / None）——T179（2026-11-07 立）。
+
+    为什么需要：stop 分支原来只判「任一市场盘中」（in_trading_session），于是
+    「港股盘中 + 美股隔夜」时，美股盯盘会话回合结束仍会被判「盘中但密采样没在跑」
+    而反复误报（2026-11-05 北京 13:25 实录：美股已收盘 8.5 小时）。判定一个会话
+    「现在该不该盯盘」，必须看**本会话自己的市场**有没有开着。
+
+    数据源（按优先级，全部只读；任一命中即返回）：
+      ① `tmp/monitor_market_{sid8}.json` —— 三个采样脚本段启动时写（2026-11-07 起），
+         最准：就是「本会话最近一次跑采样盯的市场」，只采纳当日（date == 今天）的；
+      ② `state/trade_intent.log` —— 本会话当日最近一条开仓记录的 symbol 前缀（US. / HK.）；
+      ③ `state/pool_claims.json` —— 当日本会话认领的标的（港股池概念）；
+      ④ `state/monitor_sessions.txt` —— 含本 sid = 港股盯盘（preflight 注册）。
+    都取不到 → None（调用方退回「今日采样过哪些市场」的集合判断）。
+    """
+    if not sid:
+        return None
+    sid8 = sid[:8]
+    today = datetime.now().strftime("%Y-%m-%d")
+    # ① 采样脚本写的会话→市场映射（最准）
+    try:
+        p = os.path.join(TMP_DIR, f"monitor_market_{sid8}.json")
+        if os.path.isfile(p):
+            with open(p) as f:
+                d = json.load(f)
+            if d.get("date") == today and d.get("market") in ("HK", "US"):
+                return d["market"]
+    except Exception:
+        pass
+    # ② 当日开仓 intent 的标的前缀（取本会话最后一条）
+    try:
+        intent = os.path.join(STATE_DIR, "trade_intent.log")
+        if os.path.isfile(intent):
+            mk = None
+            with open(intent) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or today not in line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        continue
+                    if rec.get("session_id") == sid:
+                        sym = str(rec.get("symbol") or "")
+                        if sym.startswith("US."):
+                            mk = "US"
+                        elif sym.startswith("HK."):
+                            mk = "HK"
+            if mk:
+                return mk
+    except Exception:
+        pass
+    # ③ 当日认领表（港股池概念）
+    try:
+        claims = os.path.join(STATE_DIR, "pool_claims.json")
+        if os.path.isfile(claims):
+            with open(claims) as f:
+                data = json.load(f)
+            if data.get("date") == today:
+                for c in data.get("claims", []):
+                    if c.get("session") == sid:
+                        sym = str(c.get("symbol") or "")
+                        if sym.startswith("US."):
+                            return "US"
+                        if sym.startswith("HK."):
+                            return "HK"
+    except Exception:
+        pass
+    # ④ 港股盯盘注册表
+    try:
+        reg = os.path.join(STATE_DIR, "monitor_sessions.txt")
+        if os.path.isfile(reg):
+            with open(reg) as f:
+                if sid in f.read().splitlines():
+                    return "HK"
+    except Exception:
+        pass
+    return None
+
+
+def sampled_markets_today():
+    """今天有采样日志的市场集合（从 `monitor_log_{MARKET}_{SYMBOL}_{DATE}_{MODE}.csv` 解析）。
+
+    用于 session_market() 取不到值时的兼底：集合内**所有**市场都不在交易窗口时，
+    说明今天盯的场子全收盘了（典型：只盯过美股的会话，在港股盘中不应被叫醒）。
+    """
+    out = set()
+    today = datetime.now().strftime("%Y%m%d")
+    for d in _log_dirs():
+        try:
+            for f in os.listdir(d):
+                if not (f.startswith("monitor_log_") and f.endswith(".csv")):
+                    continue
+                if f"_{today}_" not in f:
+                    continue
+                mk = f[len("monitor_log_"):].split("_")[0].upper()
+                if mk in ("HK", "US"):
+                    out.add(mk)
+        except OSError:
+            continue
+    return out
+
+
 def _is_monitoring_session(sid):
     """本会话是否盯盘会话（2026-09-02 立，stop 提醒门槛——非盯盘会话不提醒）。
 
@@ -576,11 +681,14 @@ def _is_monitoring_session(sid):
     （美东 04:00-16:00 = 北京 16:00-次日 04:00）里任何非盯盘会话（/commit、写代码、
     复盘）每个回合结束都触发提醒，2026-09-02 实录纯 commit 会话被无限唤醒 160+ 轮。
 
-    判定（三判据任一命中 = 盯盘会话；全部只读、无副作用）：
+    判定（四判据任一命中 = 盯盘会话；全部只读、无副作用）：
     ① 会话在盯盘注册表 tmp/monitor_sessions.txt（preflight 港股盯盘注册、
        monitor_unregister.sh 停盯注销）；
     ② 当日认领表 tmp/pool_claims.json 的 claims 里有本 sid（认领 = 在盯标的）；
     ③ 当日开过仓：tmp/trade_intent.log 当日行含本 sid（开仓会话必然在盯盘）。
+    ④ 本会话今天跑过采样段：tmp/monitor_market_{sid8}.json（采样脚本段启动时写，
+       date == 今天）——T179（2026-11-07 补）：纯信号盯盘会话（没开仓、没认领、
+       不在港股注册表）以前只靠 pretool 兜底，现在有了会话级证据，窄缝被堵上。
     另一前提：**今天全项目完全没有采样日志**（tmp/monitor_log_*_今日日期_*.csv 一个都
     没有）= 今天没有任何会话开过盯盘 → 直接 False（没盯过就不存在「断了」）。
 
@@ -632,6 +740,15 @@ def _is_monitoring_session(sid):
                         return False
             except OSError:
                 pass
+        # ④ 本会话今天跑过采样段（采样脚本段启动时写 tmp/monitor_market_{sid8}.json，T179）
+        try:
+            mp = os.path.join(TMP_DIR, f"monitor_market_{sid[:8]}.json")
+            if os.path.isfile(mp):
+                with open(mp) as f:
+                    if json.load(f).get("date") == datetime.now().strftime("%Y-%m-%d"):
+                        return True
+        except Exception:
+            pass
         intent = os.path.join(STATE_DIR, "trade_intent.log")
         if os.path.isfile(intent):
             try:
@@ -911,10 +1028,10 @@ def main():
         #    monitor_unregister.sh 停盯注销）——注册过 = 盯盘会话；
         # ② 本会话当日认领过标的（tmp/pool_claims.json 当日 claims 里有本 sid）——
         #    认领 = 在盯标的 = 盯盘会话；
-        # ③ 采样日志今天有本会话会话标记（monitor_log_*_{sid8}*.csv）——写过采样日志
-        #    = 跑过密采样 = 盯盘会话。
-        # 都不命中 = 非盯盘会话，静默退出（AI 不自主启动盯盘，盘中开盯的会话必然先走
-        # preflight 注册 / claim 认领 / 写采样日志之一，不会漏拦真盯盘会话的断采样）。
+        # ③ 本会话今天跑过采样段（tmp/monitor_market_{sid8}.json，采样脚本段启动时写）——
+        #    T179（2026-11-07）：旧注释写的 monitor_log_*_{sid8}*.csv 从来不命中（采样
+        #    日志文件名不含会话 id），纯信号盯盘会话只能靠 pretool 兜底；现在改成会话级
+        #    映射文件，窄缝被堵上。
         sid = payload.get("session_id") or os.environ.get("PI_SESSION_ID", "")
         # 停盯收尾缺失检查（2026-10-20 立，2026-10-19 事故）：当日有成交、但没跑
         # stop_summary.py（= 没写停盯总结 / 没发飞书 / 没做北京日期对照）时，回合静止
@@ -922,6 +1039,24 @@ def main():
         # 没做收尾，用户次日发现「Linda 没发通知」，且 App 只看到 1 笔（跨北京午夜）
         # 一度怀疑账目不对。强制点选在「回合静止」= 最接近停盯时刻的可检测信号。
         if _is_monitoring_session(sid):
+            # 跨市场窗口（T179，2026-11-07 立）：本会话盯的市场若已收盘，静默退出。
+            # 原来只判「任一市场盘中」（in_trading_session），于是「港股盘中 + 美股隔夜」
+            # 时美股会话回合结束仍被判「盘中但密采样没在跑」而反复误报（2026-11-05
+            # 北京 13:25 实录：美股已收盘 8.5 小时，收到 5 条「密采样未在跑」提醒）。
+            # 判定依据是**本会话自己的市场**（session_market，四处数据源）；推不出来时
+            # 退一步看「今日采样过哪些市场」，集合内全不在窗口 → 今天盯的场子都收了，同样静默。
+            _now = datetime.now()
+            _mkt = session_market(sid)
+            if _mkt == "HK" and not in_hk_session(_now):
+                sys.exit(0)
+            if _mkt == "US" and not in_us_session(_now):
+                sys.exit(0)
+            if _mkt is None:
+                _mks = sampled_markets_today()
+                if _mks and not any(
+                        in_hk_session(_now) if _m == "HK" else in_us_session(_now)
+                        for _m in _mks):
+                    sys.exit(0)
             # 断链强提醒（2026-11-07 立）：以「进程在不在」为准判段是否在跑——段结束后
             # 进程退出、log 刚更新，旧口径（running=True）会当成正常而静默，等 log 变旧
             # 后再无触发点（2026-11-06 实录：采样断 11 小时没人发现）。现在只要回合静止时
