@@ -434,6 +434,24 @@ def has_active_stop_order_us(config, symbol):
     return T.has_active_stop_order_tiger(config, symbol, _us=True)
 
 
+def cancel_profit_legs_us(config, symbol, side):
+    """撤美股该标的未成交的止盈腿 / 反向非止损挂单（T182 配套，2026-11-06 立）。
+
+    详见港股同名函数 docstring：模拟账户 BRACKETS 双腿争抢可卖量造成竞态，止损腿缺失时
+    必须先撤止盈腿腾出可卖量、STP 才下得出去。只在确认止损腿缺失时调用。
+    """
+    return T.cancel_profit_legs_tiger(config, symbol, side, _us=True)
+
+
+def ensure_stop_protection_us(config, symbol, side, quantity, stop_price):
+    """开仓成交后强制校验止损保护腿存活，缺失则撤止盈腿 + 补独立 STP（T182，2026-11-06）。
+
+    返回 dict：{checked, ok, repaired, stop_order_ids, steps, warning?}；ok=False 时
+    持仓可能裸奔，调用方须高声报出并告警。详见港股同名函数 docstring。
+    """
+    return T.ensure_stop_protection_tiger(config, symbol, side, quantity, stop_price, _us=True)
+
+
 def has_active_open_order_us(config, symbol, side=None):
     """重复下单防抖检查（2026-08-16 立，同港股版）：该美股标的当日已有活动开仓方向
     委托单（非止损单）时返回 True。symbol 过滤用美股裸代码。返回 (has, order_ids)。"""

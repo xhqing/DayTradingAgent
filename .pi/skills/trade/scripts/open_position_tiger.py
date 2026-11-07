@@ -949,6 +949,29 @@ def main():
     result_base.update({"ok": True, "fill_price": fill_price, "fill_price_source": fill_src,
                         "method": f"{order_type}+attached_stop",
                         "stop": f"attached LOSS @ {stop_loss}", "main_status": status})
+    # T182（2026-11-06）：成交后强制校验止损腿真实存活——BRACKETS 双腿（LOSS+PROFIT）
+    # 在模拟账户存在「争抢同一笔可卖量、只有一条腿存活」的竞态（实测：止盈腿活、止损腿
+    # 被 CANCELLED，持仓裸奔）。缺失则撤止盈腿腾可卖量 + 补独立 STP（保命优先于止盈；
+    # 止盈改由主动平仓 / 移盈执行）。
+    try:
+        stop_prot = U.ensure_stop_protection_tiger(config, symbol, side_str,
+                                                  result_base["quantity"], stop_loss)
+        result_base["stop_protection"] = stop_prot
+        if not stop_prot.get("ok"):
+            result_base["warning"] = ((result_base.get("warning") + "；")
+                                      if result_base.get("warning") else "") + \
+                "🚨 止损保护校验未通过：" + str(stop_prot.get("warning", ""))
+        elif stop_prot.get("repaired"):
+            result_base["stop"] = (f"repaired LOSS @ {stop_loss}（原附加止损腿未存活，"
+                                   f"已撤止盈腿补挂 STP）")
+            result_base["warning"] = ((result_base.get("warning") + "；")
+                                      if result_base.get("warning") else "") + \
+                "⚠️ 附加止损腿未存活，已自动修复（撤止盈腿 + 补 STP）；止盈改由主动平仓/移盈执行"
+    except Exception as e:
+        result_base["stop_protection"] = {"checked": False, "ok": False, "error": str(e)[:200]}
+        result_base["warning"] = ((result_base.get("warning") + "；")
+                                  if result_base.get("warning") else "") + \
+            f"🚨 止损保护校验异常：{e}"
     # 开仓响铃（2026-08-19 立，TODO 落地）：成交确认后响一声提醒用户已开仓——脚本内置
     # = 工具强制（auto 模式用户若不盯屏幕感知不到开仓；记录写 ring-log-auto.csv 与
     # signal 隔离，见 U.ring_after_fill docstring）。

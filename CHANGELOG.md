@@ -15,6 +15,17 @@
 - **验证（2026-11-07 本机实测，monkeypatch 盘中 + 断链 5.5 小时场景）**：`git status` exit=2、`snapshot.py` exit=2、`open_position_tiger_us.py` exit=2（必须先起采样）；`monitor_segment.py` exit=0、`close_position_tiger_us.py` exit=0（白名单放行）；stop 分支输出断链强提醒 JSON；进程在跑（正常循环）时普通命令 exit=0 不误伤；主工作区视角下 `_log_dirs()` 正确列出主仓库 + 2 个历史 worktree 的 tmp，最新采样时间取自最近那个 worktree（5.6 小时前）而非主仓库的 4 天前旧日志。
 - **回归风险**：无交易链路改动。① 硬拦只在「盘中 + 无采样进程 + 断链 ≥60 秒」时生效，正常循环（段间 5-15 秒起下一段）不触发；② 平仓脚本在白名单内，采样断链也能紧急平仓；③ 停盯收尾脚本在白名单内，收工不受阻；④ 20 秒宽限避免「段刚结束就回合静止」的正常情形误报。
 
+### 修复（T182：模拟账户 BRACKETS 双腿竞态 → 止损腿被撤、开仓即裸奔；成交后强制校验 + 自动修复）
+
+- **为什么改**：2026-11-06 美股盘中实测暴露——`open_position_tiger_us.py US.TQQQ long 53.05 52.25 54.1 0` 开仓 367 股后，脚本打印 `attached LOSS @ 52.25` 看似已保护，但 15 分钟后采样 `stop_price` 变空、`account_status.py` 报「持仓在、无活动止损单」；补挂 STP 两次全 `EXPIRED`，券商 reason 明写 `367 shares of your position are reserved for pending orders. The maximum you can sell is 0 shares`——**开仓时的 PROFIT 腿（SELL LMT 367 @54.10）把 367 股可卖量全部占满**。查当日订单坐实根因：同一天两笔开仓里，一笔是 LOSS 腿被券商置 `CANCELLED`（reason 为空）、PROFIT 腿存活，另一笔反过来（止损腿活到触发、止盈腿按 OCA 自动作废）——**模拟账户对 BRACKETS 双腿的处理存在竞态，两条腿争抢同一笔可卖量、只有一条能存活，券商侧决定哪条活**。旧版脚本只打印提交意图、从不校验真实状态，这才是「AI 以为已保护、其实裸奔」的缺口。当日第一笔因发现及时按止损单铁律主动平仓（−US$87.74 / −0.29R）才没扩大损失。
+- **改了什么**（方案：成交后强制校验，不改「开仓必带止盈腿」的既有规则）：
+  - `scripts/trade_utils_tiger.py` 新增两个函数：`cancel_profit_legs_tiger(config, symbol, side, _us=False)`——按平仓方向（开多撤 SELL、开空撤 BUY）撤销未成交的非止损挂单、腾出可卖量；`ensure_stop_protection_tiger(config, symbol, side, quantity, stop_price, _us=False)`——先查 `has_active_stop_order`，缺失则「撤止盈腿 → 补独立 STP → 复验」，返回 `{checked, ok, repaired, stop_order_ids, steps, warning?}`。
+  - `scripts/trade_utils_tiger_us.py` 转发 `cancel_profit_legs_us` / `ensure_stop_protection_us`（内部 `_us=True`）。
+  - `scripts/open_position_tiger.py` / `scripts/open_position_tiger_us.py`：主单成交后调用校验，结果写入 JSON 的 `stop_protection` 字段；`repaired=true` 时把 `stop` 改写成 `repaired LOSS @ x（原附加止损腿未存活，已撤止盈腿补挂 STP）` 并附 warning；`ok=false` 时 `warning` 以 🚨 开头要求立即人工处置。
+- **验证**：`tmp/t182_unit.py` 三场景全过——多头只撤 SELL 止盈腿（不撤 STP / 不撤 BUY 挂单 / 不撤已成交 / 不撤已撤单 / 不撤别的标的）、空头只撤 BUY 止盈腿、`has_active_stop=True` 时 `ensure_stop_protection` 不撤任何单直接返回 ok；`tmp/t182_unit2.py` 场景 4 复现「止损腿缺失 + 止盈腿占位」——完整修复链撤掉止盈腿 101 → 补 STP（side/qty/price 均正确）→ 复验拿到新止损单，5 项断言全过。空仓实跑 `has_active_stop=False`、`cancel_profit_legs=0`（不误撤）。
+- **单测发现并修掉的自身缺陷**：首版状态过滤用首字母大写子串（`"Filled" in status`），而 SDK 枚举 `str()` 形态是 `OrderStatus.FILLED`——单测里已成交/已撤单会被误撤；改为**大小写不敏感匹配**（`.upper()` 双向归一）后通过。
+- **回归风险**：① 正常场景（双腿都 HELD）校验只读、不撤任何单，行为与旧版一致；② 只在止损腿缺失这一异常分支才会撤止盈腿——止盈改由 AI 主动平仓 / 移盈执行，属保命优先的降级，`repaired=true` 会在输出与 warning 里显式标注；③ **实盘账户是否同样存在该竞态未实测**——实盘开通前必须先验证（已写进 T183 边界）。
+
 ## [0.9.1] - 2026-11-06
 
 ### 修复（影子交易脚本 `STATE_DIR` 未定义导致完全不可用，2026-11-06 盘中实测）
