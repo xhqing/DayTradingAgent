@@ -203,27 +203,54 @@ def _is_stop_order(o):
 
 
 def _order_local_date(o):
-    """订单 order_time（毫秒时间戳）→ 本地日期字符串（'YYYY-MM-DD'）。无时间戳返回 ''。"""
-    tm = getattr(o, "order_time", None)
+    """订单 order_time（毫秒时间戳）→ **该订单所属市场的交易日**字符串（'YYYY-MM-DD'）。
+
+    T181 修复（2026-11-07）：旧版按本机（北京）日期换算，美股盘中跨北京午夜（ET 11:00
+    整翻滚）后 09:30-11:00 ET 下的单会被判成「昨天」——开仓互斥闸「当日在场敞口」与
+    双持仓兜底检测均失效。现改按订单自身市场（美股 ET / 港股北京）切日。
+    无时间戳返回 ''。
+    """
     try:
-        return datetime.fromtimestamp(int(tm) / 1000).strftime("%Y-%m-%d")
-    except (TypeError, ValueError):
-        return ""
+        import trade_utils_tiger as _TU
+        return _TU.order_market_date(o)
+    except Exception:
+        tm = getattr(o, "order_time", None)
+        try:
+            return datetime.fromtimestamp(int(tm) / 1000).strftime("%Y-%m-%d")
+        except (TypeError, ValueError):
+            return ""
 
 
 def _today_orders(orders):
-    """从 get_orders() 返回里只留「今日（本地日期）」订单（2026-08-20 立）。
+    """从 get_orders() 返回里只留「**各自市场**当日」订单（T181 修复，2026-11-07）。
 
-    为什么：老虎 get_orders() 不带过滤时返回近两周订单，而开仓闸门口径②③设计上都
+    为什么需要：老虎 get_orders() 不带过滤时返回近两周订单，而开仓闸门口径②③设计上都
     只应看**当日**订单流（「当日已有在场敞口」）。2026-08-20 实录：get_orders() 返回
     2026-08-05 港股 00981 的历史开平链（当天反复开平、净计数 +1 残留）与 07709 的
     8-03 历史买单，被 today_open_exposure 误判为「今日在场敞口」、把合法的美股开仓
-    拦下（blocked_by=open_exposure_today）——函数名叫 today 而实际算的是两周，口径
-    错位。修法：闸门调用前统一过滤本地今日订单。本地时区（北京）下港股当日订单与
-    美股当日订单（跨夜到北京次日凌晨）均按各自实际下单日过滤，正确归组。
+    拦下（blocked_by=open_exposure_today）。
+    **口径（T181）**：不再一律用本机日期，而是按每条订单自身市场——美股取美东（ET）
+    日期、港股取北京日期（`trade_utils_tiger.order_market` + `market_today`）；否则美股
+    盯盘跨北京午夜后当日订单一律漏失、闸门形同虚设。
     """
-    today = datetime.now().strftime("%Y-%m-%d")
-    return [o for o in (orders or []) if _order_local_date(o) == today]
+    try:
+        import trade_utils_tiger as _TU
+    except Exception:
+        _TU = None
+    out = []
+    for o in (orders or []):
+        d = _order_local_date(o)
+        if d == "":
+            out.append(o)   # 无时间戳保守保留（宁多不漏）
+            continue
+        mkt = _TU.order_market(o) if _TU else "us"
+        try:
+            today = _TU.market_today(mkt) if _TU else datetime.now().strftime("%Y-%m-%d")
+        except Exception:
+            today = datetime.now().strftime("%Y-%m-%d")
+        if d == today:
+            out.append(o)
+    return out
 
 
 def today_open_exposure(orders):
