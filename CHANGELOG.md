@@ -9,9 +9,10 @@
 - **为什么改**：2026-11-06 美股盯盘，段 53 结束后 AI 发现空单止损已被触发，连着用 4 个工具调用去查订单、写记录、补 actions，**没有先重启段 54**——采样从 ET 10:21 断掉，之后没有任何唤醒，直到收盘后 11 小时用户发问才发现（整场后半段无人盯盘）。根因：`monitor_guard.py` 的 `monitor_segment_running()` 把「log 近 120 秒有更新」也算「在跑」，而**段结束（进程已退出）恰好落在新鲜窗口里** → stop 分支判「正常」不提醒、pretool 不拦；等 log 变旧（120 秒后）已无任何触发点，断链永远静默。用户要求「必须使用工具强制，防止下次再提前停止盯盘」。
 - **改了什么（`hooks/monitor_guard.py`，单一源、pi 端自动生效）**：
   - 新增 `sampling_process_alive()`：**只认进程**（pgrep monitor_segment / ws_segment / futu_ws_segment），不再用 log 新鲜度判「段在不在跑」；新增 `sampling_log_age()` 提供最后一次采样距今秒数。
+  - **`sampling_log_age` 跨目录扫描**（`_log_dirs()`）：主仓库 `tmp/` + 所有 `<repo>-watch-*/tmp/`——盯盘跑在 worktree 里、日志写在 worktree 的 `tmp/`（worktree_start 刻意让 tmp 每场独立），而 hook 由主工作区扩展 spawn（PROJECT_ROOT = 主工作区），只看主仓库 `tmp/` 会读到几天前的旧日志，导致 20 秒宽限失效、正常重启窗口内误唤醒。
   - **pretool 硬拦**：盘中 + 段进程不在 + 最后一次采样已过 `SAMPLING_GAP_BLOCK_SECONDS`（60 秒）→ **除白名单外的一切命令一律 exit 2 阻断**。白名单三类：启动采样段（三个采样脚本）/ 停盯收尾（stop_summary、keepawake_off、monitor_unregister、notify_feishu、mark_stop_done）/ 平仓（close_position_tiger、close_position_tiger_us——风控动作任何时候不能被挡）。开仓脚本不在白名单（必须先起采样再下单）。
   - **stop 强提醒**：回合静止时改以进程为准判定——进程不在且最后一次采样已过 `SEGMENT_RESTART_GRACE`（20 秒，给正常重启留窗口）→ 注入「断链强提醒」并唤醒一轮（`hookSpecificOutput.additionalContext`），文案点名「上一段跑完没起下一段」并给出两条出路（立刻 background_run 起段 / 确认停盯边界后走收尾）。
-- **验证（2026-11-07 本机实测，monkeypatch 盘中 + 断链 5.5 小时场景）**：`git status` exit=2、`snapshot.py` exit=2、`open_position_tiger_us.py` exit=2（必须先起采样）；`monitor_segment.py` exit=0、`close_position_tiger_us.py` exit=0（白名单放行）；stop 分支输出断链强提醒 JSON；进程在跑（正常循环）时普通命令 exit=0 不误伤。
+- **验证（2026-11-07 本机实测，monkeypatch 盘中 + 断链 5.5 小时场景）**：`git status` exit=2、`snapshot.py` exit=2、`open_position_tiger_us.py` exit=2（必须先起采样）；`monitor_segment.py` exit=0、`close_position_tiger_us.py` exit=0（白名单放行）；stop 分支输出断链强提醒 JSON；进程在跑（正常循环）时普通命令 exit=0 不误伤；主工作区视角下 `_log_dirs()` 正确列出主仓库 + 2 个历史 worktree 的 tmp，最新采样时间取自最近那个 worktree（5.6 小时前）而非主仓库的 4 天前旧日志。
 - **回归风险**：无交易链路改动。① 硬拦只在「盘中 + 无采样进程 + 断链 ≥60 秒」时生效，正常循环（段间 5-15 秒起下一段）不触发；② 平仓脚本在白名单内，采样断链也能紧急平仓；③ 停盯收尾脚本在白名单内，收工不受阻；④ 20 秒宽限避免「段刚结束就回合静止」的正常情形误报。
 
 ## [0.9.1] - 2026-11-06
