@@ -4,7 +4,7 @@
 
 ## 单笔预算 B 与 max_loss M（固定比例动态下注，两个概念先分清、不混用；max_loss 2026-08-28 起净口径）
 
-- **单笔预算（budget，B）= 开仓前由「总资产 × 固定比例 f」算出的下注预算**：B = `config.risk.risk_fraction`（当前 2%）× 当前 equity（初始 `config.risk.initial_equity` = 100000 HKD；preflight 启动时输出当前 B）。这是开仓**之前**定下的「这笔想承担多少风险」的目标值，用来当仓位选择的标尺。
+- **单笔预算（budget，B）= 开仓前由「总资产 × 固定比例 f」算出的下注预算**：B = `config.risk.risk_fraction`（当前 2%）× 当前 equity（初始值读 `config.risk.initial_equity`；真实基准只写本机 config.json，模板占位为 1e5 HKD。preflight 启动时输出当前 B）。这是开仓**之前**定下的「这笔想承担多少风险」的目标值，用来当仓位选择的标尺。
 - **max_loss（M）= 实际开仓之后、这笔交易的真实最大损失（2026-08-28 起净口径，含费）**：M = 仓位 × 每股止损距 + 开仓边费 + **止损价**平仓边费（开仓前用参考价预估 = 初始预期 max_loss、成交后按实际成交价精算 = 修正 max_loss——两个变量见 `trading-strategy.md`「赔率三阶段」）。这是开仓**之后**实际承担的风险额度，是真实的「这笔最多亏多少」。**设计动机**：止损价精确成交时净亏损恰好等于 M → R 恰好 −1.000、最大亏损不深于 −1R（仅剩滑点一层）；旧「毛值 M = 仓位×止损距」口径下止损单净 R 会到 −1.2~-1.8（费占止损额 20%~80%）。两阶段（初始预期/修正）定义与公式见 `trading-strategy.md`「赔率三阶段·两个 max_loss 变量」。
 - ⚠️ **max_loss 不要求严格 ≤ 单笔预算 B**（见下「选仓位」），它围绕 B 选最近、可略超或略低（净口径后 B 目标本身含义 = 净风险额，选档算法自动按净 max_loss 选最近）。
 
@@ -87,16 +87,16 @@ HKD 单笔预算 B ÷ 当日真实汇率 = USD 单笔预算，再按 USD 选仓�
 
 **按执行模式分叉（2026-08-16 补声明，消除与 signal-mode.md 的口径矛盾）**：
 
-- **auto+实盘：equity 必须从实盘账户 API 取真实总资产**，禁止用 config 占位值或 equity-log 手动累加值（2026-07-31 用户立；2026-09-12 起本条仅约束实盘执行——模拟盘执行改走纸面权益，见下条）。**signal 模式：equity 走 `signals/equity-log.csv` 末行累加值**——signal 不连账户下单是模式定义（见 `signal-mode.md`「signal 模式权益更新」），equity-log 累加是 signal 模式的**正当口径**、不是违规；无记录时回退 `config.risk.initial_equity`。
+- **auto+实盘：equity 必须从实盘账户 API 取真实总资产**，禁止用 config 占位值或权益账本（`signals/equity-log.csv`）的手动累加值当真实资产。这条约束最初立于 2026-07-31（2026-09-12 起本条仅约束实盘执行——模拟盘执行改走纸面权益，见下条）。**signal 模式：equity 走 `signals/equity-log.csv` 末行累加值**——signal 不连账户下单是模式定义（见 `signal-mode.md`「signal 模式权益更新」），equity-log 累加是 signal 模式的**正当口径**、不是违规；无记录时回退 `config.risk.initial_equity`。
 - **signal 模式的只读查询例外（2026-08-12 立；2026-08-17 随固定平台费简化）**：signal 模式禁止的是**自动下单**等写操作，只读查询（查账户资产看一眼等）是允许的——原为算阶梯平台费查当月订单数的需要已随固定模式取消（费率不再依赖订单数）；equity 取值仍走 equity-log。
 
 **auto 模式的账户选择**：
 
 - **默认账户**：用户未指定账户时，从默认账户取——港股用老虎开放平台模拟账户（`load_equity_tiger` HKD 口径 `get_prime_assets`）、美股用老虎开放平台模拟账户（`load_equity_us` 直取 USD 净值）。
 - **指定账户**：用户明确指定账户时，从指定账户取。
-- **`config.risk.initial_equity`（100000 HKD）仅开发期占位、不是真实资产**——auto 模式下不得当 equity 真值用（signal 模式无记录时的回退除外）。preflight 与算仓位前一律**现查账户 API**取最新 net_assets 作 equity。
+- **`config.risk.initial_equity`（模板占位，真实基准只写本机 config.json）仅开发期占位、不是真实资产**——auto 模式下不得当 equity 真值用（signal 模式无记录时的回退除外）。preflight 与算仓位前一律**现查账户 API**取最新 net_assets 作 equity。
 - **币种**：账户总资产如实返回（老虎美股账户 USD 计价），按账户返回币种用，换算用当日真实汇率（见上「美股换算」）。
-- **auto 模拟盘与实盘资产解耦（2026-09-12 用户立，取代 2026-09-03「恒开对齐实盘」旧口径）**：下单账户是**模拟盘**（默认 / `--account paper`）时，equity 读 `signals/equity-log.csv` 末行**纸面权益**（与 signal 模式同源同机制，无记录回退 `initial_equity`；auto 模拟盘只读不写）；总购买力 = 纸面权益折 USD × **模拟盘总融资杠杆**（模拟盘自身 `get_assets` 的 buying_power ÷ net_liquidation，2026-09-12 实测 4.0 倍，查询失败回退 `config.risk.paper_margin_leverage_default`）；单标的可买上限 = 总购买力 × `get_contract` 该标的保证金率（模拟盘可查；查不到按 1.0 全额保守兜底）。**全程不碰实盘账户**——实盘资产为 0 / 资金全部取出，模拟盘照常交易；净 R 口径的可比性靠 equity-log 纸面基准（用户维护、量级与实盘相当）维持，不依赖实时实盘数值。实盘执行（`--account live`）照旧实时查实盘自身（2026-08-20「取净值与下单同账户」原样）。旧实盘参考快照机制（`tmp/live_reference.json`、缺失拒单 `live_reference_required`）退役为诊断工具。机制见 `auto-mode.md`「auto 模式算仓位口径」节、`trade_utils_tiger.py` `paper_sizing_reference`。
+- **auto 模拟盘与实盘资产解耦（2026-09-12 用户立，取代 2026-09-03「恒开对齐实盘」旧口径）**：下单账户是**模拟盘**（默认 / `--account paper`）时，equity 读 `signals/equity-log.csv` 末行**纸面权益**（与 signal 模式同源同机制，无记录回退 `initial_equity`；auto 模拟盘只读不写）；总购买力 = 纸面权益折 USD × **模拟盘总融资杠杆**（2026-09-12 实测 4.0 倍，杠杆 = 模拟盘自身 `get_assets` 的 buying_power ÷ net_liquidation；查询失败回退 `config.risk.paper_margin_leverage_default`）；单标的可买上限 = 总购买力 × `get_contract` 该标的保证金率（模拟盘可查；查不到按 1.0 全额保守兜底）。**全程不碰实盘账户**——实盘资产为 0 / 资金全部取出，模拟盘照常交易；净 R 口径的可比性靠 equity-log 纸面基准（用户维护、量级与实盘相当）维持，不依赖实时实盘数值。实盘执行（`--account live`）照旧实时查实盘自身（2026-08-20「取净值与下单同账户」原样）。旧实盘参考快照机制（`state/live_reference.json`、缺失拒单 `live_reference_required`）退役为诊断工具。机制见 `auto-mode.md`「auto 模式算仓位口径」节、`trade_utils_tiger.py` `paper_sizing_reference`。
 
 按实际权益动态算单笔预算 B = `risk_fraction` × equity（权益缩水→B 缩、权益增长→B 放大；auto 模拟盘执行时这里的 equity = equity-log 纸面权益，同上一节）。
 

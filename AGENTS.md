@@ -97,13 +97,16 @@
 另两个扩展：后台任务三件套 `background_run` / `background_list` / `background_stop` 由**全局扩展** `~/.pi/agent/extensions/background-tasks.ts` 提供（pi 无内建后台 bash；任务结束以 `[后台任务完成]` 通知消息唤醒 AI，日志在会话工作目录 `tmp/pi-bg/<sid8>-<id>.log`）；`.pi/extensions/ask-question.ts` 提供 `AskUserQuestion`（用户真实点选后合成 PostToolUse payload 触发 `live_auth_witness.py` 见证——实盘授权链在 pi 下同样不可伪造）。会话 id = `PI_SESSION_ID`；死会话判定查 pi transcript（`<agent_dir>/sessions/--<slug>--/*_<sid>.jsonl` + `PI_SESSION_FILE` 兜底）。
 
 **改 hook 的规矩**：只改 `hooks/*.py` 一处，pi 端自动生效；改完用 `node ~/.pi/agent/patch/ts-syntax-check/check.mjs` 复核扩展语法（若动了扩展）。完整映射表与验证状态见 `.pi/skills/trade/references/host-integration.md`。
-## 实盘净值不属敏感信息、照常可写（2026-08-20 立旧规，2026-08-29 用户裁定废止）
+## 账户资金类金额禁写进被跟踪的文件（2026-11-08 用户裁定，取代 2026-08-29 的豁免）
 
-**现行口径（2026-08-29 用户裁定）**：实盘账户的资产净值（net_liquidation / 总资产）与购买力**不属敏感财务信息，照常写入被 git 跟踪的文件**（CHANGELOG、TODO、SKILL.md、references、accounts.md、脚本注释、`signals/*.md`、`actions/*.md`、`reviews/` 均可）。**裁定理由（用户原话要点）**：实盘账户里的钱只是个人全部财产的一小部分，不能完全代表个人财务状况，故交易账户净值不构成个人财务状况描述。
+**现行口径**：实盘与模拟账户的资产净值（net_liquidation）、总资产、购买力（buying_power）、账户余额、可用资金，**一律不写进被 git 跟踪的文件**——CHANGELOG、TODO、SKILL.md、references、accounts.md、脚本注释、`signals/*.md`、`actions/*.md`、`reviews/`、`config.example.json` 全部适用。真实值只存本机被 `.gitignore` 忽略的文件：`signals/equity-log.csv`（纸面权益链）、`.pi/skills/trade/config.json`、`state/live_reference.json`（实盘参考快照）、`hooks/equity-baseline.local`（历史留档）。文档与记录里只写方法论与派生指标（B、max_loss、赔率、R 倍数、股数），需要指代金额时写「数值见本机 equity-log」这类说法。
 
-- **沿革（为什么曾经禁、后来解禁）**：2026-08-20 曾立旧规「实盘净值禁止写入被跟踪文件」（背景：实测净值多次随记录进入 git 历史推上 GitHub）；2026-08-26 随全团队敏感信息大排查收紧到「量级口径同样不写」，并做了 filter-repo 历史清洗（IP / 白名单报文 / 净值数字等替换为占位符）。**2026-08-29 用户重新裁定**：交易账户净值不属于「个人财务状况」敏感类——全局规则禁的是「收入 / 本金 / 资产负债全貌」等描述性财务状况，账户净值只是个人总财产的一小部分、不能代表整体，予以豁免。本次裁定**同时废止**配套的 `equity_guard.py` hook（含基准黑名单自动维护、preflight / resume 在场打印）与 `signals/equity-log.csv` 的 gitignore 忽略。
-- **仍然禁止（裁定不豁免的类别，照旧执行）**：① 账户号打码（实盘 / 模拟账户号一律打码口径，AI 上下文禁读 accounts.json / `~/.tigeropen/` 完整号）；② 密钥 / token / 盐值；③ 代理节点 IP 清单、订阅商域名体系、白名单拒绝报文原文、地域规避叙述（2026-08-23 中性化口径不变——这些涉及外部服务配置与绕行链路，与净值豁免无关）。
-- **边界**：模拟账户净值（假钱）本就不受限；全局「敏感信息禁止写入未被 .gitignore 忽略的文件」规则中**除账户净值外的其它敏感类别**（含个人 / 公司财务状况的描述性信息——收入目标、资产负债全貌、财务紧迫程度等）**不受本裁定影响、照旧禁写**。
+- **为什么改（为什么 2026-08-29 那次豁免取消）**：一是团队工作流已改成全自动（add → commit → PR → auto-merge，没有人逐次确认），豁免项没有人在回路把关，一旦写进文件就随公开仓库发布；二是本仓库是 public，账户金额的时间序列（`equity-log.csv` 逐年累积）本身就是一份完整的账户资产曲线——单点金额可以是零头，时间序列不是。两条叠加，豁免的前提不再成立。
+- **沿革（完整脉络，便于理解为什么反复变）**：2026-08-20 立「实盘账户资金类金额不写进被跟踪文件」→ 2026-08-26 收紧到「量级口径同样不写」并做 filter-repo 历史清洗 → 2026-08-29 裁定豁免，同时撤销资金类数据文件（`equity-log.csv`）的 gitignore 条目、退役那支 hook 脚本。→ 2026-11-08 取消豁免、恢复禁写（**不重开 hook**：退役脚本保持退役，改由全局 `~/.gitleaks.toml` 的 `equity-amount` 规则在 `/add` 预检里机械扫描，脚本名见 `hooks/equity_guard.py`）。
+- **怎么写才合格**：① 记录只写派生指标（B / max_loss / 赔率 / R / 股数），不写账户金额；② 必须指代金额时写「数值见本机 equity-log」或「见本机实盘快照」，把真实值留在被忽略的本机文件；③ 代码里的落盘路径只指向被忽略的本机文件，禁止写进 `signals/*.md`、`actions/*.md` 等被跟踪文件。
+- **工具强制**：全局 `~/.gitleaks.toml` 有确定性规则 `equity-amount`（账户资金类关键词后面 16 字符内出现 4 位以上数字即命中），`/add` 预检会跑。它有一类固定误报：关键词后面紧跟年份（如「豁免 2026 年废止」）也会命中——改文档时**把年份写在关键词前面**即可避开（写成「2026 年废止豁免」，不要写成「豁免（2026 年废止）」）。
+- **仍然禁止（不受本条影响、照旧执行）**：① 账户号打码（实盘 / 模拟账户号一律打码口径，AI 上下文禁读 accounts.json / `~/.tigeropen/` 完整号）；② 密钥 / token / 盐值；③ 代理节点 IP 清单、订阅商域名体系、白名单拒绝报文原文、地域规避叙述（2026-08-23 中性化口径不变）。
+- **边界**：① 本条管「账户资产类金额」，不管交易事实——价格、股数、止损止盈、单笔盈亏、R 倍数、赔率照常写（这些是交易逻辑与统计必需，且不暴露账户规模）；② 「纸面权益」（模拟盘 / signal 模式的累加链）同样是账户资产口径，一样禁写；③ 历史记录里的存量金额已在 2026-11-08 做了一轮全仓清理；要连 git 历史一起清除必须 `git filter-repo` 重写历史 + force push，属需用户单独授权的动作，不在常规清理范围内。
 
 ## tmp/ 与 state/ 的口径划分（2026-11-03 用户立）
 

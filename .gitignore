@@ -33,3 +33,9 @@ __pycache__/
 # 交易链路：JMS 节点使用记录（节点名含订阅号 + 订阅商域名 = 敏感类别，只留本机、不入库）
 reviews/ip-node-log.local.csv
 reviews/ip-switch-log.csv
+
+# 账户资金类数据（2026-11-08 用户裁定：净值 / 购买力 / 余额一律不写进被跟踪文件，只留本机）
+# ① 纸面权益链 = 账户资产的时间序列（signal 模式累加、preflight 算 B 读它），删了会丢历史、只能留本机
+signals/equity-log.csv
+# ② 2026-08-20 立的那份实盘资金基准黑名单（hook 配套；hook 已退役，文件作历史留档），含历史金额特征串
+hooks/equity-baseline.local

@@ -90,7 +90,7 @@ DayTradingAgent/
 │   ├── jms_guard.py               # 盘中禁止刷新订阅
 │   └── live_auth_witness.py       # 实盘授权见证
 │
-├── signals/                       # 每日信号记录（港美分开、HKT/ET 后缀）+ ring-log.csv + equity-log.csv
+├── signals/                       # 每日信号记录（港美分开、HKT/ET 后缀）+ ring-log.csv（+ 权益账本，仅本机、已 gitignore）
 ├── reviews/                       # 复盘报告 + 配套 CSV/PNG 附件
 ├── notes/                         # 长篇推导（凯利仓位方案、累计收益数学）
 ├── state/                         # 持久运行状态（已 gitignore）：熔断、标的池认领、互斥 WAL

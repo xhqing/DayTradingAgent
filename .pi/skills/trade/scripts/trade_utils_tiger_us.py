@@ -201,7 +201,7 @@ def auto_sizing_equity_us(config, exec_account):
 
 
 def get_buying_power_us(config, symbol, ref_price, tc=None, bp_usd=None):
-    """美股版购买力上限查询（2026-08-21 立，修橙色待办「美股开仓脚本购买力降档查询报
+    """2026-08-21 立：美股版购买力上限查询（修橙色待办「美股开仓脚本购买力降档查询报
     老虎脚本只支持港股」；2026-09-03 加 bp_usd 覆盖——auto 模拟盘对齐实盘）。
 
     背景：open_position_tiger_us.py 原来误调港股版 T.get_buying_power_tiger——其内部
