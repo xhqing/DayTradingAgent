@@ -90,7 +90,7 @@ DayTradingAgent/
 │   ├── jms_guard.py               # Blocks subscription refresh during trading hours
 │   └── live_auth_witness.py       # Live-account authorization witness
 │
-├── signals/                       # Per-day signal logs (HK/US split, HKT/ET suffix) + ring-log.csv + equity-log.csv
+├── signals/                       # Per-day signal logs (HK/US split, HKT/ET suffix) + ring-log.csv (+ local-only equity ledger, gitignored)
 ├── reviews/                       # Post-trade review reports + per-review CSV/PNG attachments
 ├── notes/                         # Long-form derivations (Kelly sizing plan, cumulative-return math)
 ├── state/                         # Persistent runtime state (gitignored): circuit breaker, pool claims, mutex WAL

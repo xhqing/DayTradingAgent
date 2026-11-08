@@ -60,15 +60,15 @@ def port_open(p):
         return False
 print(f"📊 富途OpenD:11111 {'✅' if port_open(11111) else '❌(未登录/未启动)'}")
 
-# 风险比例 + 权益（按模式取 equity：auto 走账户 API、signal 走 equity-log；2026-08-01 双模式重构）
+# 2026-08-01 双模式重构：风险比例 + 权益（按模式取：auto 走账户 API、signal 走权益账本）
 import json as _json, os as _os, sys as _sys
 try:
     _sys.path.insert(0, _os.path.dirname(__file__))
     from trade_utils_tiger import load_equity as _le, parse_mode as _pm
     _mode = _pm()
-    # 账户选择（2026-08-20 立，实盘盯盘配套）：--account live 切实盘账户取净值——2026-08-20
-    # 事故：实盘盯盘时 preflight 固定走默认模拟账户（约 789 万 HKD）算 B、实盘净值远小于模拟
-    # 净值（量级见本机实查）、偏差 68 倍。修复 = 取净值与下单同账户（load_equity 透传）。
+    # 账户选择（2026-08-20 立，实盘盯盘配套）：--account live 切实盘账户取风险基数。
+    # 事故（2026-08-20）：实盘盯盘时 preflight 固定走默认模拟账户算 B（模拟盘的资金量级
+    # 远大于实盘），B 与实盘真实风险基数偏差 68 倍。修复 = 取权益与下单同账户（load_equity 透传）。
     # 2026-09-12 解耦：auto + 模拟盘（默认 / --account paper）equity 读 equity-log 纸面权益
     # （与 signal 同源，见 trade_utils_tiger.paper_sizing_reference）——不再依赖实盘当日快照。
     _acct = None

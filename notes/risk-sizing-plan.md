@@ -4,7 +4,7 @@
 >
 > **写作时间**：2026-07-24。基于当日的两轮方案讨论整理。
 >
-> ⚠️ **状态声明（2026-07-27 补）**：本文的**框架与数学推导仍有效**（问题诊断、凯利公式映射、累计收益率推导），但**具体参数与"落地待办"已被 2026-07-26/27 的落地版本超越**：① `max_loss_per_trade=10000` 的固定金额方案已改为 `risk_fraction=2%` 固定比例（`initial_equity=100000`、B=2000）；② `f_max` 实际取 **2.5%**（非本文建议的 2%）；③ 阶段 1 直接以 2% 起步（非本文建议的 0.5%）；④ 第十一节待办清单里 SKILL.md:525 公式 bug、SKILL.md:42"资金总是够用"等**均已落地**。请以 [SKILL.md](../.pi/skills/trade/SKILL.md)、[config.json](../.pi/skills/trade/config.json)、[cumulative-return-derivation.md](cumulative-return-derivation.md)、[2026-07-27 复盘](../reviews/2026-07-27-review.md) 为准。
+> ⚠️ **状态声明（2026-07-27 补）**：本文的**框架与数学推导仍有效**（问题诊断、凯利公式映射、累计收益率推导），但**具体参数与"落地待办"已被 2026-07-26/27 的落地版本超越**：① `max_loss_per_trade=10000` 的固定金额方案已改为 `risk_fraction=2%` 固定比例（`initial_equity` 见本机 config.json、B=2000）；② `f_max` 实际取 **2.5%**（非本文建议的 2%）；③ 阶段 1 直接以 2% 起步（非本文建议的 0.5%）；④ 第十一节待办清单里 SKILL.md:525 公式 bug、SKILL.md:42"资金总是够用"等**均已落地**。请以 [SKILL.md](../.pi/skills/trade/SKILL.md)、[config.json](../.pi/skills/trade/config.json)、[cumulative-return-derivation.md](cumulative-return-derivation.md)、[2026-07-27 复盘](../reviews/2026-07-27-review.md) 为准。
 
 ---
 

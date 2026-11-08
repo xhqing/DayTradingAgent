@@ -38,7 +38,7 @@ from trade_utils_tiger import parse_mode
 MODE = parse_mode()  # 运行时 log 按 mode 分文件（signal/auto 两会话并行盯盘不互相污染）；ring-log 仅 signal 读
 
 # 账户选择（2026-08-20 立，实盘盯盘配套）：--account live 切实盘账户取净值——
-# 2026-08-20 事故：实盘盯盘时 resume 固定走默认模拟账户（约 789 万 HKD）算 B、
+# 2026-08-20 事故：实盘盯盘时 resume 固定走默认模拟账户（资产量级远大于实盘）算 B、
 # 实盘净值远小于模拟净值（量级见本机实查）、偏差 68 倍。修复 = 取净值与下单同账户（load_equity 透传）。
 ACCOUNT = None
 for _i, _a in enumerate(sys.argv[1:]):

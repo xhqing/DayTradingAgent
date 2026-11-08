@@ -415,7 +415,7 @@ def main():
             sys.exit(1)
         result_base["risk_checked"] = True
 
-    # 购买力上限（2026-08-16 立，同港股版；2026-08-21 修：原误调港股版
+    # 2026-08-16 立、2026-08-21 修：下单前按购买力上限主动降档（同港股版；原误调港股版
     # T.get_buying_power_tiger——其 to_tiger_symbol 只认 HK.xxx、美股代码报「老虎脚本
     # 只支持港股」、主动降档恒失效。改调本市场版 U.get_buying_power_us，口径同构、
     # USD 同币种无汇率换算：可买股数上限 = buying_power × long_initial_margin ÷ 参考价）。

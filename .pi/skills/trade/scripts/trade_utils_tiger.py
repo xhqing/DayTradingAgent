@@ -60,6 +60,12 @@ from zoneinfo import ZoneInfo
 ET_TZ = ZoneInfo("America/New_York")
 BJ_TZ = ZoneInfo("Asia/Shanghai")
 
+# 纸面权益缺省基准：仅当本机 config.json 未配置 risk.initial_equity 时兜底。
+# 真实基准只写本机 config.json 与 signals 目录下的权益账本（两者都不入库，
+# 账户资金类金额自 2026-11-08 起禁写进被跟踪文件），所以这里只是一个合成占位值、
+# 不代表任何真实账户资产。
+_PAPER_BASE_FALLBACK = 100000.0
+
 
 def market_tz(market):
     """该市场的权威时区：us（默认）→ America/New_York，hk / hkt / cn → Asia/Shanghai。
@@ -863,20 +869,21 @@ def get_quote_hk_futu(symbol):
 
 
 # ---------------------------------------------------------------------------
-# 权益（老虎账户净值。2026-08-05 实测确认：get_prime_assets(base_currency) 直接返回
+# 权益（2026-08-05 实测确认：get_prime_assets(base_currency) 直接返回
 # 对应币种的账户净值——港股 base_currency='HKD'、美股 base_currency='USD'，无需外部汇率；
 # 见 CHANGELOG 2026-08-05「equity 口径修复」）
 # ---------------------------------------------------------------------------
 
 def note_equity_baseline(value, currency):
-    """【已退役，2026-08-29 用户裁定】实盘净值特征串追加上基准黑名单（2026-08-20 立）。
+    """【已退役，无消费者】实盘基准黑名单追加入口（2026-08-20 立，2026-08-29 起为空操作）。
 
-    2026-08-29 用户裁定：实盘账户净值不属敏感财务信息（账户资金只是个人全部财产的
-    一小部分、不能代表个人财务状况），照常可写——「实盘净值禁止写入被跟踪文件」
-    旧规废止，equity_guard.py hook 已从 settings.json 摘除。本函数保留为空操作
-    （调用点一并清理），防止旧调用点报 NameError；基准黑名单文件
-    hooks/equity-baseline.local 不再写入。沿革见 AGENTS.md「实盘净值不属
-    敏感信息、照常可写」节与 CHANGELOG 2026-08-29 条。
+    2026-08-29 用户裁定取消当时的禁写要求，equity_guard.py hook 也随之从 hook 配置
+    摘除，本函数跟基准黑名单文件 hooks/equity-baseline.local 一起退役（文件只作历史
+    留档、不再写入）。本函数保留为空操作，防止旧调用点报 NameError。
+
+    2026-11-08 用户裁定重新禁写账户资金类金额（沿革见 AGENTS.md「账户资金类金额禁写
+    进被跟踪的文件」节），但拦截改由全局 gitleaks 规则在 /add 预检时机械扫描，不再
+    重开 hook，因此本函数仍保持退役。
     """
     return None
 
@@ -885,20 +892,20 @@ def load_equity_tiger(config=None, base_currency=None, account=None):
     """老虎账户净值。返回 (equity, currency)。
 
     - base_currency='HKD'（港股交易口径）：get_prime_assets(base_currency='HKD') 证券段
-      net_liquidation——全账户权益按实时汇率折算 HKD（2026-08-05 实测为模拟账户 7,819,536.41 HKD =
-      总净值 996,932.71 USD × 7.843595，汇率来自老虎自身 currency_assets[].forex_rate，
-      不依赖外部数据源）。
+      net_liquidation——全账户权益按实时汇率折算 HKD（汇率来自老虎自身 currency_assets[] 的
+      forex_rate，不依赖外部数据源；2026-08-05 实测三币种段齐全、折算自洽；具体数值不写进
+      被跟踪文件，见 AGENTS.md 账户资金类金额禁写节）。
     - base_currency='USD' / 不传（美股或兼容旧调用）：get_assets summary.net_liquidation
-      （USD，实测 996,932.71，模拟账户）。
+      （USD，模拟账户实测可查到，具体数值不写进被跟踪文件）。
 
     - account（2026-08-20 立，实盘盯盘配套）：None/paper=默认模拟账户、'live'=老虎实盘账户
       （load_config(account='live') 切生产网关 + 代理）。⚠️ 实盘=真钱，调用方须已征得用户
       明确同意（SKILL「auto 模式的账户选择」双闸）。⚠️ 2026-08-20 事故背景：preflight /
-      resume 曾固定走默认模拟账户取净值——实盘盯盘时 B 按模拟账户约 789 万 HKD 算、而实盘
+      resume 曾固定走默认模拟账户取净值——实盘盯盘时 B 按模拟账户（量级远大于实盘）算、而实盘
       净值远小于模拟净值，偏差 68 倍，单笔风险上限完全错位。修复 = 取净值与下单同账户
       （load_config(account) 两处统一），杜绝「用模拟净值管实盘风险」。
-      （2026-08-29 起 account='live' 查到净值不再记基准黑名单——实盘净值不属敏感信息、
-      照常可写，note_equity_baseline 已退役为空操作。）
+      （2026-08-29 起 note_equity_baseline 退役为空操作；account='live' 查到权益不再记
+      基准黑名单。账户资金类金额的禁写口径见 AGENTS.md 现行规定。）
 
     ⚠️ 2026-08-02 实测：实盘账户未开通交易/资产权限时 get_assets 返回 summary 全 0 且
     timestamp=None（prime_assets 的 segments 为空）——净值取不到。此时返回 (None, currency)，
@@ -910,7 +917,7 @@ def load_equity_tiger(config=None, base_currency=None, account=None):
     tc = new_trade_client(config)
     try:
         if base_currency is not None:
-            # 按币种口径取净值（2026-08-05 修：港股 HKD / 美股 USD，与标的计价一致）
+            # 按币种口径取权益（2026-08-05 修：港股 HKD / 美股 USD，与标的计价一致）
             try:
                 pa = tc.get_prime_assets(base_currency=base_currency)
                 if pa and getattr(pa, "segments", None):
@@ -1878,8 +1885,9 @@ def get_buying_power_tiger(config, symbol, ref_price, tc=None, to_hkd=None, bp_u
       可买股数上限 = 市值上限 ÷ ref_price，按 lot 向下取整由调用方处理（本函数返回原始股数）。
 
     ⚠️ 币种（2026-08-18 修）：buying_power 为账户 USD 口径，港股标的价格为 HKD——直接相除
-    有 ~7.8x 汇率偏差。原注释称「保守方向安全」，但实盘小账户（bp 5.9 万 USD ÷ 441.8 HKD 价
-    → 40 股 < 1 手 100）会直接把降档结果压成 0、误拒本可开的仓——保守过头也是错。
+    有 ~7.8x 汇率偏差。原注释称「保守方向安全」，但实盘小账户（bp 按 USD 算、标的价按 HKD 算，单位不统一）
+    会把可买股数算成远小于 1 手（实测小于一手 100 股）→ 降档结果被压成 0、误拒本可开的仓——
+    保守过头也是错。
     修法：to_hkd 汇率由调用方传入（取自 get_prime_assets 两币种净值之比，即老虎自身
     forex_rate），本函数把 bp 折成 HKD 再算；查不到汇率时按 7.80 保守常量兜底。
 
@@ -1894,8 +1902,8 @@ def get_short_buying_power_tiger(config, symbol, ref_price, tc=None, to_hkd=None
 
     背景（2026-08-25 07747 做空拒单排查）：get_buying_power_tiger 只按
     long_initial_margin 算——做空预算用多头保证金率本就不严谨（做空保证金率
-    通常更高、可空量更小），且当日拒单真因未查清（资金口径污染已排除、正确
-    购买力下 4100 股本应能过却仍报 insufficient）。本函数给做空开仓提供对齐
+    通常更高、可空量更小），且当日拒单真因未查清（资金口径污染已排除；
+    当日 4100 股的做空量按理能过、却仍报 insufficient）。本函数给做空开仓提供对齐
     口径：margin_rate 取 get_contract().short_initial_margin（SDK Contract 字段
     实存），查不到时按 1.0 全额（最保守——比多头口径更保守，方向安全）。
     其余口径（buying_power USD 折 HKD、to_hkd 兜底 7.80）与多头版一致。
@@ -2489,16 +2497,16 @@ def parse_mode(argv=None):
 def load_equity(mode='signal', project_root=None, base_currency='HKD', account=None):
     """按执行模式取当前 equity，返回 (equity, currency, source_str)。
 
-    - mode='signal' 或 (mode='auto' 且非实盘账户)：读 signals/equity-log.csv 末行 equity_after
-      （无记录返回 config.risk.initial_equity）。⚠️ 2026-09-12 用户立「模拟盘与实盘资产解耦」：
+    - mode='signal' 或 (mode='auto' 且非实盘账户)：读 signals/equity-log.csv 末行记录的权益
+      （无记录则回退 config 里的初始权益）。⚠️ 2026-09-12 用户立「模拟盘与实盘资产解耦」：
       auto + 模拟盘与 signal 完全同机制（同一纸面权益），不再读实盘参考快照——旧的
       「恒用实盘当日快照、缺失 fail-closed 拒单」口径（2026-09-03 立）废止，见本文件
       「模拟盘算仓位参考（解耦，2026-09-12）」节。
     - mode='auto' + account='live'：实时查实盘账户自身（2026-08-20「取净值与下单同账户」，
       港股 HKD / 美股 USD 与标的计价一致）。
 
-    auto+实盘 equity 必须是账户真实总资产（2026-07-31 用户立）；signal 与 auto+模拟盘用
-    equity-log 纸面权益（2026-08-01 双模式重构立 signal 机制，2026-09-12 模拟盘并入）。
+    auto+实盘的风险基数必须是账户真实资产（2026-07-31 用户立）；signal 与 auto+模拟盘用
+    权益账本末行的纸面权益（2026-08-01 双模式重构立 signal 机制，2026-09-12 模拟盘并入）。
     2026-08-05 起港美股默认账户均为老虎，本函数随老虎脚本迁移至此（原在已删除的
     trade_utils.py）。
     """
@@ -2509,12 +2517,12 @@ def load_equity(mode='signal', project_root=None, base_currency='HKD', account=N
         project_root = Path(__file__).resolve().parent.parent.parent.parent.parent
     # config.json 在 skill 根目录（scripts 上一级 = trade/）
     config_path = Path(__file__).resolve().parent.parent / "config.json"
-    initial_equity = 100000.0
+    initial_equity = _PAPER_BASE_FALLBACK
     currency = "HKD"
     try:
         with open(config_path) as f:
             risk = json.load(f).get("risk", {})
-        initial_equity = float(risk.get("initial_equity", 100000))
+        initial_equity = float(risk.get("initial_equity", _PAPER_BASE_FALLBACK))
         currency = risk.get("equity_currency", "HKD")
     except Exception:
         pass
@@ -2563,7 +2571,7 @@ def load_equity(mode='signal', project_root=None, base_currency='HKD', account=N
 # ---------------------------------------------------------------------------
 # 规则：auto 模式里凡是「算仓位 / 显示单笔预算 B」的地方（开仓脚本、preflight、resume），
 # 只要执行账户是模拟盘（None/'paper'），总资产与购买力一律取**实盘**口径——不是模拟盘
-# 自身资产。为什么：交易记录按净 R 口径统计盈亏能力，模拟盘资产（约 780 万 HKD 量级）与
+# 自身资产。为什么：交易记录按净 R 口径统计盈亏能力，模拟盘资产（量级远大于实盘）与
 # 实盘相差过大会让每笔成交额差异巨大，而按笔固定费 / 整手离散在净 R 口径里随仓位大小
 # 摊薄程度不同，净 R 统计的盈亏能力会失真；模拟盘必须严格模拟实盘交易，模拟样本才能
 # 代表实盘能力（2026-09-03 用户立，恒开、无开关）。
@@ -2579,10 +2587,10 @@ def load_equity(mode='signal', project_root=None, base_currency='HKD', account=N
 #     verify-auth），否则查不到 → 返回错误并给指引。
 #   - 模拟会话开仓算仓位时读快照（load_live_reference_checked）；快照缺失 / 非当日
 #     （北京日历日）一律拒开 fail-closed——绝不静默退回模拟盘自身资产算仓位。
-#   - 快照里的实盘净值 / 购买力非敏感信息（2026-08-29 用户裁定），写 tmp/（已 gitignore）
-#     无涉密问题；文件仅存数值与取数时间，不含任何凭证。
+#   - 快照写在 state/（已 gitignore）：2026-11-08 起账户资金类金额一律不写进被跟踪文件，
+#     这类数值只能落在本机被忽略的文件里。
 #
-# 与「取净值与下单同账户」（2026-08-20）的关系：该规则针对**实盘执行**（下单账户 =
+# 与「取权益与下单同账户」（2026-08-20）的关系：该规则针对**实盘执行**（下单账户 =
 # 实盘时 equity 必须查实盘自身、不许用模拟账户净值管实盘风险）——实盘路径保持实时查自身
 # 不变；本条是补充的**模拟盘执行**规则（下单账户 = 模拟盘时 equity/购买力用实盘口径）。
 # 两条合起来：auto 模式任何执行账户下，算仓位的风险基数都必须是实盘口径。
@@ -2622,7 +2630,7 @@ def _beijing_date(dt=None):
 
 
 def fetch_live_reference(verbose=True):
-    """查实盘账户总资产与购买力，写入实盘参考快照文件（2026-09-03 立）。
+    """2026-09-03 立：查实盘账户资产与购买力，写进实盘参考快照文件。
 
     取数口径与下单脚本完全一致（保证模拟盘算出的仓位 = 实盘会下的仓位口径）：
       - equity_hkd：get_prime_assets(base_currency='HKD') 证券段 net_liquidation；
@@ -2793,12 +2801,12 @@ def paper_sizing_reference(config=None):
     # 1) 纸面权益：equity-log 末行 / config 兑底（与 load_equity 同机制）
     project_root = Path(__file__).resolve().parent.parent.parent.parent.parent
     config_path = Path(__file__).resolve().parent.parent / "config.json"
-    initial_equity = 100000.0
+    initial_equity = _PAPER_BASE_FALLBACK
     _risk_cfg = {}
     try:
         with open(config_path) as f:
             _risk_cfg = _json.load(f).get("risk", {})
-        initial_equity = float(_risk_cfg.get("initial_equity", 100000))
+        initial_equity = float(_risk_cfg.get("initial_equity", _PAPER_BASE_FALLBACK))
     except Exception:
         pass
     equity_hkd = initial_equity
@@ -2864,7 +2872,7 @@ def auto_sizing_equity(config, base_currency, exec_account):
     """auto 开仓脚本的算仓位权益（单币种口径）。返回 (equity, currency, source)。
 
     - exec_account='live'：实时查实盘账户自身（2026-08-20「取净值与下单同账户」，零改动）；
-    - exec_account 非 live（默认模拟盘）：**纸面权益基准**（equity-log 末行，2026-09-12 解耦
+    - exec_account 非 live（默认模拟盘）：**纸面权益基准**（权益账本末行，2026-09-12 解耦
       立，见 paper_sizing_reference）——不再读实盘参考快照。纸面基准永远取得到（config
       兜底），本分支不再返回 None，模拟盘交易不依赖实盘资产状态。
     """
@@ -2882,7 +2890,7 @@ def auto_sizing_equity(config, base_currency, exec_account):
 
 def auto_sizing_fx_hkd(config, exec_account):
     """港股购买力折算汇率 HKD/USD。实盘执行 → 实盘自身净值比（口径不变）；
-    模拟盘执行 → 模拟盘自身两币种净值比（2026-09-12 解耦，不再读实盘快照）。
+    模拟盘执行 → 模拟盘自身两币种比（2026-09-12 解耦，不再读实盘快照）。
     返回 (fx, err)，fx 为 None 时 err 为原因。
     """
     if exec_account == "live":
