@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### 变更（账户数据保全：私有目录接管 + 被中性化金额回收成账本，2026-11-08 用户立）
+
+- **为什么改**：上一轮安全整改（PR #58 / #59）把账户金额从被跟踪文件里清掉后，这些数值只存在于 git 历史（提交 4d83800），本机没有结构化备份；用户明确「取消豁免不能影响数据保存，数据不能改动或缺失」。
+- **改了什么**：
+  - **金额回收成账本**：`~/.dev/private/DayTradingAgent/ledger/` 下生成 `amounts.csv`（258 处、79 个文件，含原文件路径 / 行号 / 关键词 / 数值 / 原文）+ `snapshots/4d83800/`（整改前 95 个文件逐字节全文）+ `make_ledger.py`（可随时重建）。私有目录、不进仓库。
+  - **私有目录接管**：`signals/equity-log.csv`、`hooks/equity-baseline.local`、`state/live_reference.json` 经 `private-links.py adopt` 搬到 `~/.dev/private/DayTradingAgent/`，项目里改为软链接（交易配置与凭证本就是软链接，无需再动）；数据本体与行数不变（29 / 95 行、JSON 原样）。
+  - **写入路径修正**：`fetch_live_reference()` 的原写法是「写 `.tmp` 再 `os.replace`」，会把软链接替换成实体、数据落回项目目录。抽出 `_write_live_reference()` 并先 `os.path.realpath()` 解析真实目标，保证写到私有文件、软链接保持不变（新 clone 无软链接时行为与以前完全一致）。
+  - **文档**：`AGENTS.md`「账户资金类金额禁写进被跟踪的文件」节补「本体放私有目录 + 项目放软链接 + 新 worktree 要 materialize + 原子写必须先 realpath」；`references/signal-mode.md` 写明权益账本本体在私有目录。
+- **验证（全部实跑，未碰下单）**：① 用真实代码调 `_write_live_reference()` 写探针 payload → 返回 ok、数据落在私有目录、软链接保持不变；随后写回原内容并逐字节比对一致；`read_live_reference()` 读路径同样正常。② `private-links.py check` 0 问题。③ 三个文件行数 / 内容与接管前一致。④ `gitleaks` 被跟踪文件命中仍为 0。
+- **没有做的事（红线）**：未删除、未截断、未覆盖任何已有数据；未做 filter-repo；未碰真实下单路径。
+
 ### 变更（安全整改：取消账户资金类金额的写库豁免 + 存量清理，2026-11-08 用户裁定）
 
 - **为什么改**：用户 2026-11-08 裁定取消 2026-08-29 的「账户资金类金额可写」豁免。两条理由：① 团队工作流已改成全自动（add → commit → PR → auto-merge，没有人逐次确认），豁免项没有任何人在回路把关，写进文件就随公开仓库发布；② 本仓库是 public，账户金额的时间序列（`signals/equity-log.csv` 逐年累积）本身就是一份完整的账户资产曲线——单点金额可以是零头，时间序列不是。整改前用全局 `~/.gitleaks.toml` 新增的确定性规则实测：被跟踪文件命中 132 处 / 47 个文件（131 处金额 + 1 处账户号）。
