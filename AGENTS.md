@@ -143,11 +143,11 @@
 
 ## 子项目清单（智能体专属文件归属，2026-10-30 修订）
 
-本项目（Victor）负责维护的子项目如下（与全局 `~/.pi/agent/docs/agents-registry.md`「智能体专属文件归属与子项目映射（2026-10-30 修订）」节的子项目映射表保持一致）：
+本项目（Victor）负责维护的子项目如下（与全局 `~/.pi/agent/docs/agents-registry.md`「智能体专属文件归属与子项目映射（2026-11-08 修订）」节的子项目映射表保持一致）：
 
 - **TradingProofs**（`/Users/xhq/Developer/TradingProofs`）：交易数学的 Lean 4 + Mathlib 机器可验证证明——从 `notes/cumulative-return-derivation.md` 的固定比例下注推导开始，逐步覆盖累计收益率公式、强数定律下的指数增长率、凯利最优 `f*` 与「两倍凯利」边界；与实盘执行完全隔离（不产出信号、不接证券账户）。2026-10-11 立项，负责人 Victor。
-- **（已移交）NewsScoreStudy**：面试实操题研究仓库，2026-10-26 由用户决定**改由 Mark（QuantStrategistAgent）负责**，已从本清单移除并登记到该项目名下（仓库仍在 `/Users/xhq/Developer/NewsScoreStudy`，其 `AGENTS.md` 软链接已改指 `../QuantStrategistAgent/`）。
-- **智能体专属文件归属（2026-10-30 用户修订，取代 2026-10-17 的「`.pi` 也挂软链接」）**：`AGENTS.md` / `AGENTS.override.md` / 项目级 `.pi/` 这类「会话启动时按工作目录加载、表征智能体身份」的项目级文件的**实体只在本项目（Agent 项目）**，子项目不得放实体副本、也不得复制内容进去。**子项目 TradingProofs 根目录按两层处理**：① **身份层——`AGENTS.md → ../DayTradingAgent/AGENTS.md` 软链接**（保持不变；pi 的上下文文件没有 include 机制，超集只能靠复制、复制必然漂移，且子项目里开会话仍是同一个 agent，身份本不该分叉）；② **能力层——真实 `.pi/` 目录**（不再是软链接），其 `.pi/settings.json` 用路径引用本项目的四个资源目录（`extensions` / `skills` / `prompts` / `themes`），本地独有内容放子项目自己的 `./extensions`、`./skills` 等目录，子项目专属规则用 `.pi/APPEND_SYSTEM.md` 追加（不得用 `.pi/SYSTEM.md`，那是整体替换）。**一条纪律**：子项目 `.pi` 只允许追加、不允许重述或覆盖基座规则。**为什么要改**：旧做法下子项目往 `.pi` 写任何东西都直接落进本项目、污染全部兄弟子项目并进本仓库的 git 历史；改为目录引用后，本项目的资源照样自动带过去（新增技能 / 扩展零同步），子项目写自己的目录又不会回流。两条（软链接与 `settings.json`）随子项目仓库提交，在本项目仓库里看不到。**验证**：2026-10-29 在 TradingProofs 目录跑 `pi --approve -p`，技能（`trade` 等）与项目级扩展（`AskUserQuestion`）均从本项目目录加载成功。子项目的工作交给 **Worker 会话**（cwd = 子项目根或它的 worktree）做，本项目会话（Leader）只负责 local main 同步、建 worktree、派任务与收尾。通过 intercom / `agent_call` / `agent_wake` 指定工作目录时，允许三类：本项目根（Leader）/ 已登记子项目根（Worker）/ 子项目的 git worktree（Worker），启动命令带 `-a`；详见全局 `~/.pi/agent/AGENTS.md`「Leader / Worker 分工」与 `~/.pi/agent/docs/agents-registry.md` 第 4 条。
+- **（已移交）NewsScoreStudy**：面试实操题研究仓库，2026-10-26 由用户决定**改由 Mark（QuantStrategistAgent）负责**，已从本清单移除并登记到该项目名下（仓库仍在 `/Users/xhq/Developer/NewsScoreStudy`）。
+- **智能体专属文件归属（2026-11-08 用户修订，取代 2026-10-30 的「身份层软链接 + 能力层路径引用」）**：本项目与子项目 TradingProofs 的 `AGENTS.md`、`.pi/` 之间**没有任何链接、没有任何路径引用**，各自只放本项目真实需要的内容。子项目那边：`AGENTS.md` 是它自己的实体文件（本项目是什么 / 归 Victor 负责 / Worker 边界 / 规则索引），`.pi/` 只放它自己的东西（`trading-guards` 之类的交易护栏扩展是**本项目的**，不向子项目引用——TradingProofs 与实盘完全隔离，用不上）。本项目这边也只为自己维护规则与工具。**为什么**：跨仓库路径引用是隐式依赖（本项目改名、子项目单独 clone、换机器都会静默失效），而安全网全在全局 `~/.pi/agent/`、任何目录都会加载。子项目的工作交给 **Worker 会话**（cwd = 子项目根或它的 worktree）做，本项目会话（Leader）只负责 local main 同步、建 worktree、派任务与收尾；`agent_call` / `agent_wake` 的 `dir` 允许本项目根 / 已登记子项目根 / 子项目的 git worktree 三类，启动带 `-a`。详见全局 `~/.pi/agent/AGENTS.md`「Leader / Worker 分工」与 `~/.pi/agent/docs/agents-registry.md`。
 
 ## 待办编号带市场后缀（2026-11-07 用户立）
 
