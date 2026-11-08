@@ -13,6 +13,7 @@
   - **存量**：40 个被跟踪文件里的账户金额全部中性化——真实数字删除或改为「数值见本机权益账本 / 本机快照」；`actions/*.md` 的购买力降档股数改成「可买上限 N 股」这类不暴露金额的写法；`CHANGELOG.md` / `TODO.md` / `TODO-archive.md` / `notes/` / `reviews/` 的历史条目同步清理（事实与结论不变，只去掉金额）。
   - **代码**：`trade_utils_tiger.py` 的初始权益硬编码默认值改为模块级常量 `_PAPER_BASE_FALLBACK`（注释写明只是合成占位、真实基准只读本机 config.json 与权益账本）；`preflight.py` / 两个开仓脚本 / `trade_utils_tiger_us.py` 的注释调整了关键词与年份的顺序（不改任何逻辑）；`hooks/equity_guard.py` 保持退役状态，docstring 写明「政策已收回但拦截改由 gitleaks 承担、不再挂 hook」。
   - **账户号**：`CHANGELOG.md` 命中的一处 9 位数字核查为**虚构测试号**（原文即「对照假账户号」，不属真实值），已改成打码写法。
+- **补漏（同日，ATLAS 反馈千分位盲区）**：原规则 `[0-9]{4,}` 匹配不到千分位写法（`购买力 59,000` 这类全部逃过）。全局规则改为 `[0-9][0-9,]{3,}` 并对含「股」的行加行级白名单（避开「购买力上限 N 股」的股数误报）后重扫，只剩 `actions/2026-10-21-ET-actions.md` 一处真命中（模拟盘购买力金额），已中性化为「购买力上限 × 保证金率」；同文件另两处（`equity×10` 的市值上限、纸面权益折 USD）一并去掉数字。新规则下被跟踪文件命中 0。
 - **验证**：① `gitleaks dir` 与被跟踪文件同规则脚本双跑，`equity-amount` / `account-number-*` 命中 **0**（整改前 132 处 / 47 文件）；② 改动的 Python 脚本全过 `ast.parse`；③ `config.example.json` 改后仍能被 `json.load` 解析；④ 本机 `signals/equity-log.csv` / `hooks/equity-baseline.local` 实体文件仍在（只取消跟踪、未删除）。
 - **回归风险**：① 权益账本不再随仓库分发——新 clone / 新 worktree 没有它时 `load_equity` 回退到 config 占位基准（原本就有的兜底路径，行为不变，只是兜底会真被用上）；② 本机数据文件仍在，signal 模式累加链与 preflight 读值不受影响；③ 交易逻辑、护栏、下单链路零改动；④ git 历史里仍有旧金额（彻底清除需 `git filter-repo` + force push，属需用户单独授权的动作，本次未做）。
 
