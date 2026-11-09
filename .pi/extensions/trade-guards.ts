@@ -1,5 +1,5 @@
 /**
- * DayTradingAgent pi 宿主守卫桥（2026-09-29 立）。
+ * trading-agent pi 宿主守卫桥（2026-09-29 立）。
  *
  * 职责：把 pi 的扩展事件合成成 hook 协议（tool_name / tool_input /
  * tool_response / session_id 字段）的 payload，spawn `hooks/` 下的同一批 Python 守卫

@@ -65,7 +65,7 @@ When a setup meets the EV bar, Victor emits a signal as a table in the chat (emo
 ## Repository Structure
 
 ```
-DayTradingAgent/
+trading-agent/
 ├── AGENTS.md                      # Project rules — the agent's operating discipline (entry point)
 ├── LICENSE.md                     # MIT
 ├── README.md                      # This file (English)
@@ -162,7 +162,7 @@ This project is released under the MIT License, and you are additionally asked t
 
 - **Author:** xhqing and contributors
 - **Project:** Victor — Day-Trading Agent (HK / US Equities)
-- **Source:** https://github.com/xhqing/DayTradingAgent
+- **Source:** https://github.com/xhqing/trading-agent
 
 If you fork, reference, or derive from this repository, please retain this attribution — the author name, the project name, and the repository URL — in your documentation, README, or acknowledgements.
 

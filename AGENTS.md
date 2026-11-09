@@ -1,4 +1,4 @@
-# DayTradingAgent
+# trading-agent
 
 港股 / 美股日内交易的 AI 执行项目。核心执行规范在 trade skill（`.pi/skills/trade/SKILL.md`），涉及盯盘、下单、复盘、分析标的或实盘账户操作时激活。trade skill 有**两种执行模式**：默认**信号模式（signal）**（AI 只发信号、用户手动执行、不碰账户），用户**特别说明要自动交易**（说「自动下单 / 自动交易 / auto」等）时才切**自动交易模式（auto）**（港股老虎模拟账户、美股老虎模拟账户，AI 直接调脚本下单）；两种模式交易策略完全通用，唯一区别 = 是否使用证券账户（详见 `SKILL.md`「模式开关与触发首动作」、`references/auto-mode.md` / `signal-mode.md`）。
 
@@ -99,7 +99,7 @@
 **改 hook 的规矩**：只改 `hooks/*.py` 一处，pi 端自动生效；改完用 `node ~/.pi/agent/patch/ts-syntax-check/check.mjs` 复核扩展语法（若动了扩展）。完整映射表与验证状态见 `.pi/skills/trade/references/host-integration.md`。
 ## 账户资金类金额禁写进被跟踪的文件（2026-11-08 用户裁定，取代 2026-08-29 的豁免）
 
-**现行口径**：实盘与模拟账户的资产净值（net_liquidation）、总资产、购买力（buying_power）、账户余额、可用资金，**一律不写进被 git 跟踪的文件**——CHANGELOG、TODO、SKILL.md、references、accounts.md、脚本注释、`signals/*.md`、`actions/*.md`、`reviews/`、`config.example.json` 全部适用。真实值只存本机被 `.gitignore` 忽略的文件：`signals/equity-log.csv`（纸面权益链）、`.pi/skills/trade/config.json` 与凭证配置、`state/live_reference.json`（实盘参考快照）、`hooks/equity-baseline.local`（历史留档）。**这些文件的本体统一放私有目录** `~/.dev/private/DayTradingAgent/<相对路径>`（2026-11-08 起，按全局「私有内容目录」机制：Syncthing 同步、不进任何仓库），项目里是**软链接**，由 `~/.pi/agent/patch/private-links/` 管理——不要手建链接、不要手工把本体搬回来（编辑器「写临时文件再改名」的原子保存会把软链接替换成实体，之后就不再同步了）；新 worktree 要跑 `private-links.py materialize <worktree>`。**代码里对这类文件做原子写（写 `.tmp` 再 `os.replace`）必须先 `os.path.realpath()` 解析真实路径再写**，否则 replace 会把软链接本身替掉（`_write_live_reference` 已按此实现，2026-11-08）。文档与记录里只写方法论与派生指标（B、max_loss、赔率、R 倍数、股数），需要指代金额时写「数值见本机 equity-log」这类说法。
+**现行口径**：实盘与模拟账户的资产净值（net_liquidation）、总资产、购买力（buying_power）、账户余额、可用资金，**一律不写进被 git 跟踪的文件**——CHANGELOG、TODO、SKILL.md、references、accounts.md、脚本注释、`signals/*.md`、`actions/*.md`、`reviews/`、`config.example.json` 全部适用。真实值只存本机被 `.gitignore` 忽略的文件：`signals/equity-log.csv`（纸面权益链）、`.pi/skills/trade/config.json` 与凭证配置、`state/live_reference.json`（实盘参考快照）、`hooks/equity-baseline.local`（历史留档）。**这些文件的本体统一放私有目录** `~/.dev/private/trading-agent/<相对路径>`（2026-11-08 起，按全局「私有内容目录」机制：Syncthing 同步、不进任何仓库），项目里是**软链接**，由 `~/.pi/agent/patch/private-links/` 管理——不要手建链接、不要手工把本体搬回来（编辑器「写临时文件再改名」的原子保存会把软链接替换成实体，之后就不再同步了）；新 worktree 要跑 `private-links.py materialize <worktree>`。**代码里对这类文件做原子写（写 `.tmp` 再 `os.replace`）必须先 `os.path.realpath()` 解析真实路径再写**，否则 replace 会把软链接本身替掉（`_write_live_reference` 已按此实现，2026-11-08）。文档与记录里只写方法论与派生指标（B、max_loss、赔率、R 倍数、股数），需要指代金额时写「数值见本机 equity-log」这类说法。
 
 - **为什么改（为什么 2026-08-29 那次豁免取消）**：一是团队工作流已改成全自动（add → commit → PR → auto-merge，没有人逐次确认），豁免项没有人在回路把关，一旦写进文件就随公开仓库发布；二是本仓库是 public，账户金额的时间序列（`equity-log.csv` 逐年累积）本身就是一份完整的账户资产曲线——单点金额可以是零头，时间序列不是。两条叠加，豁免的前提不再成立。
 - **沿革（完整脉络，便于理解为什么反复变）**：2026-08-20 立「实盘账户资金类金额不写进被跟踪文件」→ 2026-08-26 收紧到「量级口径同样不写」并做 filter-repo 历史清洗 → 2026-08-29 裁定豁免，同时撤销资金类数据文件（`equity-log.csv`）的 gitignore 条目、退役那支 hook 脚本。→ 2026-11-08 取消豁免、恢复禁写（**不重开 hook**：退役脚本保持退役，改由全局 `~/.gitleaks.toml` 的 `equity-amount` 规则在 `/add` 预检里机械扫描，脚本名见 `hooks/equity_guard.py`）。
@@ -146,7 +146,7 @@
 本项目（Victor）负责维护的子项目如下（与全局 `~/.pi/agent/docs/agents-registry.md`「智能体专属文件归属与子项目映射（2026-11-08 修订）」节的子项目映射表保持一致）：
 
 - **TradingProofs**（`/Users/xhq/Developer/TradingProofs`）：交易数学的 Lean 4 + Mathlib 机器可验证证明——从 `notes/cumulative-return-derivation.md` 的固定比例下注推导开始，逐步覆盖累计收益率公式、强数定律下的指数增长率、凯利最优 `f*` 与「两倍凯利」边界；与实盘执行完全隔离（不产出信号、不接证券账户）。2026-10-11 立项，负责人 Victor。
-- **（已移交）NewsScoreStudy**：面试实操题研究仓库，2026-10-26 由用户决定**改由 Mark（QuantStrategistAgent）负责**，已从本清单移除并登记到该项目名下（仓库仍在 `/Users/xhq/Developer/NewsScoreStudy`）。
+- **（已移交）NewsScoreStudy**：面试实操题研究仓库，2026-10-26 由用户决定**改由 Mark（quant-agent）负责**，已从本清单移除并登记到该项目名下（仓库仍在 `/Users/xhq/Developer/NewsScoreStudy`）。
 - **智能体专属文件归属（2026-11-08 用户修订，取代 2026-10-30 的「身份层软链接 + 能力层路径引用」）**：本项目与子项目 TradingProofs 的 `AGENTS.md`、`.pi/` 之间**没有任何链接、没有任何路径引用**，各自只放本项目真实需要的内容。子项目那边：`AGENTS.md` 是它自己的实体文件（本项目是什么 / 归 Victor 负责 / Worker 边界 / 规则索引），`.pi/` 只放它自己的东西（`trading-guards` 之类的交易护栏扩展是**本项目的**，不向子项目引用——TradingProofs 与实盘完全隔离，用不上）。本项目这边也只为自己维护规则与工具。**为什么**：跨仓库路径引用是隐式依赖（本项目改名、子项目单独 clone、换机器都会静默失效），而安全网全在全局 `~/.pi/agent/`、任何目录都会加载。子项目的工作交给 **Worker 会话**（cwd = 子项目根或它的 worktree）做，本项目会话（Leader）只负责 local main 同步、建 worktree、派任务与收尾；`agent_call` / `agent_wake` 的 `dir` 允许本项目根 / 已登记子项目根 / 子项目的 git worktree 三类，启动带 `-a`。详见全局 `~/.pi/agent/AGENTS.md`「Leader / Worker 分工」与 `~/.pi/agent/docs/agents-registry.md`。
 
 ## 待办编号带市场后缀（2026-11-07 用户立）
@@ -159,7 +159,7 @@
 
 为什么：一眼分清「这条影响哪个市场」。2026-11-07 实测过不带后缀的代价——红色 11 条里港股 5 / 美股 3 / 通用 3，要靠逐条读描述才能判断归属（用户当场问「能否区分港股还是美股的问题」）。
 
-边界：后缀直接跟在数字后面、不加分隔符；数字部分仍按全局递增、永不复用（`T123HK` 与 `T124US` 不冲突）；已归档条目保持原样（历史留痕不返工）；跨项目引用用「项目 + 完整编号」形式（如 `DayTradingAgent T123HK`）。
+边界：后缀直接跟在数字后面、不加分隔符；数字部分仍按全局递增、永不复用（`T123HK` 与 `T124US` 不冲突）；已归档条目保持原样（历史留痕不返工）；跨项目引用用「项目 + 完整编号」形式（如 `trading-agent T123HK`）。
 
 工具强制：`hooks/changelog_guard.py` 的 TODO 卫生检测新增第 ③ 项——编辑 `TODO.md` / `TODO.local.md` 后扫描 `- [ ] **T<数字>**` 形式的条目，编号未带 `HK` / `US` / `HKUS` 后缀即提醒补标（不阻断，与既有 ①② 项同层）。
 

@@ -168,7 +168,7 @@ AI 不下单，所有订单 / 成交均为用户在 App 操作。**signal 模式
 
 **每笔交易了结后**（主动平仓 🔴 清仓、被动平仓止损 / 止盈触发——凡是兑现盈亏的了结动作都算），当前 equity += 本笔盈亏（港股直接 HKD、美股按当日 USD/HKD 汇率换算 HKD），并**同时写两处**：
 
-1. **append 一行到 `signals/equity-log.csv`**（字段 `date, symbol, P_HKD, equity_after, note`，结构化、preflight 读它算 B；该文件自 2026-11-08 起**不再入库**（内容属账户资产类），本体在私有目录 `~/.dev/private/DayTradingAgent/signals/equity-log.csv`、项目里是软链接；规则见项目 AGENTS.md「账户资金类金额禁写进被跟踪的文件」节）；
+1. **append 一行到 `signals/equity-log.csv`**（字段 `date, symbol, P_HKD, equity_after, note`，结构化、preflight 读它算 B；该文件自 2026-11-08 起**不再入库**（内容属账户资产类），本体在私有目录 `~/.dev/private/trading-agent/signals/equity-log.csv`、项目里是软链接；规则见项目 AGENTS.md「账户资金类金额禁写进被跟踪的文件」节）；
 2. **信号文件里只写盈亏与派生指标，不写账户金额**（港股 `signals/YYYY-MM-DD-HKT-signals.md` / 美股 `signals/YYYY-MM-DD-ET-signals.md`）。了结行形如 `> 本笔了结：±HK$P（±X.XR）| B = 2% × 当前权益 ≈ HK$<本机账本读数>`。**口径**：账户资产类金额一律不写入被跟踪文件（2026-11-08 用户裁定；2026-08-29 的豁免已取消，沿革见项目 AGENTS.md）——需要指代金额时写「数值见本机权益账本」，真实值只留 `signals/equity-log.csv`（不入库）。
 
 **当前 equity = `equity-log.csv` 最新行 `equity_after`**（无记录则 = `config.risk.initial_equity`）。权益缩水 → B 自动缩小（复利减速）、权益增长 → B 自动放大（复利加速）。

@@ -40,7 +40,7 @@ main 上的 `git add` / `git commit`。
     python3 worktree_start.py [--market us|hk] [--branch-name <自定义分支名>]
 
 输出关键行（供 AI 解析）：
-    WORKTREE=/Users/xhq/Developer/DayTradingAgent-watch-20261103-us
+    WORKTREE=/Users/xhq/Developer/trading-agent-watch-20261103-us
     BRANCH=chore/watch-20261103-us
 
 ## 停盯时怎么收尾

@@ -448,7 +448,7 @@ def alert_outage(reason, source='ensure', market=None, dry_run=False, force=Fals
     sent = False
     if force or (now - recent >= ALERT_COOLDOWN):
         sent = popup_alert(
-            'DayTradingAgent · IP 池不可用（不响铃提醒）',
+            'trading-agent · IP 池不可用（不响铃提醒）',
             f'整池不可用（来源 {source}）：{reason}\n\n'
             f'影响：下单 / 平仓 / 查持仓都无法建立境外出口（池内换端口已无效）。\n'
             f'归因：JMS 代理服务稳定性问题（不是老虎侧、也不需要加白）。\n'

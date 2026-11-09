@@ -1,5 +1,10 @@
 # Changelog
 
+### 变更（项目更名为 trading-agent，2026-11-09）
+
+- **为什么改**：用户 2026-11-09 正式规定 agent 项目命名统一为 `<职责>-agent`（全小写、连字符）。本项目（Victor）由 `DayTradingAgent` 更名为 `trading-agent`。
+- **改了什么**：① 本地目录与 GitHub 仓库更名为 `trading-agent`（旧 URL 自动重定向）；② 文档（`README.md` / `README_cn.md` / `AGENTS.md` / `TODO.md` / `PLAN.md` / `MEMO.md` / `candidates.md` / `.pi/skills/trade/references/signal-mode.md`）里的项目名与链接同步改名；③ **功能性路径**同步更新：`hooks/*.plist`（launchd 绝对路径）、`hooks/monitor_watcher.py`、`.pi/skills/trade/scripts/*.py`（预警窗标题、`preflight.py` 的路径改写规则、`worktree_start.py` 示例）、`.pi/extensions/trade-guards.ts` 注释；④ 本机私有目录 `~/.dev/private/DayTradingAgent/` → `~/.dev/private/trading-agent/` 随改名迁移，项目内软链接重建。
+
 ### 变更（补齐 `Type-AI Agent` 徽章，2026-11-09）
 
 - **为什么改**：团队 2026-11-09 新判据——**项目是不是 Agent 项目，看项目根 `README.md` 的 `Type` 徽章值是不是 `AI Agent`**，与项目名是否以 `Agent` 结尾无关；注册表里登记的 Agent 项目都必须挂这枚徽章（工具校验 `patch/roster-sync/roster-sync-check.py` 会逐个检查）。本仓库此前只有 License / Markets / Mode 徽章、缺 Type 徽章，按新判据会被判成「不是 Agent 项目」。

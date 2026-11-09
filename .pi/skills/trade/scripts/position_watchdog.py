@@ -408,7 +408,7 @@ def evaluate(stale_seconds, close_grace_min):
                 alerts.append({
                     "key": f"unattended_{market}",
                     "market": market,
-                    "title": "DayTradingAgent · 持仓无人盯",
+                    "title": "trading-agent · 持仓无人盯",
                     "message": (
                         f"⚠️ {market} 盘中有持仓，但密采样已停更 {age // 60} 分 {age % 60} 秒"
                         f"（阈值 {stale_seconds} 秒）。\n\n"
@@ -426,7 +426,7 @@ def evaluate(stale_seconds, close_grace_min):
                     alerts.append({
                         "key": f"passive_close_{market}",
                         "market": market,
-                        "title": "DayTradingAgent · 疑似被动平仓",
+                        "title": "trading-agent · 疑似被动平仓",
                         "message": (
                             f"🔔 {market} 记录里还有持仓，但账户实持已归零：{', '.join(zeroed)}\n\n"
                             f"这通常是止损 / 止盈条件单被动成交（无人下单平仓）。请立即：\n"
@@ -448,7 +448,7 @@ def evaluate(stale_seconds, close_grace_min):
                 alerts.append({
                     "key": f"close_exposure_{market}",
                     "market": market,
-                    "title": "DayTradingAgent · 收盘仍有持仓",
+                    "title": "trading-agent · 收盘仍有持仓",
                     "message": (
                         f"🚨 {market} 已收盘，但账户仍有持仓未平："
                         f"{still or '（账户未查到，按记录判断仍有仓）'}\n\n"

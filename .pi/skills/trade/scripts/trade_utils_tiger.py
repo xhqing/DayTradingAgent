@@ -2686,7 +2686,7 @@ def _write_live_reference(payload):
     """把快照 payload 原子写进快照文件，返回 (ok, err)。
 
     为什么要把路径解析成真实路径（2026-11-08 立）：快照文件从这一天起挂在私有目录
-    （`~/.dev/private/DayTradingAgent/state/live_reference.json`，项目里是软链接）。
+    （`~/.dev/private/trading-agent/state/live_reference.json`，项目里是软链接）。
     原子写 = 先写 `.tmp` 再 `os.replace`，而 replace 会把**软链接本身**替掉、数据又
     落回项目目录、私有侧从此不再更新。所以先 `os.path.realpath(path)` 拿到真实目标
     再写——有软链接时写到私有文件、软链接保持不变；没软链接（新 clone）时与以前完全一样。
