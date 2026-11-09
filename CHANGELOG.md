@@ -1,5 +1,10 @@
 # Changelog
 
+### 变更（补齐 `Type-AI Agent` 徽章，2026-11-09）
+
+- **为什么改**：团队 2026-11-09 新判据——**项目是不是 Agent 项目，看项目根 `README.md` 的 `Type` 徽章值是不是 `AI Agent`**，与项目名是否以 `Agent` 结尾无关；注册表里登记的 Agent 项目都必须挂这枚徽章（工具校验 `patch/roster-sync/roster-sync-check.py` 会逐个检查）。本仓库此前只有 License / Markets / Mode 徽章、缺 Type 徽章，按新判据会被判成「不是 Agent 项目」。
+- **改了什么**：`README.md` / `README_cn.md` 徽章块补一枚 `Type-AI Agent`（`https://img.shields.io/badge/Type-AI%20Agent-FF1493.svg`），紧跟 License 徽章；其它徽章与正文不动。
+
 本文件记录 DayTradingAgent 每个版本的主要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
 ### 变更（本项目与子项目的 `AGENTS.md`、`.pi/` 改为完全独立，2026-11-08）
