@@ -1,4 +1,4 @@
-// alert_panel.swift — 可最小化到 Dock 的提醒面板（DayTradingAgent T128，2026-09-01 立）
+// alert_panel.swift — 可最小化到 Dock 的提醒面板（trading-agent T128，2026-09-01 立）
 //
 // 为什么需要：osascript `display dialog` 是模态窗——没有最小化按钮、一直悬浮在所有
 // 窗口最上层（2026-08-31 用户实测反馈「一直悬在窗口最上层影响操作」）。本面板是真正的
@@ -7,7 +7,7 @@
 // 用法（由 proxy_guard.py / monitor_watcher.py 调起，一般不手跑）：
 //   alert_panel <pending_json> <result_json> [--timeout 秒]
 //     pending_json 字段：
-//       title           窗口标题（默认 "DayTradingAgent"）
+//       title           窗口标题（默认 "trading-agent"）
 //       message         正文（多行，支持 \n）
 //       button_ok       确认按钮文案（默认 "已添加"）
 //       button_cancel   取消按钮文案（默认 "取消"；设 "none" = 单按钮模式，如"知道了"）
@@ -87,7 +87,7 @@ func runPanel(pendingPath: String, resultPath: String,
               let p = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         pend = p
     }
-    let title = pend["title"] as? String ?? "DayTradingAgent"
+    let title = pend["title"] as? String ?? "trading-agent"
     let message = (pend["message"] as? String ?? "（无内容）")
         .replacingOccurrences(of: "\\n", with: "\n")
     let okText = pend["button_ok"] as? String ?? "已添加"

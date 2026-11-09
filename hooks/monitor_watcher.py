@@ -131,7 +131,7 @@ def notify(msg, key=None):
             import json as _json
             os.makedirs(os.path.dirname(_PANEL_PENDING), exist_ok=True)
             with open(_PANEL_PENDING, "w") as f:
-                _json.dump({"title": "DayTradingAgent 密采样守护", "message": msg,
+                _json.dump({"title": "trading-agent 密采样守护", "message": msg,
                             "button_ok": "知道了", "button_cancel": "none",
                             "timeout_secs": 30}, f, ensure_ascii=False)
             # detached：watcher 立即返回（launchd 10 秒节奏不被弹窗拖住），面板独立等点击/超时
@@ -146,7 +146,7 @@ def notify(msg, key=None):
         esc = msg.replace("\\", "\\\\").replace('"', '\\"')
         subprocess.run(
             ["osascript", "-e",
-             f'display dialog "{esc}" with title "DayTradingAgent 密采样守护" '
+             f'display dialog "{esc}" with title "trading-agent 密采样守护" '
              f'buttons {{"知道了"}} default button "知道了" giving up after 30 '
              f'with icon caution'],
             timeout=35,

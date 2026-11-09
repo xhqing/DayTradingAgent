@@ -23,7 +23,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/opt/homebrew/bin/python3</string>
-        <string>/Users/xhq/Developer/DayTradingAgent/.pi/skills/trade/scripts/position_watchdog.py</string>
+        <string>/Users/xhq/Developer/trading-agent/.pi/skills/trade/scripts/position_watchdog.py</string>
     </array>
 
     <key>StartInterval</key>

@@ -65,7 +65,7 @@
 ## 仓库结构
 
 ```
-DayTradingAgent/
+trading-agent/
 ├── AGENTS.md                      # 项目规则——智能体的工作纪律（入口）
 ├── LICENSE.md                     # MIT
 ├── README.md                      # 英文版 README
@@ -162,7 +162,7 @@ Victor 当前处于**信号模式**：AI 发信号、人执行——这套自 20
 
 - **作者：** xhqing and contributors
 - **项目：** Victor —— 港股 / 美股日内交易智能体
-- **地址：** https://github.com/xhqing/DayTradingAgent
+- **地址：** https://github.com/xhqing/trading-agent
 
 若你 Fork、引用代码或基于本仓库二次开发，请在文档 / README / 致谢中保留以上出处（作者、项目名、仓库地址）。
 

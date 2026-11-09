@@ -415,7 +415,7 @@ def _ensure_watcher():
                 # 可能是旧版本甚至不存在。
                 try:
                     _txt = open(_src, encoding="utf-8").read()
-                    _txt = _txt.replace("/Users/xhq/Developer/DayTradingAgent", _root)
+                    _txt = _txt.replace("/Users/xhq/Developer/trading-agent", _root)
                     with open(_plist, "w", encoding="utf-8") as _f:
                         _f.write(_txt)
                     print(f"🛡️ 已部署 {human} plist（{_src} → {_plist}，根={_root}）")

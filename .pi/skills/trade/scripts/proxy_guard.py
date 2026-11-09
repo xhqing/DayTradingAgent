@@ -183,7 +183,7 @@ def ring(sound="Basso"):
 
 
 def dialog_pending():
-    """是否已有未确认的 DayTradingAgent 提醒窗在屏。
+    """是否已有未确认的 trading-agent 提醒窗在屏。
 
     用途（2026-08-19 用户立「必须点击才消失」后配的防叠加闸）：旧窗未被点击又弹新的会
     多窗叠着，已有在屏窗时跳过新弹（冷却机制 5 分钟后条件仍成立会再弹，信息不丢）。
@@ -191,7 +191,7 @@ def dialog_pending():
     display dialog 模式兼容（monitor_watcher 等仍在用的告知窗）——任意时刻至多一个
     模态/面板提醒窗。"""
     try:
-        for pattern in ("alert_panel", "display dialog.*DayTradingAgent"):
+        for pattern in ("alert_panel", "display dialog.*trading-agent"):
             r = subprocess.run(["pgrep", "-f", pattern], capture_output=True)
             if r.returncode == 0:
                 return True
@@ -209,7 +209,7 @@ def _spawn_listener():
         start_new_session=True)
 
 
-def remind(add_ips, message, title="DayTradingAgent · 老虎白名单提醒", dry_run=False):
+def remind(add_ips, message, title="trading-agent · 老虎白名单提醒", dry_run=False):
     """弹「取消 / 已添加」确认窗：pending 内容（ips + 文案）落盘后派生等待子进程，
     用户点「已添加」时由子进程把 IP 合并进 config.json（见 await_confirm）。响铃由
     调用方负责。防叠加：已有未确认弹窗在屏（dialog_pending）则跳过本次。"""
@@ -252,7 +252,7 @@ def await_confirm():
         pend = {}
     ips = [str(ip).strip() for ip in (pend.get("ips") or []) if str(ip).strip()]
     message = pend.get("message") or "（提醒内容丢失——pending 文件缺失，本次点击不替换白名单）"
-    title = pend.get("title") or "DayTradingAgent · 老虎白名单提醒"
+    title = pend.get("title") or "trading-agent · 老虎白名单提醒"
 
     if ensure_panel():
         try:
@@ -392,7 +392,7 @@ def _legacy_main():
                                       "白名单（仅作按钮演示，可右粘贴验证）；正式提醒时"
                                       "复制的是待加白的全量 IP 清单。",
                            "copy_text": demo_copy,
-                           "title": "DayTradingAgent · 白名单提醒（测试）"},
+                           "title": "trading-agent · 白名单提醒（测试）"},
                           f, ensure_ascii=False)
         except OSError:
             pass
@@ -486,14 +486,14 @@ def _legacy_main():
                        f"JMS 池共 {len(jms_ips)} 个 IP，其中 {len(missing)} 个尚未加白。\n\n"
                        f"正在本项目端口池内换一个白名单内的端口恢复服务"
                        f"（不重启进程、不碰 xpilot，结果见终端 / proxy_guard.log）。\n\n{_op_hint}")
-                title = "DayTradingAgent · 当前出口被拒"
+                title = "trading-agent · 当前出口被拒"
             else:
                 msg = (f"ℹ️ JMS 订阅池里有 {len(missing)}/{len(jms_ips)} 个 IP 不在老虎白名单"
                        f"（当前出口 {cur_ip or '未测出'} 仍可用、服务无影响）。\n\n"
                        f"建议按下面步骤全量重配，否则那些节点日后无法作为备选；"
                        f"且旧 IP 不清会逐步占满白名单数量上限。\n\n{_op_hint}\n\n"
                        f"👉 点下方【复制全部 IP】按钮即可一键复制上面这串（⌘⇧C 同效）。")
-                title = "DayTradingAgent · 白名单待更新"
+                title = "trading-agent · 白名单待更新"
             if all_stale:
                 msg += (f"\n\n⚠️ 另外注意：白名单里现有的 {len(whitelist)} 个 IP **全部**不在 "
                         f"JMS 池内（零重叠）。这通常不是正常的节点换 IP 残留，而更可能是 "
