@@ -211,13 +211,21 @@ def _append_signal_file(market, content):
         f.write(content + "\n")
 
 
+def _sid_line(p):
+    """会话归属行（2026-11-09 用户立）：影子条目必须带 `🆔 会话：<sid8>`，
+    否则停盯总结时无法区分「哪些影子仓是本会话的」——两个 auto 会话并行时
+    影子全写在同一份 signals 文件里，旧记录不带会话标记→无法归属。"""
+    sid = (p.get("session_id") or "")[:8]
+    return f"> 🆔 会话：{sid}\n" if sid else ""
+
+
 def _fmt_open(p):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return f"""════════════════════════════════════
 🟢🟢🟢 【影子】开仓 · {p['symbol']} · {'做多' if p['direction'] == 'long' else '做空'}（影子交易，不下单）🟢🟢🟢
 ════════════════════════════════════
 > ⏰ 影子开仓时间：{now}
-
+{_sid_line(p)}
 | 项 | 值 |
 |---|---|
 | 类型 | **【影子】**（auto 互斥闸拦截的机会的纸面记录——不下单、不碰账户、不响铃，假设成交；被拦原因 `{p.get('blocked_by')}`）|
@@ -238,6 +246,7 @@ def _fmt_close(p):
 🔴🔴🔴 【影子】平仓 · {p['symbol']} · 平{'多' if p['direction'] == 'long' else '空'}（影子交易结算）🔴🔴🔴
 ════════════════════════════════════
 > ⏰ 影子平仓时间：{now}
+{_sid_line(p)}
 
 | 项 | 值 |
 |---|---|
@@ -256,6 +265,7 @@ def _fmt_move(p, old, new):
 🟡🟡🟡 【影子】移动止损 · {p['symbol']} · 新止损 {new} 🟡🟡🟡
 ════════════════════════════════════
 > ⏰ 影子移损时间：{now}
+{_sid_line(p)}
 
 | 项 | 值 |
 |---|---|

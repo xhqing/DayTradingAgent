@@ -360,6 +360,65 @@ def parse_open_records(actions_path):
     return out
 
 
+def parse_own_shadows(market, trade_date, sid8):
+    """读「本会话自己的」影子（纸面）交易记录（2026-11-09 用户立会话归属要求）。
+
+    背景：2026-11-09 ET 交易日两个 auto 会话并行，影子条目全写在同一份
+    `signals/<date>-ET-signals.md` 里（文件按市场 + 日期分，不按会话分），旧版
+    记录没有会话标记 → 停盯时根本不区分是谁的影子仓。现在 shadow_trade.py 每条
+    都写 `🆔 会话：<sid8>`，本函数按该标记过滤，只返回本会话自己的。
+
+    返回 {"events": [...], "unattributed": N, "file": path}：
+      events        本会话影子事件（开仓 / 平仓 / 移损），按文件顺序
+      unattributed  无会话标记的历史条目数（无法归属，不计入任何会话，只作提示）
+    """
+    suffix = "ET" if market == "us" else "HKT"
+    path = os.path.join(project_root(), "signals", f"{trade_date}-{suffix}-signals.md")
+    res = {"events": [], "unattributed": 0, "file": path}
+    if not sid8 or not os.path.exists(path):
+        return res
+    try:
+        txt = open(path, encoding="utf-8").read()
+    except Exception:
+        return res
+    pat = re.compile(r"【影子】(开仓|平仓|移动止损)\s*[·•]\s*([A-Za-z0-9.]+)", re.M)
+    ms = list(pat.finditer(txt))
+    for i, m in enumerate(ms):
+        seg = txt[m.start(): (ms[i + 1].start() if i + 1 < len(ms) else len(txt))]
+        sid_m = re.search(r"🆔\s*会话\s*[：:]\s*([0-9a-zA-Z]+)", seg)
+        if not sid_m:
+            res["unattributed"] += 1
+            continue
+        if sid_m.group(1)[:8] != sid8[:8]:
+            continue
+
+        def num(p):
+            mm = re.search(p, seg)
+            if not mm:
+                return None
+            try:
+                return float(mm.group(1).replace(",", ""))
+            except Exception:
+                return None
+
+        kind = m.group(1)
+        ev = {
+            "kind": kind,
+            "symbol": m.group(2),
+            "direction": "做多" if "做多" in seg[:400] else ("做空" if "做空" in seg[:400] else ""),
+            "ref": num(r"\|\s*参考价\s*\|\s*\**\s*([\d.]+)"),
+            "entry": num(r"假设成交价\*?\*?\s*\|\s*\**\s*([\d.]+)"),
+            "stop": num(r"\|\s*止损\s*\|\s*\**\s*([\d.]+)"),
+            "target": num(r"\|\s*止盈\s*\|\s*([\d.]+)"),
+            "exit": num(r"\|\s*平仓价\s*\|\s*([\d.]+)"),
+            "net": num(r"净盈亏\*?\*?\s*\|\s*\**\s*([+-]?[\d,]+)"),
+            "r": num(r"实际落地赔率\*?\*?\s*\|\s*\**\s*([+-]?[\d.]+)R"),
+            "new_stop": num(r"\|\s*新止损\s*\|\s*([\d.]+)"),
+        }
+        res["events"].append(ev)
+    return res
+
+
 def detect_trade_date(market, account_mode):
     """最近 7 天内最近一个有成交的交易日（美股按 ET、港股按 BJ 自然日）。"""
     tz = market_day_tz(market)
@@ -497,6 +556,11 @@ def main():
     scope = a.scope or ("session" if sid8 else "account")
     scope_note = ""
     if scope == "session":
+        # 会话口径铁律（2026-11-09 用户立）：只统计本会话自己的成交，绝不混入其它会话。
+        # 本会话当天没有真实成交（例如所有机会都被互斥闸拦成影子仓）时，**就是 0 笔**——
+        # 不允许退化为「全账户口径」把别的会话的交易报成本场的（2026-11-09 实测事故：
+        # 01a1c0e1 本场 0 笔真实成交，旧逻辑退化为全账户，把并行的 01a1c0e4 的 3 笔
+        # 报成了本场战绩，用户收到「总体成果」后又补发了一条口径更正）。
         suffix_s = "ET" if a.market == "us" else "HKT"
         _ap = os.path.join(root, "actions", f"{date}-{suffix_s}-actions.md")
         owned = owned_entries(_ap, sid8)
@@ -508,11 +572,12 @@ def main():
                     kept.append(t)
             print(f"会话口径：本会话（{sid8}）命中 {len(kept)}/{len(trades)} 笔")
             trades = kept
-            scope_note = f"本会话 {sid8}"
+            scope_note = f"本会话 {sid8}（只统计本会话自己的成交）"
         else:
-            scope = "account(fallback)"
-            scope_note = f"未找到本会话({sid8 or 'anon'})的动作归属记录，退化为全账户口径"
-            print(f"⚠️ {scope_note}")
+            print(f"会话口径：本会话（{sid8}）该交易日无真实开仓记录 → 本场 0 笔真实成交"
+                  f"（全账户当日共 {len(trades)} 笔属其它会话，不计入本场）")
+            trades = []
+            scope_note = f"本会话 {sid8}（只统计本会话自己的成交，本场 0 笔真实成交）"
     if not trades:
         print(f"⚠️ 该交易日无成交订单（{len(orders)} 条订单但无开仓成交）——仍会生成 0 交易收尾。")
     print(f"账户 {masked}｜订单 {len(orders)} 条｜成笔 {len(trades)} 笔")
@@ -564,6 +629,15 @@ def main():
         })
 
     overall_r = (total_pnl / total_ml) if total_ml else None
+
+    # 本会话自己的影子（纸面）交易（2026-11-09 用户立：每个会话只汇报自己的成果，
+    # 影子仓同样按会话归属过滤——旧版没有会话标记，那些无法归属的历史条目只计数提示）
+    shadows = parse_own_shadows(a.market, date, sid8)
+    sh_events = shadows.get("events") or []
+    sh_closed = [e for e in sh_events if e["kind"] == "平仓"]
+    sh_opened = [e for e in sh_events if e["kind"] == "开仓"]
+    sh_net = sum((e["net"] or 0) for e in sh_closed)
+
 
     # 币种单位（2026-10-23 用户立：所有金额必须带单位；2026-11-04 修订：美元写 US$、不再用裸 $；
     # 港股写 HK$；港美分开统计，币种随 --market 走）
@@ -682,7 +756,39 @@ def main():
             parts.append(f"北京 {k} 见 {len(v)} 笔（净 {money(sum(x['t']['pnl'] or 0 for x in v))}）")
         L.append("**对照结论**：" + "；".join(parts) + f"，合计 {money(total_pnl)}。")
         L.append("")
-    L.append("## 四、要点与教训（AI 手写补充区）")
+    # —— 本会话影子（纸面）交易（2026-11-09 用户立：只汇报本会话自己的成果）——
+    L.append("## 四、本会话影子交易（纸面样本，不计入本场战绩）")
+    L.append("")
+    if not sid8:
+        L.append("无会话 ID，无法归属影子记录，略。")
+    elif not sh_opened and not sh_closed:
+        L.append("本会话本场无影子交易记录"
+                 + (f"（另有 {shadows.get('unattributed', 0)} 条无会话标记的历史条目，无法归属，未计入）"
+                    if shadows.get("unattributed") else "") + "。")
+    else:
+        L.append(f"本会话共 **{len(sh_opened)} 笔**影子开仓，其中 **{len(sh_closed)} 笔**已结算"
+                 f"（净 {sh_net:+,.0f} 近似值）。影子是「被互斥闸拦下的机会」的纸面记录，"
+                 f"与真实仓分开统计。")
+        if shadows.get("unattributed"):
+            L.append("")
+            L.append(f"> ⚠️ 本文件里还有 {shadows['unattributed']} 条无 `🆔 会话` 标记的历史影子条目，"
+                     f"无法归属到任何会话，未计入本场。")
+        L.append("")
+        L.append("| # | 类型 | 标的 | 方向 | 价格 | 结果 |")
+        L.append("|---|---|---|---|---|---|")
+        for j, e in enumerate(sh_events, 1):
+            if e["kind"] == "开仓":
+                price = f"假设成交 {e['entry']:g}｜止损 {e['stop']:g}" if e.get("entry") and e.get("stop") else "—"
+                result = "—"
+            elif e["kind"] == "平仓":
+                price = f"平仓 {e['exit']:g}" if e.get("exit") else "—"
+                result = f"净 {e['net']:+,.0f}（{e['r']:+.2f}R）" if e.get("net") is not None and e.get("r") is not None else "—"
+            else:
+                price = f"新止损 {e['new_stop']:g}" if e.get("new_stop") else "—"
+                result = "—"
+            L.append(f"| {j} | {e['kind']} | {e['symbol']} | {e['direction'] or '—'} | {price} | {result} |")
+    L.append("")
+    L.append("## 五、要点与教训（AI 手写补充区）")
     L.append("")
     L.append("（此处由 AI 补写：行情性质 / 打法得失 / 是否回归风险 / 下一步建议）")
     L.append("")
@@ -693,6 +799,11 @@ def main():
     F = []
     # 标题不带「（模拟盘）」——指令由用户发起，用户自己清楚账户类型（2026-10-23 用户立）
     F.append(f"# {a.market.upper()} {date} 交易日小结")
+    F.append("")
+    # 口径声明置顶（2026-11-09 用户立）：每个盯盘会话只汇报自己的成果，
+    # 不汇报总体（全账户）、也不汇报其它会话的成果。
+    F.append(f"**本场范围：{scope_note or scope}**——只统计本会话自己的成交，"
+             f"不含同一账户其它并行会话的交易。")
     F.append("")
     F.append("## 交易明细")
     F.append("")
@@ -709,6 +820,9 @@ def main():
     F.append("## 汇总")
     F.append("")
     F.append(f"- 笔数：{len(trades)} 笔（{wins} 胜 {len(trades) - wins} 负），胜率 {(wins / len(trades) * 100 if trades else 0):.0f}%")
+    if not trades:
+        F.append("- 说明：**本场 0 笔真实成交**（本会话当日没有成功开仓的真实订单；"
+                 "同一账户当日其它会话的交易不属于本场，不计入）")
     F.append(f"- 净盈亏：**{money(total_pnl)}**")
     F.append(f"- 整体实际落地赔率：**{('%.2fR' % overall_r) if overall_r is not None else 'N/A'}**（总盈亏 ÷ 总 max_loss {money_abs(total_ml)}）")
     F.append(f"- 收工时状态：空仓（无隔夜持仓）")
@@ -721,6 +835,23 @@ def main():
         F.append("老虎 App 按北京日期分组，本交易日跨北京午夜，会被拆成两天显示：")
         for k, v in sorted(by_bj.items()):
             F.append(f"- 北京 {k}：{len(v)} 笔（净 {money(sum(x['t']['pnl'] or 0 for x in v))}）")
+    # —— 本会话影子（纸面）交易：归本场业务内容，但明确标注不计入真实战绩 ——
+    if sh_opened or sh_closed:
+        F.append("")
+        F.append(f"## 本会话影子（纸面）交易")
+        F.append("")
+        F.append(f"本场 {len(sh_opened)} 笔开仓机会被「同一账户同一时间只允许一笔在场」闸拦下，"
+                 f"按规则改记纸面样本，其中 {len(sh_closed)} 笔已结算（净 {sh_net:+,.0f} 近似值）。"
+                 f"影子未下任何真实订单，**不计入本场真实战绩**。")
+        F.append("")
+        for j, e in enumerate(sh_closed or sh_opened, 1):
+            if e["kind"] == "平仓":
+                F.append(f"- {j}. {e['symbol']} {e['direction'] or ''}："
+                         f"{e['entry']:g} → {e['exit']:g}（净 {e['net']:+,.0f}，{e['r']:+.2f}R）"
+                         if e.get("entry") and e.get("exit") and e.get("net") is not None and e.get("r") is not None
+                         else f"- {j}. {e['symbol']}：已结算")
+            else:
+                F.append(f"- {j}. {e['symbol']} {e['direction'] or ''}：{e['kind']}（未结算）")
     feishu_md = "\n".join(F)
 
     if a.dry_run:
