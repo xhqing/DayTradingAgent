@@ -1,5 +1,36 @@
 # Changelog
 
+### 变更（通用与美股活跃待办转移到 GitHub Issues，2026-11-11）
+
+- **为什么改**：用户要求把目前活跃待办里的通用（HKUS）与美股（US）条目全部写入本项目 Issues；按项目「TODO 与 GitHub Issue 不得重复（同一事项单一在途源）」规则，转移后必须把条目从 `TODO.md` 移入 `TODO-archive.md`，不能两边同时挂在途，否则一边状态更新另一边还挂着旧状态。
+- **改了什么**：
+  1. 在 GitHub 新建 18 条 Issue（#75–#92）。标题带 TODO 编号，正文含编号、市场范围、紧急度、条目全文、来源说明与「本 Issue 是唯一在途追踪源」的追踪说明。建前查过全部现有 Issues（仅 1 条已关闭、内容无关），无重复事项。
+  2. `TODO.md` 移除这 18 条；`TODO-archive.md` 新增「2026-11-11 待办转移到 GitHub Issues」节，逐条标 `✅**已转移**` + 指向 Issue，正文一字不动保留。
+- **Issue 对照**：
+  - **T189HKUS** → Issue #75
+  - **T187US** → Issue #76
+  - **T188HKUS** → Issue #77
+  - **T163US** → Issue #78
+  - **T165US** → Issue #79
+  - **T166US** → Issue #80
+  - **T168US** → Issue #81
+  - **T169US** → Issue #82
+  - **T170US** → Issue #83
+  - **T172US** → Issue #84
+  - **T147HKUS** → Issue #85
+  - **T148HKUS** → Issue #86
+  - **T149HKUS** → Issue #87
+  - **T159HKUS** → Issue #88
+  - **T164US** → Issue #89
+  - **T171US** → Issue #90
+  - **T180HKUS** → Issue #91
+  - **T183HKUS** → Issue #92
+- **边界**：
+  - 6 条纯港股（HK）条目（T161HK / T125HK / T119HK / T120HK / T123HK / T136HK）按用户给定范围保留在 `TODO.md`，未转移；`MEMO.md` / `MEMO-archive.md` 属超低频备忘录、不是活跃待办，未转移。
+  - 公开文本建前过 gitleaks 工具扫描 + AI 语义逐块自检（无账户号、密钥、账户资产金额、个人隐私标识、网络出口细节）；交易事实（价格、股数、R 倍数、单笔盈亏）按项目边界照常保留。
+  - 本次只改待办的追踪位置，不改任何交易逻辑、护栏、脚本与配置。
+- **验证**：18 条 Issue 全部创建成功且标题带编号；`TODO.md` 活跃条目由 24 条降为 6 条；`TODO-archive.md` 新增 18 条 ✅已转移记录。
+
 ## [0.10.3] - 2026-11-11
 
 ### 修复
