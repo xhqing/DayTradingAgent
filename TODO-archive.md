@@ -557,3 +557,10 @@
 
 - ✅**已完成** **T189HKUS**（已转移至 Issue #75，Issue 已关闭；完成：2026-11-11 21:19）**完成说明**：`mark_stop_done.py` 的标记目录由 `tmp/` 改为 `state/`，与 `stop_summary.py` 自动收尾和守卫读标记的同目录；自检改为调用 `monitor_guard._session_markers()` 复核，复核失败返回非零。`tmp/verify_t189.py` 6/6 通过（含「只在 `tmp/` 时守卫找不到」的反例），`py_compile` 与本地 CI `validate.py` 通过。边界：不改自动收尾链路、交易逻辑与护栏阈值。
 
+
+## 2026-11-11 A 档 Issues 处理完成（第 2 条：T188HKUS / Issue #77）
+
+> 用户要求把 A 档 3 个 Issue 各自用独立 worktree 解决。本节记录第 2 条；原「✅已转移」条目保留在上节、正文一字不动，便于回溯。
+
+- ✅**已完成** **T188HKUS**（已转移至 Issue #77，Issue 已关闭；完成：2026-11-11 21:29）**完成说明**：全局扩展 `background-tasks.ts` 的后台日志名改用完整会话标识，与本项目 `session_tag.py` 同口径；项目侧 `AGENTS.md` / `host-integration.md` 同步改掉旧描述。按已授权流程先做共享目录飞书快照，改完 41/41 扩展语法检查通过，在 macmini 上跑 `agents-infra-publish/publish.py` 发布镜像（`xhqing/agents-infra` PR #227 已合并）。边界：只改日志文件名，不动任务编号、日志内容与交易链路；本项目仓库内仅文档同步。
+

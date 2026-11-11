@@ -1,5 +1,12 @@
 # Changelog
 
+### 修复（全局后台日志名改用完整会话标识，Issue #77 / T188HKUS）
+
+- **为什么改**：项目侧 2026-11-11 已把会话标识统一为完整 id（去掉连字符），但全局扩展 `background-tasks.ts` 仍用 `sid.slice(0, 8)` 拼后台日志名。pi 会话 id 是 UUIDv7，前 8 位是毫秒时间戳高位，相隔几十秒启动的两个会话相同；后台任务编号又是进程内计数，于是日志互相覆盖、混入别的会话的输出。
+- **改了什么**：① 全局能力层 `~/.pi/agent/extensions/background-tasks.ts` 的 `sidSafe` 改为去掉非字母数字的**完整会话标识**（与本项目 `session_tag.py` 同口径），注释同步说明原因；② 本项目 `AGENTS.md`、`references/host-integration.md` 里「全局扩展仍截前 8 位」的旧描述改为已修复口径；③ 按全局能力层流程先做飞书快照，改完跑扩展语法检查，并在 macmini 上执行 `agents-infra-publish/publish.py` 发布开源镜像（`xhqing/agents-infra` PR #227，`validate` 全绿后自动合并）。
+- **边界**：只影响后台日志文件名，不改任务编号、日志内容与下单 / 采样 / 统计链路。修复发生在全局能力层，**本项目仓库内只有文档同步，没有代码改动**，故不触发本项目发版。
+- **验证**：`node ~/.pi/agent/patch/ts-syntax-check/check.mjs` 41/41 扩展文件语法通过；macmini 侧确认已同步到新口径（无 `slice(0, 8)` 残留）后才发布镜像；PR #227 已合并。
+
 ## [0.10.4] - 2026-11-11
 
 ### 修复
