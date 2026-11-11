@@ -1,5 +1,12 @@
 # Changelog
 
+### 变更（worktree 采样日志目录统一到 `_log_dirs()`，T186HKUS）
+
+- **为什么改**：2026-11-10 美股盯盘全天多次在段间窗口被拦「盘中调 snapshot，但密采样未在跑」，实际 worktree 的采样 log 几十秒前刚写过。根因是 `monitor_segment_running()` 第 ② 步只扫主仓库 `tmp/`，而盯盘跑在 worktree 里（`worktree_start.py` 让每场的 `tmp/` 独立），主仓库那份是几天前的旧日志；段结束到重启下一段的几秒里进程短暂不在，于是误判「未在跑」，把开仓前的正常行情刷新挡住。
+- **改了什么**：第 ② 步改用 `sampling_log_age()`（内部走 `_log_dirs()`，已含主仓库 `tmp` 与所有 `<仓库名>-watch-*/tmp`）；`sampling_log_age()` 的 docstring 同步说明它现在有断链辅助与日志新鲜度分层两个调用方。**进程在跑优先、`RUNNING_SECONDS=120` / `STALE_SECONDS=300` 两档阈值、断链判定只认 `sampling_process_alive()` 的口径一个都没动**——这条拦截是 2026-08-04 立的「禁止用 cron + snapshot 绕过 40 秒密采样」防线，放宽阈值等于把绕过路径重新打开，也与 11-07 立的断链硬拦冲突。
+- **影响与边界**：只影响「snapshot / hot_list 是否可调」的判定目录；不碰交易策略、下单链路与其它护栏。`_log_dirs()` 的 glob 实测覆盖实际 worktree 命名 `trading-agent-watch-<日期>-<市场>`。
+- **验证**：`tmp/verify_t186.py` 9/9 通过（段间窗口放行 / 真断链仍拦 / 200 秒档仍「疑似断了」/ 无 log 明确原因 / 进程在跑优先 / pretool 端到端 exit 0 与 exit 2 / `_log_dirs()` glob 覆盖实际命名）；`py_compile`、本地 CI `validate.py` 通过。T186HKUS 已从 TODO.md 归档到 TODO-archive.md。
+
 ## [0.10.2] - 2026-11-11
 
 ### 修复

@@ -413,7 +413,9 @@ def _log_dirs():
 def sampling_log_age(now=None):
     """最新 monitor_log 距今秒数（跨主仓库 tmp 与各 worktree tmp）；无 log 返回 None。
 
-    只供断链判定辅助（不参与「段在不在跑」——那是 sampling_process_alive 的事）。
+    两个调用方：① 断链判定辅助（真正判「段有没有断」仍只认 sampling_process_alive
+    的进程信号）；② `monitor_segment_running()` 的日志新鲜度分层——2026-11-11 起
+    T186HKUS 修用它，保证「看哪份 log」与断链判定同口径（都走 _log_dirs()）。
     """
     now = now or datetime.now()
     newest = 0.0
@@ -446,6 +448,12 @@ def monitor_segment_running(now=None):
     进程在 / log <120s → (True, ...)；log 120-300s → (False, "疑似断了…")——
     调用方 pretool 阻断、stop 提醒时按 False 处理（宁可多提醒一次），文案带疑似标记。
 
+    2026-11-11 修（T186HKUS）：第 ② 步的日志目录改走 `_log_dirs()`（主仓库 tmp +
+    各 worktree tmp）。盯盘跑在 worktree 里时采样 log 写在 worktree 自己的 tmp/，
+    只扫主仓库会读到几天前的旧日志，在「段结束→重启下一段」的正常空窗里误判
+    「密采样未在跑」，把开仓前的正常 snapshot / hot_list 刷新挡住（2026-11-10 实录）。
+    进程在跑优先、120 / 300 秒两档阈值都不变，只修正「看哪份 log」。
+
     返回 (running: bool, why: str)。
     """
     now = now or datetime.now()
@@ -461,25 +469,21 @@ def monitor_segment_running(now=None):
                 return True, f"进程在跑（{script}）"
         except Exception:
             pass
-    # ② monitor_log 新鲜度分层（段间循环 <90 秒；ws 系每秒写一行更密）
+    # ② log 新鲜度分层（段间循环 <90 秒；ws 系每秒写一行更密）。
+    # 目录必须跨主仓库 tmp 与各 worktree tmp（_log_dirs()），不能只扫 TMP_DIR。
+    # sampling_log_age() 已实现「取所有目录里最新一份 log 的距今秒数」，与断链判定
+    # 同口径；这里只做分层，阈值 RUNNING_SECONDS / STALE_SECONDS 一个都不动。
     try:
-        if os.path.isdir(TMP_DIR):
-            newest = 0.0
-            for f in os.listdir(TMP_DIR):
-                if f.startswith("monitor_log_") and f.endswith(".csv"):
-                    mtime = os.path.getmtime(os.path.join(TMP_DIR, f))
-                    if mtime > newest:
-                        newest = mtime
-            if newest > 0:
-                age = now.timestamp() - newest
-                if age < RUNNING_SECONDS:
-                    return True, f"log {int(age)} 秒前更新"
-                if age < STALE_SECONDS:
-                    return False, f"疑似断了（log {int(age)} 秒未更新，段间循环应 <90 秒）"
-            return False, "log 长时间无更新"
+        age = sampling_log_age(now)
+        if age is None:
+            return False, "无 monitor_log"
+        if age < RUNNING_SECONDS:
+            return True, f"log {int(age)} 秒前更新"
+        if age < STALE_SECONDS:
+            return False, f"疑似断了（log {int(age)} 秒未更新，段间循环应 <90 秒）"
+        return False, "log 长时间无更新"
     except Exception as e:
         return False, f"检查异常 {e}"
-    return False, "无 monitor_log"
 
 
 def _pool_conflict(exec_seg_cmds, sid=""):
