@@ -138,11 +138,15 @@ def close_shadow(market, symbol, exit_price, reason):
     qty = pos["qty"]
     sign = 1 if direction == "long" else -1
     gross = (exit_price - pos["decision_price"]) * qty * sign
-    stop_dist = abs(pos["decision_price"] - pos["stop"])
+    # 2026-11-11 修：R 分母用「开仓时止损距」（stop_initial）——与真实仓规则一致
+    # （auto-mode.md：修正 max_loss 开仓时点算死、移动止损不改这个基准）。
+    # 原实现直接用 pos["stop"]，一旦 move 过止损就会把分母变小、R 被虚高。
+    stop_ref = pos.get("stop_initial", pos["stop"])
+    stop_dist = abs(pos["decision_price"] - stop_ref)
     _so, _sc = ("buy", "sell") if direction == "long" else ("sell", "buy")   # 2026-10-24：美股卖侧规费
     fee_open = _side_fee(market, symbol, qty, pos["decision_price"], side=_so)
     fee_exit = _side_fee(market, symbol, qty, exit_price, side=_sc)
-    fee_stop = _side_fee(market, symbol, qty, pos["stop"], side=_sc)
+    fee_stop = _side_fee(market, symbol, qty, stop_ref, side=_sc)
     max_loss = qty * stop_dist + fee_open + fee_stop   # 净值（毛止损距 + 开仓费 + 止损价平仓费）
     net = gross - fee_open - fee_exit
     r = net / max_loss if max_loss > 0 else 0.0
@@ -165,6 +169,8 @@ def move_shadow(market, symbol, new_stop):
     if not pos or pos.get("closed"):
         return False, f"{symbol} 无未平影子仓"
     old = pos["stop"]
+    # 2026-11-11 修：首次移损前把开仓止损记进 stop_initial，平仓 R 分母永远用它（见 close_shadow）
+    pos.setdefault("stop_initial", old)
     pos["stop"] = new_stop
     pos.setdefault("moves", []).append(
         {"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "from": old, "to": new_stop})
