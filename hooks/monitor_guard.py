@@ -46,6 +46,7 @@ import sys
 import os
 import glob
 import json
+import re
 import time
 import subprocess
 from datetime import datetime
@@ -57,6 +58,45 @@ TMP_DIR = os.path.join(_PROJECT_ROOT, "tmp")
 # 状态目录（2026-11-03 用户立）：tmp/ 只能放「删了不影响功能」的临时文件；
 # 熔断状态 / 标的池认领 / 盯盘注册表 / 互斥 WAL / 收尾标记属于状态，已迁到 state/。
 STATE_DIR = os.path.join(_PROJECT_ROOT, "state")
+
+# 会话标识与交易脚本共用同一套口径（T185HKUS）。hook 由 pi 扩展 spawn 时 cwd 通常在
+# 项目根，这里把脚本目录加进搜索路径，保证 import 到的是同一份 session_tag.py。
+sys.path.append(os.path.join(_PROJECT_ROOT, ".pi", "skills", "trade", "scripts"))
+from session_tag import session_tag, session_matches, is_legacy
+
+
+def _actions_has_session(txt, stag):
+    """actions 文本里是否有属于本会话的 🆔 标记（兼容改造前的 8 位短标记）。"""
+    if not stag:
+        return False
+    for m in re.finditer(r"🆔\s*会话\s*[：:]\s*([0-9a-zA-Z]+)", txt):
+        if session_matches(m.group(1), stag):
+            return True
+    return False
+
+
+def _session_markers(state_dir, prefix, stag):
+    """本会话的收尾标记文件：精确名优先，历史 8 位后缀按前缀兼容。
+
+    改造前两个会话可能共用同一个 8 位前缀标记，历史文件无法区分——这里保留兼容
+    但不扩展匹配范围：另一个会话的完整标识不会命中，只有 8 位旧标记会。
+    """
+    if not stag:
+        return []
+    exact = os.path.join(state_dir, f"{prefix}_{stag}.txt")
+    if os.path.exists(exact):
+        return [exact]
+    out = []
+    for p in glob.glob(os.path.join(state_dir, f"{prefix}*.txt")):
+        base = os.path.basename(p)
+        if not base.startswith(prefix + "_") or not base.endswith(".txt"):
+            continue
+        suffix = base[len(prefix) + 1:-4]
+        if is_legacy(suffix) and session_matches(suffix, stag):
+            out.append(p)
+    return out
+
+
 # 2026-08-16 分层（原 STALE_SECONDS=300 单层与自述「段间循环 <90 秒」不匹配——进程死后
 # log 5 分钟内仍判「在跑」、最长 5 分钟盲窗）：
 #   进程在跑（pgrep）或 log <120 秒有更新 → 在跑（确定信号）；
@@ -87,7 +127,7 @@ SAMPLING_OR_WRAPUP_PAT = (
 )
 
 # 空转防护（2026-08-17 立红灯「盯盘空转」修法④）：AI 要重启密采样段时，若分析心跳
-# （tmp/analysis_beat_{date}_{mode}[_{sid8}].csv，AI 每段分析时追加）停更超过此阈值 → PreToolUse
+# （tmp/analysis_beat_{date}_{mode}[_{stag}].csv，AI 每段分析时追加）停更超过此阈值 → PreToolUse
 # 阻断，逼 AI 先补「一行式判断 + 写心跳」再重启采样。为什么做成 hook 硬门：2026-08-17
 # 实录空转一下午（52 次纯重启采样、0 分析文本），用户纠正后 10 分钟复发——reference
 # 软约束会衰减，工具级阻断才拦得住「只重启不分析」的路径。
@@ -104,16 +144,16 @@ def analysis_beat_status(sid=""):
     - ("none", None)：当天无心跳文件。调用方结合采样 log 时长判断——log 也不足阈值
       = 刚启动放行；log 已跑 ≥ 阈值仍零心跳 = 从未分析过（空转形态②）。
 
-    会话口径（2026-11-06 立）：心跳文件按会话分（`analysis_beat_{date}_{mode}_{sid8}.csv`）。
+    会话口径（2026-11-06 立）：心跳文件按会话分（`analysis_beat_{date}_{mode}_{stag}.csv`）。
     **本会话有当日心跳 → 只认本会话**（本会话空转、别会话在分析，不能替他过关）；
     **本会话无文件 → 退回任意同日心跳**（兼容改造前的无会话后缀文件名，也兼容 guard 拿不到
     sid 的场景，避免只认本会话时反而误拦）。
     """
     import glob
     today = datetime.now().strftime("%Y%m%d")
-    sid8 = (sid or "")[:8]
-    beats = (glob.glob(os.path.join(TMP_DIR, f"analysis_beat_{today}_*_{sid8}.csv"))
-             if sid8 else [])
+    stag = session_tag(sid)
+    beats = (glob.glob(os.path.join(TMP_DIR, f"analysis_beat_{today}_*_{stag}.csv"))
+             if stag else [])
     if not beats:
         beats = glob.glob(os.path.join(TMP_DIR, f"analysis_beat_{today}_*.csv"))
     if not beats:
@@ -210,7 +250,7 @@ def _stop_done_reminder(payload=None):
 
     判据（三件同时成立才提醒，避免误伤）：
       ① actions/<ET 日期>-ET-actions.md 存在且含「🟢🟢🟢 开仓」；
-      ② state/stop_done_us_<ET 日期>[_<sid8>].txt 不存在（= stop_summary.py 没跑成功）；
+      ② state/stop_done_us_<ET 日期>[_<stag>].txt 不存在（= stop_summary.py 没跑成功）；
       ③ 距该 et 日期末次订单/采样已过 30 分钟以上（避免盘中每回合都提醒）。
 
     会话标识：优先 payload.session_id（pi 扩展桥把 session_id 放进 hook JSON；pi 进程
@@ -230,12 +270,12 @@ def _stop_done_reminder(payload=None):
     now_et = datetime.now(et)
     BJ_TZ = bj_tz
     # 会话标识：优先 payload（扩展桥放 session_id 的 hook JSON 字段）、其次环境变量；
-    # 都拿不到时 sid8 为空（提醒判定会退回宽松匹配，见函数 docstring）。
+    # 都拿不到时 stag 为空（提醒判定会退回宽松匹配，见函数 docstring）。
     sid = ""
     if isinstance(payload, dict):
         sid = str(payload.get("session_id") or "")
     sid = sid or os.environ.get("PI_SESSION_ID") or ""
-    sid8 = sid[:8]
+    stag = session_tag(sid)
     # 取 ET 今天与昨天（美股交易日跨北京午夜，两个都要看）
     for back in (0, 1):
         d = (now_et - timedelta(days=back)).strftime("%Y-%m-%d")
@@ -251,12 +291,12 @@ def _stop_done_reminder(payload=None):
         # 标记匹配（2026-10-20 二改）：本会话在该日有交易（文件里有本会话 🆔）→ 只认本
         # 会话标记（多会话隔离：A 的收尾不能压掉 B 的提醒）；否则（非盯盘会话 / 拿不到
         # sid）→ 任意同日标记都算该日已收尾（防非盯盘会话反复误报）。
-        is_owner = bool(sid8) and (f"🆔 会话：{sid8}" in txt)
+        is_owner = _actions_has_session(txt, stag)
         state_dir = os.path.join(root, "state")
         if is_owner:
-            cands = [os.path.join(state_dir, f"stop_done_us_{d}_{sid8}.txt")]
-            if any(os.path.exists(x) for x in cands):
+            if _session_markers(state_dir, f"stop_done_us_{d}", stag):
                 continue
+            cands = [os.path.join(state_dir, f"stop_done_us_{d}_{stag}.txt")]  # 仅供提示文案
         else:
             if glob.glob(os.path.join(state_dir, f"stop_done_us_{d}*.txt")):
                 continue
@@ -284,7 +324,7 @@ def _stop_done_reminder(payload=None):
         return
 
     # 港股同款检查（2026-10-20 补；标记匹配/时间门槛与美股段同口径）：HKT actions 按
-    # 【北京日期】命名，标记为 stop_done_hk_<北京日期>_<sid8>。
+    # 【北京日期】命名，标记为 stop_done_hk_<北京日期>_<stag>。
     for back in (0, 1):
         d = (datetime.now(BJ_TZ) - timedelta(days=back)).strftime("%Y-%m-%d")
         acts = os.path.join(root, "actions", f"{d}-HKT-actions.md")
@@ -296,12 +336,12 @@ def _stop_done_reminder(payload=None):
             continue
         if "🟢🟢🟢 开仓" not in txt:
             continue
-        is_owner = bool(sid8) and (f"🆔 会话：{sid8}" in txt)
+        is_owner = _actions_has_session(txt, stag)
         state_dir = os.path.join(root, "state")
         if is_owner:
-            cands = [os.path.join(state_dir, f"stop_done_hk_{d}_{sid8}.txt")]
-            if any(os.path.exists(x) for x in cands):
+            if _session_markers(state_dir, f"stop_done_hk_{d}", stag):
                 continue
+            cands = [os.path.join(state_dir, f"stop_done_hk_{d}_{stag}.txt")]  # 仅供提示文案
         else:
             if glob.glob(os.path.join(state_dir, f"stop_done_hk_{d}*.txt")):
                 continue
@@ -578,7 +618,7 @@ def session_market(sid):
     「现在该不该盯盘」，必须看**本会话自己的市场**有没有开着。
 
     数据源（按优先级，全部只读；任一命中即返回）：
-      ① `tmp/monitor_market_{sid8}.json` —— 三个采样脚本段启动时写（2026-11-07 起），
+      ① `tmp/monitor_market_{stag}.json` —— 三个采样脚本段启动时写（2026-11-07 起），
          最准：就是「本会话最近一次跑采样盯的市场」，只采纳当日（date == 今天）的；
       ② `state/trade_intent.log` —— 本会话当日最近一条开仓记录的 symbol 前缀（US. / HK.）；
       ③ `state/pool_claims.json` —— 当日本会话认领的标的（港股池概念）；
@@ -587,11 +627,11 @@ def session_market(sid):
     """
     if not sid:
         return None
-    sid8 = sid[:8]
+    stag = session_tag(sid)
     today = datetime.now().strftime("%Y-%m-%d")
     # ① 采样脚本写的会话→市场映射（最准）
     try:
-        p = os.path.join(TMP_DIR, f"monitor_market_{sid8}.json")
+        p = os.path.join(TMP_DIR, f"monitor_market_{stag}.json")
         if os.path.isfile(p):
             with open(p) as f:
                 d = json.load(f)
@@ -686,7 +726,7 @@ def _is_monitoring_session(sid):
        monitor_unregister.sh 停盯注销）；
     ② 当日认领表 tmp/pool_claims.json 的 claims 里有本 sid（认领 = 在盯标的）；
     ③ 当日开过仓：tmp/trade_intent.log 当日行含本 sid（开仓会话必然在盯盘）。
-    ④ 本会话今天跑过采样段：tmp/monitor_market_{sid8}.json（采样脚本段启动时写，
+    ④ 本会话今天跑过采样段：tmp/monitor_market_{stag}.json（采样脚本段启动时写，
        date == 今天）——T179（2026-11-07 补）：纯信号盯盘会话（没开仓、没认领、
        不在港股注册表）以前只靠 pretool 兜底，现在有了会话级证据，窄缝被堵上。
     另一前提：**今天全项目完全没有采样日志**（tmp/monitor_log_*_今日日期_*.csv 一个都
@@ -740,9 +780,9 @@ def _is_monitoring_session(sid):
                         return False
             except OSError:
                 pass
-        # ④ 本会话今天跑过采样段（采样脚本段启动时写 tmp/monitor_market_{sid8}.json，T179）
+        # ④ 本会话今天跑过采样段（采样脚本段启动时写 tmp/monitor_market_{stag}.json，T179）
         try:
-            mp = os.path.join(TMP_DIR, f"monitor_market_{sid[:8]}.json")
+            mp = os.path.join(TMP_DIR, f"monitor_market_{session_tag(sid)}.json")
             if os.path.isfile(mp):
                 with open(mp) as f:
                     if json.load(f).get("date") == datetime.now().strftime("%Y-%m-%d"):
@@ -947,7 +987,8 @@ def main():
         # 逼 AI 先给「一行式判断 + 写心跳」再重启。刚启动（无心跳且采样 log < 3 分钟）放行。
         if len(exec_seg) == 1:
             bstate, bage = analysis_beat_status(sid)
-            _beat_sfx = f"_{sid[:8]}" if sid else ""  # 心跳文件名的会话后缀（与采样脚本写入口径一致）
+            _stag = session_tag(sid)
+            _beat_sfx = f"_{_stag}" if _stag else ""  # 心跳文件名的会话后缀（与采样脚本写入口径一致）
             if bstate == "stale":
                 print(
                     f"⚠️ 密采样守卫阻断（空转防护）：检测到重启密采样，但分析心跳已停更 "
@@ -1028,8 +1069,8 @@ def main():
         #    monitor_unregister.sh 停盯注销）——注册过 = 盯盘会话；
         # ② 本会话当日认领过标的（tmp/pool_claims.json 当日 claims 里有本 sid）——
         #    认领 = 在盯标的 = 盯盘会话；
-        # ③ 本会话今天跑过采样段（tmp/monitor_market_{sid8}.json，采样脚本段启动时写）——
-        #    T179（2026-11-07）：旧注释写的 monitor_log_*_{sid8}*.csv 从来不命中（采样
+        # ③ 本会话今天跑过采样段（tmp/monitor_market_{stag}.json，采样脚本段启动时写）——
+        #    T179（2026-11-07）：旧注释写的 monitor_log_*_{stag}*.csv 从来不命中（采样
         #    日志文件名不含会话 id），纯信号盯盘会话只能靠 pretool 兜底；现在改成会话级
         #    映射文件，窄缝被堵上。
         sid = payload.get("session_id") or os.environ.get("PI_SESSION_ID", "")

@@ -63,11 +63,14 @@ MODE = None   # main 里经 parse_mode 赋值（兼容 --mode 与旧 MODE 环境
 TMP = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', '..', 'tmp')
 TMP = os.path.abspath(TMP)
 
-# 会话短 ID（2026-11-06 立）：多会话并行可能共用同一个 worktree（worktree 按「市场 + 交易日」
-# 划分），tmp/ 因此是共用的一份。重估标记按会话分文件，避免一个会话写过刻度后另一个会话
-# 被去重跳过。拿不到 PI_SESSION_ID（人工终端）时为空、文件名退回原样。
-SID8 = (os.environ.get('PI_SESSION_ID') or '')[:8]
-SESS = f'_{SID8}' if SID8 else ''
+# 会话标识（2026-11-06 立，2026-11-11 改为完整标识）：多会话并行可能共用同一个
+# worktree（worktree 按「市场 + 交易日」划分），tmp/ 因此是共用的一份。重估标记按会话
+# 分文件，避免一个会话写过刻度后另一个会话被去重跳过。标识取完整会话 id（去掉连字符），
+# 不用前 8 位——UUIDv7 前 8 位是时间戳高位，相隔几十秒启动的两个会话会撞前缀
+# （T185HKUS）。拿不到 PI_SESSION_ID（人工终端）时为空、文件名退回原样。
+from session_tag import session_tag
+STAG = session_tag()
+SESS = f'_{STAG}' if STAG else ''
 
 # 模块级状态（finish 由硬超时回调调用，需访问）
 seg = {}
@@ -134,7 +137,7 @@ def main():
         logs[sym] = os.path.join(TMP, fname)
     os.makedirs(TMP, exist_ok=True)
     # 本会话盯的市场（T179）：落一行映射给 hooks/monitor_guard.py 选时段窗口（写失败静默）
-    mark_session_market('US' if symbols[0].startswith('US.') else 'HK', SID8)
+    mark_session_market('US' if symbols[0].startswith('US.') else 'HK', STAG)
 
     # 写表头（对齐 monitor_segment 列名，monitor_summary / csv.DictReader 才能解析）
     for sym in symbols:

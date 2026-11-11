@@ -94,7 +94,7 @@
 - `tool_result`（`background_stop`）→ `monitor_guard.py taskstop`（密采样停盯提醒）。
 - `agent_settled`（回合静止）→ `monitor_guard.py stop`（盯盘断链提醒以自定义消息注入并唤醒一轮；守卫内部已按「盯盘会话」门槛过滤）。
 
-另两个扩展：后台任务三件套 `background_run` / `background_list` / `background_stop` 由**全局扩展** `~/.pi/agent/extensions/background-tasks.ts` 提供（pi 无内建后台 bash；任务结束以 `[后台任务完成]` 通知消息唤醒 AI，日志在会话工作目录 `tmp/pi-bg/<sid8>-<id>.log`）；`.pi/extensions/ask-question.ts` 提供 `AskUserQuestion`（用户真实点选后合成 PostToolUse payload 触发 `live_auth_witness.py` 见证——实盘授权链在 pi 下同样不可伪造）。会话 id = `PI_SESSION_ID`；死会话判定查 pi transcript（`<agent_dir>/sessions/--<slug>--/*_<sid>.jsonl` + `PI_SESSION_FILE` 兜底）。
+另两个扩展：后台任务三件套 `background_run` / `background_list` / `background_stop` 由**全局扩展** `~/.pi/agent/extensions/background-tasks.ts` 提供（pi 无内建后台 bash；任务结束以 `[后台任务完成]` 通知消息唤醒 AI，日志在会话工作目录 `tmp/pi-bg/<sid8>-<id>.log`——全局扩展仍截前 8 位，并发会话可能混日志，见 TODO T188HKUS）；`.pi/extensions/ask-question.ts` 提供 `AskUserQuestion`（用户真实点选后合成 PostToolUse payload 触发 `live_auth_witness.py` 见证——实盘授权链在 pi 下同样不可伪造）。会话 id = `PI_SESSION_ID`；死会话判定查 pi transcript（`<agent_dir>/sessions/--<slug>--/*_<sid>.jsonl` + `PI_SESSION_FILE` 兜底）。
 
 **改 hook 的规矩**：只改 `hooks/*.py` 一处，pi 端自动生效；改完用 `node ~/.pi/agent/patch/ts-syntax-check/check.mjs` 复核扩展语法（若动了扩展）。完整映射表与验证状态见 `.pi/skills/trade/references/host-integration.md`。
 ## 账户资金类金额禁写进被跟踪的文件（2026-11-08 用户裁定，取代 2026-08-29 的豁免）
@@ -119,7 +119,7 @@
 
 **这条标准怎么套到「看着不像临时文件」的几项上（2026-11-06 澄清）**：采样 log、分析心跳、方向重估标记看着像「状态」，本质是**当日运行痕迹**——删了最坏的结果是「重估提醒重复一次」「空转守卫误判断一次、补写一行心跳即恢复」，交易功能（采样 / 分析 / 下单 / 互斥 / 熔断）一件都不受影响，所以留 `tmp/` 是对的；它们按日期命名、当日有效，次日新一场本来就是新文件。反过来，`feishu_sent_*` / `stop_done_*` 这类**收尾标记**删了会让漏发检查判错、催用户重复补发，且跨中断必须还在，所以归 `state/`。两条边界不要混。
 
-**多会话时的会话隔离（2026-11-06 立）**：worktree 按「市场 + 交易日」划分、不按会话，同市场多会话共用一份 `tmp/`——所以分析心跳、方向重估标记、飞书发送标记的文件名都带会话短 ID（`analysis_beat_<日期>_<mode>_<sid8>.csv` / `reassess_marker_<日期>_<mode>_<sid8>.txt` / `feishu_sent_<market>_<日期>_<sid8>.txt`），否则一个会话写过的刻度 / 标记会让另一个会话被去重跳过。
+**多会话时的会话隔离（2026-11-06 立，2026-11-11 改口径）**：worktree 按「市场 + 交易日」划分、不按会话，同市场多会话共用一份 `tmp/`——所以分析心跳、方向重估标记、飞书发送标记的文件名都带会话标识（`analysis_beat_<日期>_<mode>_<stag>.csv` / `reassess_marker_<日期>_<mode>_<stag>.txt` / `feishu_sent_<market>_<日期>_<stag>.txt`），否则一个会话写过的刻度 / 标记会让另一个会话被去重跳过。**`stag` = 完整会话 id 去掉连字符（32 位十六进制），不是前 8 位**：pi 的会话 id 是 UUIDv7，前 8 位是毫秒时间戳高位、每 65.536 秒才变一次，两个相隔几十秒启动的会话会相同（2026-11-10 停盯总结串台实录，T185HKUS）。口径唯一来源在 `.pi/skills/trade/scripts/session_tag.py`。
 
 - **为什么立这条**（2026-11-03 实证）：盯盘 worktree 首次实现时把上述「状态」与临时文件混放在 `tmp/`，worktree 给了独立 `tmp/` 后，preflight 立即误报「停盯总结已写但未见飞书推送记录」、熔断/认领/互斥也全部只看得到空目录——**状态与临时混放让目录语义失真，也在目录隔离时暴露成故障**。
 - **配套**：`worktree_start.py` 会把 `state/` 软链回主仓库（共享持久状态）、`tmp/` 每个 worktree 独立一份（真临时）；新增持久状态时请直接写 `state/`。

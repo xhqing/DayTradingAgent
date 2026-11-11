@@ -233,13 +233,16 @@ def main():
     _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
     _PROJECT_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", "..", "..", ".."))
     LOG_DIR = os.path.join(_PROJECT_ROOT, "tmp")
-    # 会话短 ID（2026-11-06 立）：多个盯盘会话常共用同一个 worktree（worktree 按「市场 +
-    # 交易日」划分、不按会话），于是 tmp/ 是共用的一份。重估标记这类「当日痕迹」若只按
-    # 日期 + mode 分文件，会跨会话串台——一个会话写了 10 分钟刻度，另一个会话读同一个
-    # 标记文件就被去重跳过、拿不到重估提醒。加会话短 ID 后各写各的。拿不到 PI_SESSION_ID
-    # （人工终端直接跑脚本）时为空，文件名退回原样，向后兼容。
-    _SID8 = (os.environ.get("PI_SESSION_ID") or "")[:8]
-    _SESS = f"_{_SID8}" if _SID8 else ""
+    # 会话标识（2026-11-06 立，2026-11-11 改为完整标识）：多个盯盘会话常共用同一个
+    # worktree（worktree 按「市场 + 交易日」划分、不按会话），于是 tmp/ 是共用的一份。
+    # 重估标记这类「当日痕迹」若只按日期 + mode 分文件，会跨会话串台——一个会话写了
+    # 10 分钟刻度，另一个会话读同一个标记文件就被去重跳过、拿不到重估提醒，所以按会话
+    # 分文件。标识取完整会话 id（去掉连字符）：UUIDv7 前 8 位是毫秒时间戳高位，每
+    # 65.536 秒才变一次，两个相隔几十秒启动的会话会撞前缀（T185HKUS）。拿不到
+    # PI_SESSION_ID（人工终端直接跑脚本）时为空，文件名退回原样，向后兼容。
+    from session_tag import session_tag
+    _STAG = session_tag()
+    _SESS = f"_{_STAG}" if _STAG else ""
     # log 文件按市场对应交易日命名（2026-08-04 修 bug）：原统一用「北京 -12h」算美东交易日（为美股跨北京午夜），
     # 但对港股早盘失效——港股盘中北京 09:30-12:00，减 12h = 昨天 21:30 → log 落昨天日期，今天采样污染昨天 log、
     # 完整采样统计混入昨天数据（如开=123.60 是昨天的价）+ 哨兵读昨天末行误报断层（1069 分钟）。改为按市场区分：
@@ -291,7 +294,7 @@ def main():
     # 写失败静默，不影响采样。
     try:
         from trade_utils_tiger import mark_session_market
-        mark_session_market("US" if syms[0].startswith("US.") else "HK", _SID8)
+        mark_session_market("US" if syms[0].startswith("US.") else "HK", _STAG)
     except Exception:
         pass
 

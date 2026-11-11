@@ -343,7 +343,8 @@ def _feishu_check():
             continue
     if not _has_summary:
         return
-    # 标记名 2026-11-06 起带会话短 ID（`feishu_sent_us_<交易日>_<sid8>.txt`，多会话各发各的），
+    # 标记名 2026-11-06 起带会话标识（`feishu_sent_us_<交易日>_<stag>.txt`，多会话各发各的；
+    # 2026-11-11 起 stag 为完整会话 id 去掉连字符，见 T185HKUS），
     # 本检查用 glob 通配兼容带 / 不带后缀两种。**口径保持「任意会话发过即算」而不是按会话收**：
     # 这里查的是「上一个已完结交易日」，多数会话根本不跨那个交易日，按会话收会反复误报催补发；
     # 会话级的「我发没发」由 monitor_guard 的停盯收尾检查（按 sid 匹配 stop_done）承担。

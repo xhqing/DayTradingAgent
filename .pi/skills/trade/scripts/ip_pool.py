@@ -166,10 +166,14 @@ def _last_in_use(session, market):
         return None
 
 
-def _session_id_short():
-    """会话 id 前 8 位（与 actions 记录 / stop_summary 口径一致）。"""
-    sid = os.environ.get('PI_SESSION_ID') or ''
-    return sid[:8] if sid else ''
+def _session_tag():
+    """本会话完整标识（与 actions 记录 / stop_summary 口径一致，T185HKUS）。
+
+    节点日志的 session_id 列与停盯总结的会话过滤共用这个值；不能再截前 8 位——UUIDv7
+    前 8 位是时间戳高位，两个相隔几十秒启动的会话会相同。
+    """
+    from session_tag import session_tag
+    return session_tag()
 
 
 def _market_now():
@@ -196,7 +200,7 @@ def _append_node_row(role, port, node, prev_node='', reason='', market=None):
         now.astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S'),
         now.astimezone(timezone(timedelta(hours=-4))).strftime('%Y-%m-%d %H:%M:%S'),
         market or _market_now(),
-        _session_id_short(),
+        _session_tag(),
         role,
         '' if port is None else int(port),
         node or '',
@@ -222,7 +226,7 @@ def log_node(port, node, market=None, reason='', force=False):
     try:
         if not node:
             return False
-        sess = _session_id_short()
+        sess = _session_tag()
         mkt = market or _market_now()
         if not force:
             last = _last_in_use(sess, mkt)
@@ -432,7 +436,7 @@ def alert_outage(reason, source='ensure', market=None, dry_run=False, force=Fals
         ev = {'start_ts': now, 'end_ts': None, 'market': mkt,
               'date': _watch_date(mkt),
               'hkt_date': time.strftime('%Y-%m-%d'),
-              'session_id': _session_id_short(), 'source': source,
+              'session_id': _session_tag(), 'source': source,
               'reason': str(reason or '')[:300],
               'alerts': 0, 'last_alert_ts': 0}
         st['outages'].append(ev)

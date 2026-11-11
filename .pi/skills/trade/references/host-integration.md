@@ -23,7 +23,7 @@
    `python3 .pi/skills/trade/scripts/monitor_segment.py HK.00100:330:306 40 10 --mode signal`。
    禁止 nohup / 行尾 `&` / 拼 `sleep`（这些绕过通知驱动的跑法会被 `monitor_guard` 拦，守卫经桥接脚本生效）。
    段结束时收到 `[后台任务完成] <id>` 消息（含退出码、用时、输出尾部），完整日志在
-   `tmp/pi-bg/<sid8>-<id>.log`（按会话分名，多会话并行不互相污染）；**照常先读数据 + 分析 + 写心跳，
+   `tmp/pi-bg/<sid8>-<id>.log`（按会话分名，多会话并行不互相污染；注：全局扩展仍截前 8 位，并发会话可能混日志，见 TODO T188HKUS）；**照常先读数据 + 分析 + 写心跳，
    再 `background_run` 下一段**（40 秒一段、段间不 sleep、不连跑多段）。
 2. **提问用 `AskUserQuestion`**（参数：`questions: [{question, header?, options:[{label, description?}], multiSelect?}]`）。
    用户 Esc / 未答 = 无答案，不产生实盘授权凭证；实盘授权问题仍必须含打码号 `67****91` 或
