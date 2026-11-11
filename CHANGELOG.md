@@ -4,9 +4,9 @@
 
 - **为什么改**：Kit 名下的子项目 TeamToolkit 于 2026-11-11 更名为 **agents-infra**（GitHub 仓库 `xhqing/TeamToolkit` → `xhqing/agents-infra`），全局能力层里的引用与发布脚本目录（`patch/team-toolkit-publish/` → `patch/agents-infra-publish/`）已同批改完。本仓库归档里遗留的旧名指向已不存在的项目，同步成新名更准确；由 assistant-agent 会话发来的引用同步请求触发。
 - **改了什么**：`TODO-archive.md` 第 537 行（T188HKUS 那条已转移至 Issue #77 的条目）的「动作」段落里，「发布 TeamToolkit 镜像」改为「发布 agents-infra 镜像」。正文其余内容一字不动，编号 `T188HKUS`、`已转移` 状态与记录时间戳 `2026-11-11 13:24` 全部保持原样。
-- **残留核查**：全仓库 `grep -rIn "TeamToolkit\|team-toolkit"`（排除 `.git` / `node_modules` / `tmp` / `state` / `ledger`）改完后零命中，`TODO.md`、`docs/`、`AGENTS.md` 等其它位置没有旧名残留。
+- **残留核查**：全仓库 `grep -rIn "TeamToolkit\|team-toolkit"`（排除 `.git` / `node_modules` / `tmp` / `state` / `ledger`）后，`TODO.md`、`docs/`、`AGENTS.md` 等位置没有旧名残留；收敛后仅 `CHANGELOG.md` 的本条记录（为说明更名而提及旧名，属预期内容）会命中，不构成残留。
 - **回归风险**：无。只改归档文档里的一处项目名字符串，不涉及任何交易逻辑、护栏、脚本、配置与运行时行为。
-- **验证**：改后重读该行确认已是「发布 agents-infra 镜像」；全仓库复查旧名 0 命中。
+- **验证**：改后重读 `TODO-archive.md` 第 537 行确认已是「发布 agents-infra 镜像」；全仓库复查旧名只在 `CHANGELOG.md` 本条记录内命中，其余位置 0 命中。
 
 ### 变更（通用与美股活跃待办转移到 GitHub Issues，2026-11-11）
 
