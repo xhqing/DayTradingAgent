@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.10.3] - 2026-11-11
+
+### 修复
+
+- 修复 worktree 盯盘时段间窗口被误拦「密采样未在跑」：`monitor_segment_running()` 的日志新鲜度判定改走 `_log_dirs()`，与主仓库 `tmp`、各 worktree `tmp` 同口径；阈值与进程优先逻辑不变（T186HKUS）。
+
 ### 变更（worktree 采样日志目录统一到 `_log_dirs()`，T186HKUS）
 
 - **为什么改**：2026-11-10 美股盯盘全天多次在段间窗口被拦「盘中调 snapshot，但密采样未在跑」，实际 worktree 的采样 log 几十秒前刚写过。根因是 `monitor_segment_running()` 第 ② 步只扫主仓库 `tmp/`，而盯盘跑在 worktree 里（`worktree_start.py` 让每场的 `tmp/` 独立），主仓库那份是几天前的旧日志；段结束到重启下一段的几秒里进程短暂不在，于是误判「未在跑」，把开仓前的正常行情刷新挡住。
