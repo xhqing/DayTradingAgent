@@ -150,6 +150,20 @@ Victor is currently in **signal mode**: AI signals, human executes — the arran
 
 ---
 
+## Versioning
+
+The project root `VERSION` is the single source of truth for the version number. Releases go through the `/bump` → PR → `/release` chain, which tags `vX.Y.Z` and publishes a GitHub Release with notes taken from the corresponding CHANGELOG section.
+
+While the project is in the `0.x` series:
+
+- Changes to strategy parameters, guard behaviour or fee conventions bump the **minor** version.
+- Pure bug fixes bump the **patch** version.
+- `stable` always points to the latest GitHub Release tag; `main` is the development branch and may be ahead of it.
+
+See [RELEASE.md](RELEASE.md) for the pre-release checklist and its current status.
+
+---
+
 ## Risk Disclaimer
 
 Day trading involves substantial risk of loss. Victor emits analysis and signals for the account holder's decision — **it is not financial advice, and it does not execute trades.** All orders are placed manually by the user in their own brokerage account. Past performance does not guarantee future results, and any backtest or simulated result does not represent live trading performance. The user assumes full responsibility for any trading decision and any resulting loss. The authors and contributors assume no liability for trading losses.
