@@ -2437,7 +2437,7 @@ def check_losing_streak_gate(account=None, now=None):
     return False, detail
 
 
-def mark_session_market(market, sid8=None):
+def mark_session_market(market, stag=None):
     """落一行「本会话 ↔ 盯盘市场」映射，供 `hooks/monitor_guard.py` 的 stop 分支按会话选时段窗口。
 
     为什么需要（T179，2026-11-07 立）：采样日志文件名 `monitor_log_{SYMBOL}_{DATE}_{MODE}.csv`
@@ -2446,14 +2446,16 @@ def mark_session_market(market, sid8=None):
     「盘中但密采样没在跑」而反复误报（2026-11-05 北京 13:25 实录：美股已收盘 8.5 小时）。
 
     三个采样脚本（`monitor_segment` / `ws_segment` / `futu_ws_segment`）在段启动时各调一次，
-    写入 `tmp/monitor_market_{sid8}.json`（含 market / date / updated）；guard 读它即可按会
-    话定市场，文件缺失时退回「今日采样过哪些市场」的集合判断。
+    写入 `tmp/monitor_market_{stag}.json`（含 market / date / updated）；guard 读它即可按会
+    话定市场，文件缺失时退回「今日采样过哪些市场」的集合判断。`stag` 是完整会话标识
+    （去掉连字符的 PI_SESSION_ID，T185HKUS），不能截前 8 位。
 
     market 由调用方按标的代码前缀给（'HK' / 'US'）；拿不到会话 id 或写盘失败一律静默
     （返回 False）——观测数据绝不影响采样。
     """
     try:
-        sid = (sid8 if sid8 is not None else os.environ.get('PI_SESSION_ID', ''))[:8]
+        from session_tag import session_tag
+        sid = session_tag(stag)
         mk = str(market or '').upper()
         if not sid or mk not in ('HK', 'US'):
             return False
@@ -2465,7 +2467,7 @@ def mark_session_market(market, sid8=None):
         tmp_dir = os.path.abspath(os.path.join(skill_dir, '..', '..', '..', 'tmp'))
         os.makedirs(tmp_dir, exist_ok=True)
         with open(os.path.join(tmp_dir, f'monitor_market_{sid}.json'), 'w') as f:
-            _json.dump({'market': mk, 'sid8': sid,
+            _json.dump({'market': mk, 'session_tag': sid,
                         'date': _dt.now().strftime('%Y-%m-%d'),
                         'updated': _time.time()}, f, ensure_ascii=False)
         return True

@@ -56,6 +56,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from session_tag import session_tag, session_matches, is_legacy
 
 ET = ZoneInfo("America/New_York")
 BJ = ZoneInfo("Asia/Shanghai")
@@ -66,23 +67,33 @@ def project_root():
     return os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", ".."))
 
 
-def current_sid8():
-    sid = os.environ.get("PI_SESSION_ID") or ""
-    return sid[:8]
+def current_stag():
+    """本会话完整标识（T185HKUS）：不再截前 8 位，避免并发会话撞前缀。"""
+    return session_tag()
 
 
-def owned_entries(actions_path, sid8):
+def owned_entries(actions_path, stag):
     """从 actions 里取出【本会话】写的开仓条目 → [(symbol, entry_price, market_prefix)]。
 
-    依据是 log_action.sh 2026-10-20 起为每条动作追加的「> 🆔 会话：<sid8>」行。
+    依据是 log_action.sh 2026-10-20 起为每条动作追加的「> 🆔 会话：<stag>」行。
     多会话并行时用它判定「哪些交易属于本会话」（停盯总结只总结本会话自己，T127）。
 
     2026-10-23 修：改跟 `_iter_open_sections()` 同一套切段（先看「开仓 · SYMBOL」标题、
     再兜底旧格式的「| 标的 |」行）——旧实现只认「| 标的 |」行，而 2026-10 起的开仓表
     已经没这行，导致永远认不出本会话、降级成全账户口径（会混入并行会话的交易）。
+
+    2026-11-11 修（T185HKUS）：新记录写完整会话标识、按精确相等过滤；改造前的 8 位
+    短标记按前缀兼容，但这类标记无法区分并发会话，命中时显式告警。
+
+    2026-11-11 同批修：价格正则补货币前缀（`**US$718.42**` / `**HK$61.90**`）。
+    2026-11-10 实录里 5 笔 MU 的成交价都是带 `US$` 的粗体写法，旧正则只认裸数字，
+    导致这 5 笔全部解析不出来、会话过滤只剩 NVDA 两笔——即便会话标识不撞前缀，
+    本场也会被误报成 0 笔。同类修复 2026-09-18 已在 account_status.py 做过，
+    这里补齐 stop_summary 侧。
     """
     out = []
-    if not sid8 or not os.path.exists(actions_path):
+    legacy_hits = 0
+    if not stag or not os.path.exists(actions_path):
         return out
     try:
         txt = open(actions_path, encoding="utf-8").read()
@@ -91,14 +102,19 @@ def owned_entries(actions_path, sid8):
     prefix = "us" if "-ET-actions" in os.path.basename(actions_path) else "hk"
     for sym, window in _iter_open_sections(txt):
         m_sid = re.search(r"🆔\s*会话：\s*([0-9a-zA-Z]+)", window)
-        if not m_sid or m_sid.group(1) != sid8:
+        if not m_sid or not session_matches(m_sid.group(1), stag):
             continue
-        m_entry = re.search(r"\|\s*\**\s*成交价\s*\**\s*\|\s*\**\s*\$?([\d.]+)", window)
+        if is_legacy(m_sid.group(1)):
+            legacy_hits += 1
+        m_entry = re.search(r"\|\s*\**\s*成交价\s*\**\s*\|\s*\**\s*(?:US\$|HK\$|\$)?\s*([\d.]+)", window)
         if m_entry:
             try:
                 out.append((sym, float(m_entry.group(1)), prefix))
             except ValueError:
                 continue
+    if legacy_hits:
+        print(f"⚠️ 命中 {legacy_hits} 条改造前的 8 位会话标记：这类标记无法区分并发会话，"
+              f"本场统计可能混入其它会话开仓记录，请人工核对 {os.path.basename(actions_path)}")
     return out
 
 
@@ -108,8 +124,8 @@ def detect_market_for_session():
     返回 'us' / 'hk' / ''（空 = 判断不出，调用方不要传 --market，保持旧的保守行为）。
     优先看今天与昨天的 actions 文件（跨北京午夜），取本会话最后一条动作的市场前缀。
     """
-    sid8 = current_sid8()
-    if not sid8:
+    stag = current_stag()
+    if not stag:
         return ""
     root = project_root()
     candidates = []
@@ -121,7 +137,7 @@ def detect_market_for_session():
                 candidates.append(fp)
     found = []
     for fp in candidates:
-        for _, _, mk in owned_entries(fp, sid8):
+        for _, _, mk in owned_entries(fp, stag):
             found.append(mk)
     if not found:
         return ""
@@ -252,8 +268,8 @@ def original_stops(actions_path):
     except Exception:
         return out
     for sym, window in _iter_open_sections(txt, window_len=1400):
-        m_entry = re.search(r"\|\s*\**\s*成交价\s*\**\s*\|\s*\**\s*\$?([\d.]+)", window)
-        m_stop = re.search(r"\|\s*\**\s*止损\s*\**\s*\|\s*\**\s*\$?([\d.]+)", window)
+        m_entry = re.search(r"\|\s*\**\s*成交价\s*\**\s*\|\s*\**\s*(?:US\$|HK\$|\$)?\s*([\d.]+)", window)
+        m_stop = re.search(r"\|\s*\**\s*止损\s*\**\s*\|\s*\**\s*(?:US\$|HK\$|\$)?\s*([\d.]+)", window)
         if sym and m_entry and m_stop:
             try:
                 out.append((sym, float(m_entry.group(1)), float(m_stop.group(1))))
@@ -350,32 +366,33 @@ def parse_open_records(actions_path):
 
         out.append({
             "symbol": sym,
-            "ref": num(r"\|\s*\**\s*参考价\s*\**\s*\|\s*\**\s*\$?([\d.]+)"),
-            "entry": num(r"\|\s*\**\s*成交价\s*\**\s*\|\s*\**\s*\$?([\d.]+)"),
-            "stop": num(r"\|\s*\**\s*止损\s*\**\s*\|\s*\**\s*\$?([\d.]+)"),
-            "target": num(r"\|\s*\**\s*止盈\s*\**\s*\|\s*\**\s*\$?([\d.]+)"),
+            "ref": num(r"\|\s*\**\s*参考价\s*\**\s*\|\s*\**\s*(?:US\$|HK\$|\$)?\s*([\d.]+)"),
+            "entry": num(r"\|\s*\**\s*成交价\s*\**\s*\|\s*\**\s*(?:US\$|HK\$|\$)?\s*([\d.]+)"),
+            "stop": num(r"\|\s*\**\s*止损\s*\**\s*\|\s*\**\s*(?:US\$|HK\$|\$)?\s*([\d.]+)"),
+            "target": num(r"\|\s*\**\s*止盈\s*\**\s*\|\s*\**\s*(?:US\$|HK\$|\$)?\s*([\d.]+)"),
             "init_r": num(r"\|\s*\**\s*初始预期赔率\s*\**\s*\|\s*\**\s*R?\s*([\d.]+)"),
             "fix_r": num(r"\|\s*\**\s*修正预期赔率\s*\**\s*\|\s*\**\s*R?\s*([\d.]+)"),
         })
     return out
 
 
-def parse_own_shadows(market, trade_date, sid8):
+def parse_own_shadows(market, trade_date, stag):
     """读「本会话自己的」影子（纸面）交易记录（2026-11-09 用户立会话归属要求）。
 
     背景：2026-11-09 ET 交易日两个 auto 会话并行，影子条目全写在同一份
     `signals/<date>-ET-signals.md` 里（文件按市场 + 日期分，不按会话分），旧版
     记录没有会话标记 → 停盯时根本不区分是谁的影子仓。现在 shadow_trade.py 每条
-    都写 `🆔 会话：<sid8>`，本函数按该标记过滤，只返回本会话自己的。
+    都写 `🆔 会话：<stag>`，本函数按该标记过滤，只返回本会话自己的。
 
-    返回 {"events": [...], "unattributed": N, "file": path}：
+    返回 {"events": [...], "unattributed": N, "legacy": N, "file": path}：
       events        本会话影子事件（开仓 / 平仓 / 移损），按文件顺序
       unattributed  无会话标记的历史条目数（无法归属，不计入任何会话，只作提示）
+      legacy        命中的改造前 8 位短标记数（模糊匹配，可能混入其它会话）
     """
     suffix = "ET" if market == "us" else "HKT"
     path = os.path.join(project_root(), "signals", f"{trade_date}-{suffix}-signals.md")
-    res = {"events": [], "unattributed": 0, "file": path}
-    if not sid8 or not os.path.exists(path):
+    res = {"events": [], "unattributed": 0, "legacy": 0, "file": path}
+    if not stag or not os.path.exists(path):
         return res
     try:
         txt = open(path, encoding="utf-8").read()
@@ -389,8 +406,10 @@ def parse_own_shadows(market, trade_date, sid8):
         if not sid_m:
             res["unattributed"] += 1
             continue
-        if sid_m.group(1)[:8] != sid8[:8]:
+        if not session_matches(sid_m.group(1), stag):
             continue
+        if is_legacy(sid_m.group(1)):
+            res["legacy"] += 1
 
         def num(p):
             mm = re.search(p, seg)
@@ -416,6 +435,9 @@ def parse_own_shadows(market, trade_date, sid8):
             "new_stop": num(r"\|\s*新止损\s*\|\s*([\d.]+)"),
         }
         res["events"].append(ev)
+    if res["legacy"]:
+        print(f"⚠️ 命中 {res['legacy']} 条改造前的 8 位影子会话标记：无法区分并发会话，"
+              f"本场影子统计可能混入其它会话，请人工核对 {os.path.basename(path)}")
     return res
 
 
@@ -435,7 +457,7 @@ def detect_trade_date(market, account_mode):
     return datetime.now(market_day_tz(market)).date().isoformat()
 
 
-def ip_switch_stats(market, trade_date, sid8):
+def ip_switch_stats(market, trade_date, stag):
     """统计「本场使用的 JMS 节点 + 切换次数」（2026-10-30 立切换计数；2026-10-31 改口径）。
 
     数据源 `reviews/ip-node-log.local.csv`（由 `ip_pool.log_node()` / `log_switch()` 追加，
@@ -477,7 +499,7 @@ def ip_switch_stats(market, trade_date, sid8):
         if hkt_day not in ok_days:
             continue
         role = r.get("role") or ""
-        mine = sid8 and (r.get("session_id") or "") == sid8
+        mine = session_matches(r.get("session_id"), stag)
         if role == "switch":
             out["total"] += 1
             if mine:
@@ -542,7 +564,7 @@ def main():
         print(f"⚠️ 收尾刷新 IP 池技术异常（{_e2}），继续生成总结")
 
     root = project_root()
-    sid8 = current_sid8()
+    stag = current_stag()
     date = a.date or detect_trade_date(a.market, a.account)
     y, m, d = [int(x) for x in date.split("-")]
     tz_day = market_day_tz(a.market)
@@ -553,7 +575,7 @@ def main():
     print(f"=== 停盯收尾：{a.market.upper()} {day_label}交易日 {date}（只统计本市场订单）===")
     orders, masked = fetch_orders(a.market, a.account, start, end)
     trades = [t for t in build_trades(orders) if t["entry_filled"]]
-    scope = a.scope or ("session" if sid8 else "account")
+    scope = a.scope or ("session" if stag else "account")
     scope_note = ""
     if scope == "session":
         # 会话口径铁律（2026-11-09 用户立）：只统计本会话自己的成交，绝不混入其它会话。
@@ -563,21 +585,21 @@ def main():
         # 报成了本场战绩，用户收到「总体成果」后又补发了一条口径更正）。
         suffix_s = "ET" if a.market == "us" else "HKT"
         _ap = os.path.join(root, "actions", f"{date}-{suffix_s}-actions.md")
-        owned = owned_entries(_ap, sid8)
+        owned = owned_entries(_ap, stag)
         if owned:
             kept = []
             for t in trades:
                 if any(o[0] == t["symbol"] and t["entry"] and abs(o[1] - t["entry"]) / t["entry"] < 0.01
                        for o in owned):
                     kept.append(t)
-            print(f"会话口径：本会话（{sid8}）命中 {len(kept)}/{len(trades)} 笔")
+            print(f"会话口径：本会话（{stag}）命中 {len(kept)}/{len(trades)} 笔")
             trades = kept
-            scope_note = f"本会话 {sid8}（只统计本会话自己的成交）"
+            scope_note = f"本会话 {stag}（只统计本会话自己的成交）"
         else:
-            print(f"会话口径：本会话（{sid8}）该交易日无真实开仓记录 → 本场 0 笔真实成交"
+            print(f"会话口径：本会话（{stag}）该交易日无真实开仓记录 → 本场 0 笔真实成交"
                   f"（全账户当日共 {len(trades)} 笔属其它会话，不计入本场）")
             trades = []
-            scope_note = f"本会话 {sid8}（只统计本会话自己的成交，本场 0 笔真实成交）"
+            scope_note = f"本会话 {stag}（只统计本会话自己的成交，本场 0 笔真实成交）"
     if not trades:
         print(f"⚠️ 该交易日无成交订单（{len(orders)} 条订单但无开仓成交）——仍会生成 0 交易收尾。")
     print(f"账户 {masked}｜订单 {len(orders)} 条｜成笔 {len(trades)} 笔")
@@ -632,7 +654,7 @@ def main():
 
     # 本会话自己的影子（纸面）交易（2026-11-09 用户立：每个会话只汇报自己的成果，
     # 影子仓同样按会话归属过滤——旧版没有会话标记，那些无法归属的历史条目只计数提示）
-    shadows = parse_own_shadows(a.market, date, sid8)
+    shadows = parse_own_shadows(a.market, date, stag)
     sh_events = shadows.get("events") or []
     sh_closed = [e for e in sh_events if e["kind"] == "平仓"]
     sh_opened = [e for e in sh_events if e["kind"] == "开仓"]
@@ -674,7 +696,7 @@ def main():
     _bj_now = datetime.now(BJ).strftime('%Y-%m-%d %H:%M')
     _et_now = datetime.now(ET).strftime('%Y-%m-%d %H:%M')
     L.append(f"> ⏰ 脚本生成：ET {_et_now}（权威口径）= 北京 {_bj_now}｜数据源：券商 API 实际成交（非 AI 记忆）")
-    L.append(f"> 🆔 会话：{sid8 or 'anon'}｜口径：{scope_note or scope}")
+    L.append(f"> 🆔 会话：{stag or 'anon'}｜口径：{scope_note or scope}")
     L.append("════════════════════════════════════")
     L.append("")
     L.append("## 一、交易明细（券商对账口径）")
@@ -701,7 +723,7 @@ def main():
     L.append(f"| 笔数 / 胜率 | {len(trades)} 笔 / **{(wins / len(trades) * 100 if trades else 0):.0f}%** |")
     L.append(f"| 总 max_loss（净口径） | {money_abs(total_ml)} |")
     L.append(f"| **整体实际落地赔率** | **{('%.2fR' % overall_r) if overall_r is not None else 'N/A'}**（总盈亏 ÷ 总 max_loss） |")
-    _sw = ip_switch_stats(a.market, date, sid8)
+    _sw = ip_switch_stats(a.market, date, stag)
     _src = "、".join(f"{k} {v}" for k, v in sorted(_sw["by_source"].items())) or "—"
     _nodes = "、".join(_sw["nodes"]) or "未记录"
     L.append(f"| **本场使用 IP 节点** | **{_nodes}**（节点标签；使用记录 {_sw['records']} 条，"
@@ -759,7 +781,7 @@ def main():
     # —— 本会话影子（纸面）交易（2026-11-09 用户立：只汇报本会话自己的成果）——
     L.append("## 四、本会话影子交易（纸面样本，不计入本场战绩）")
     L.append("")
-    if not sid8:
+    if not stag:
         L.append("无会话 ID，无法归属影子记录，略。")
     elif not sh_opened and not sh_closed:
         L.append("本会话本场无影子交易记录"
@@ -862,7 +884,7 @@ def main():
 
     # 会话短 id 后缀（多会话并行时区分飞书文件 / 收尾标记；2026-10-20 修：原定义在步骤 3、
     # 步骤 2 飞书文件先引用导致 UnboundLocalError 崩溃）
-    mid = f"_{sid8}" if sid8 else ""
+    mid = f"_{stag}" if stag else ""
 
     # 1) 追加进 actions 文件
     suffix = "ET" if a.market == "us" else "HKT"
@@ -872,13 +894,13 @@ def main():
     if os.path.exists(actions_path):
         _txt = open(actions_path, encoding="utf-8").read()
         if "停盯总结" in _txt:
-            if not sid8:
+            if not stag:
                 _exists_same = True
             else:
                 # 只认【本会话】已写过总结；其它会话的总结不阻止本会话追加（多会话并行）
                 for mm in re.finditer(r"🆔 会话：([0-9a-zA-Z]+)", _txt):
                     tail = _txt[mm.end(): mm.end() + 200]
-                    if mm.group(1) == sid8 and "停盯总结" in _txt[max(0, mm.start() - 400): mm.end() + 200]:
+                    if session_matches(mm.group(1), stag) and "停盯总结" in _txt[max(0, mm.start() - 400): mm.end() + 200]:
                         _exists_same = True
                         break
     if _exists_same:
@@ -918,7 +940,7 @@ def main():
     with open(marker, "w", encoding="utf-8") as f:
         f.write(json.dumps({
             "market": a.market, "et_date": date, "account": masked,
-            "scope": scope, "session": sid8 or None,
+            "scope": scope, "session": stag or None,
             "trades": len(trades), "net_pnl": round(total_pnl, 2),
             "total_max_loss": round(total_ml, 2),
             "overall_r": round(overall_r, 4) if overall_r is not None else None,

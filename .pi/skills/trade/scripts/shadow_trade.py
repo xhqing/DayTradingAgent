@@ -212,10 +212,15 @@ def _append_signal_file(market, content):
 
 
 def _sid_line(p):
-    """会话归属行（2026-11-09 用户立）：影子条目必须带 `🆔 会话：<sid8>`，
+    """会话归属行（2026-11-09 用户立）：影子条目必须带 `🆔 会话：<stag>`，
     否则停盯总结时无法区分「哪些影子仓是本会话的」——两个 auto 会话并行时
-    影子全写在同一份 signals 文件里，旧记录不带会话标记→无法归属。"""
-    sid = (p.get("session_id") or "")[:8]
+    影子全写在同一份 signals 文件里，旧记录不带会话标记→无法归属。
+
+    2026-11-11 起写完整会话标识（`session_tag()`），不再截前 8 位：UUIDv7 前 8 位是
+    时间戳高位，相隔几十秒启动的两个会话会撞前缀（T185HKUS）。
+    """
+    from session_tag import session_tag
+    sid = session_tag(p.get("session_id"))
     return f"> 🆔 会话：{sid}\n" if sid else ""
 
 

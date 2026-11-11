@@ -3,12 +3,12 @@
 
 ## 为什么需要这个工具
 
-`stop_summary.py` 正常跑通时会自己写收尾标记 `tmp/stop_done_<market>_<date>_<sid8>.txt`。
+`stop_summary.py` 正常跑通时会自己写收尾标记 `tmp/stop_done_<market>_<date>_<stag>.txt`。
 但它跑失败时（典型：代理出口 IP 漂出老虎白名单，券商 API 全断）只能改由 AI 依
-`actions/` 记录手工汇总，手工写标记就容易漏掉文件名里的**会话标识后缀 `_<sid8>`**。
+`actions/` 记录手工汇总，手工写标记就容易漏掉文件名里的**会话标识后缀 `_<stag>`**。
 
 漏了会怎样：`monitor_guard._stop_done_reminder()` 在「本会话在该交易日有交易记录」时
-只认带本会话 sid8 的标记（多会话隔离设计），于是永远失配、**每回合反复提醒「停盯收尾缺失」**。
+只认带本会话 stag 的标记（多会话隔离设计），于是永远失配、**每回合反复提醒「停盯收尾缺失」**。
 2026-10-28 ET 那次实测就是这样：收尾其实早做完了（飞书已发、券商侧复核通过），但因为
 标记名写成 `stop_done_us_2026-10-28.txt`（缺 `_01a182ba`），误报跨越了多天。
 
@@ -33,6 +33,7 @@
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime
 
@@ -48,10 +49,14 @@ def project_root():
                                         "..", "..", "..", ".."))
 
 
-def resolve_sid8(explicit=None):
-    """取会话标识前 8 位（与 stop_summary.py / monitor_guard.py 同一个口径）。"""
+def resolve_stag(explicit=None):
+    """取本会话完整标识（与 stop_summary.py / monitor_guard.py 同一口径，T185HKUS）。
+
+    不再截前 8 位：UUIDv7 前 8 位是时间戳高位，两个相隔几十秒启动的会话会相同。
+    """
+    from session_tag import session_tag
     sid = explicit or os.environ.get("PI_SESSION_ID") or ""
-    return sid[:8] if sid else ""
+    return session_tag(sid)
 
 
 def main(argv=None):
@@ -66,8 +71,8 @@ def main(argv=None):
     ap.add_argument("--no-feishu-confirmed", action="store_true", help="明确记录「飞书未发送」")
     a = ap.parse_args(argv)
 
-    sid8 = resolve_sid8(a.session)
-    if not sid8:
+    stag = resolve_stag(a.session)
+    if not stag:
         print("❌ 拿不到会话标识（PI_SESSION_ID 为空）。", file=sys.stderr)
         print("   请用 --session <会话id> 显式指定，否则写出的标记 monitor_guard 认不了、等于没写。",
               file=sys.stderr)
@@ -76,12 +81,12 @@ def main(argv=None):
     root = project_root()
     tmp_dir = os.path.join(root, "tmp")
     os.makedirs(tmp_dir, exist_ok=True)
-    marker = os.path.join(tmp_dir, f"stop_done_{a.market}_{a.date}_{sid8}.txt")
+    marker = os.path.join(tmp_dir, f"stop_done_{a.market}_{a.date}_{stag}.txt")
 
     payload = {
         "market": a.market,
         "et_date": a.date,
-        "session": sid8,
+        "session": stag,
         "trades": a.trades,
         "net_pnl": a.net,
         "feishu_message_id": a.feishu_id,
@@ -103,10 +108,12 @@ def main(argv=None):
     if os.path.exists(acts):
         try:
             txt = open(acts, encoding="utf-8").read()
-            if f"🆔 会话：{sid8}" in txt:
-                print(f"ℹ️ actions 文件里有本会话（{sid8}）记录，本标记会被 monitor_guard 认作已收尾")
+            from session_tag import session_matches
+            found = re.finditer(r"🆔\s*会话\s*[：:]\s*([0-9a-zA-Z]+)", txt)
+            if any(session_matches(m.group(1), stag) for m in found):
+                print(f"ℹ️ actions 文件里有本会话（{stag}）记录，本标记会被 monitor_guard 认作已收尾")
             else:
-                print(f"ℹ️ actions 文件里没有本会话（{sid8}）标识 —— monitor_guard 会按「任意同日标记」宽松匹配")
+                print(f"ℹ️ actions 文件里没有本会话（{stag}）标识 —— monitor_guard 会按「任意同日标记」宽松匹配")
         except Exception:
             pass
     return 0

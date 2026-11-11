@@ -110,15 +110,17 @@ if ! printf '%s\n' "$CONTENT" | awk '
   echo "Error: 未检测到动作标题行（行首或 Markdown 标题（## ）后以 🟢🔴🟡🔵 开头，如「## 🟢🟢🟢 开仓 · …」）——拒写；时间戳位置对解析很关键，宁可不写也不写错位数据，请补标题行后重发" >&2
   exit 1
 fi
-# 会话标识（2026-10-20 立，多会话并行）：每条动作记录写一行「> 🆔 会话：<sid8>」，
+# 会话标识（2026-10-20 立，多会话并行）：每条动作记录写一行「> 🆔 会话：<stag>」，
 # 供 stop_summary.py 判定「哪些交易属于本会话」——停盯总结只能总结本会话自己（T127）。
+# 2026-11-11 起写完整会话 id（去掉连字符），不再截前 8 位：UUIDv7 前 8 位是毫秒时间戳
+# 高位，两个相隔几十秒启动的会话会撞前缀，导致停盯总结串场（T185HKUS）。
 # 无会话环境变量时记 anon（此时 stop_summary 会退化为账户口径并显式警告）。
 SID_FULL="${PI_SESSION_ID:-}"
-SID8="${SID_FULL:0:8}"
-[ -z "$SID8" ] && SID8="anon"
+SID=$(printf '%s' "$SID_FULL" | tr -cd '[:alnum:]')
+[ -z "$SID" ] && SID="anon"
 
 [ -s "$ACTION_FILE" ] && echo "" >> "$ACTION_FILE"
-printf '%s\n' "$CONTENT" | awk -v ts="$ACTION_TS" -v sid="$SID8" '
+printf '%s\n' "$CONTENT" | awk -v ts="$ACTION_TS" -v sid="$SID" '
   BEGIN { has_ts = 0 }
   /⏰[ \t]*动作时间/ { has_ts = 1 }
   { lines[NR] = $0; keep[NR] = 1 }
