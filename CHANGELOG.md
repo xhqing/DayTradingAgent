@@ -1,5 +1,12 @@
 # Changelog
 
+### 修复（手工补写收尾标记改写到 state/，Issue #75 / T189HKUS）
+
+- **为什么改**：2026-11-03 把「删了会失效的状态」从 `tmp/` 迁到 `state/` 时，`mark_stop_done.py` 漏改，仍把手工补写的收尾标记写进 `tmp/`；而 `stop_summary.py` 与 `monitor_guard._stop_done_reminder()` 都读 `state/`。结果是代理故障等场景下按流程手工补写后，守卫仍每回合提醒「停盯收尾缺失」，手工补写等于没写。
+- **改了什么**：① 标记目录由 `tmp/` 改为 `state/`，与自动收尾链路同目录；② 自检从「只对照 actions 文本」改成真正调用 `monitor_guard._session_markers()` 复核标记能被守卫按本会话标识找到，复核失败返回非零、当场暴露问题；③ docstring 同步修正目录口径。
+- **验证**：`tmp/verify_t189.py` 6/6 通过（CLI 返回 0、标记落 `state/`、不再写 `tmp/`、自检复核通过、守卫判据能找到、反例「只在 `tmp/` 时找不到」）；`py_compile` 与本地 CI `validate.py` 通过。
+- **边界**：只动手工补写工具，不改自动收尾链路、交易逻辑与任何护栏阈值。
+
 ### 变更（同步子项目更名：TeamToolkit → agents-infra，2026-11-11）
 
 - **为什么改**：Kit 名下的子项目 TeamToolkit 于 2026-11-11 更名为 **agents-infra**（GitHub 仓库 `xhqing/TeamToolkit` → `xhqing/agents-infra`），全局能力层里的引用与发布脚本目录（`patch/team-toolkit-publish/` → `patch/agents-infra-publish/`）已同批改完。本仓库归档里遗留的旧名指向已不存在的项目，同步成新名更准确；由 assistant-agent 会话发来的引用同步请求触发。

@@ -3,9 +3,13 @@
 
 ## 为什么需要这个工具
 
-`stop_summary.py` 正常跑通时会自己写收尾标记 `tmp/stop_done_<market>_<date>_<stag>.txt`。
+`stop_summary.py` 正常跑通时会自己写收尾标记 `state/stop_done_<market>_<date>_<stag>.txt`。
 但它跑失败时（典型：代理出口 IP 漂出老虎白名单，券商 API 全断）只能改由 AI 依
 `actions/` 记录手工汇总，手工写标记就容易漏掉文件名里的**会话标识后缀 `_<stag>`**。
+
+2026-11-11 修（Issue #75 / T189HKUS）：本工具原先把标记写进 `tmp/`，而 2026-11-03
+把「删了会失效的状态」从 tmp/ 迁到 state/ 时漏改，`monitor_guard` 只读 `state/`，
+手工补写等于没写。现统一写 `state/`，并把自检改成真正调用守卫的同一判据复核。
 
 漏了会怎样：`monitor_guard._stop_done_reminder()` 在「本会话在该交易日有交易记录」时
 只认带本会话 stag 的标记（多会话隔离设计），于是永远失配、**每回合反复提醒「停盯收尾缺失」**。
@@ -79,9 +83,11 @@ def main(argv=None):
         return 2
 
     root = project_root()
-    tmp_dir = os.path.join(root, "tmp")
-    os.makedirs(tmp_dir, exist_ok=True)
-    marker = os.path.join(tmp_dir, f"stop_done_{a.market}_{a.date}_{stag}.txt")
+    # 收尾标记是「删了会让功能失效」的状态，必须落在 state/（与 stop_summary.py、
+    # monitor_guard._stop_done_reminder() 同一目录）；tmp/ 只放当日运行痕迹。
+    state_dir = os.path.join(root, "state")
+    os.makedirs(state_dir, exist_ok=True)
+    marker = os.path.join(state_dir, f"stop_done_{a.market}_{a.date}_{stag}.txt")
 
     payload = {
         "market": a.market,
@@ -102,7 +108,23 @@ def main(argv=None):
     if not payload["feishu_sent"]:
         print("⚠️ 标记里记录了「飞书未发送」——若实际已发，请补 --feishu-id 重写一次。")
 
-    # 自检：立刻用 monitor_guard 的同一判据复核，确认不再提醒
+    # 自检：不再只对照 actions 文本，直接调用守卫的同一套判据复核标记能被找到。
+    # 复核失败即返回非零，当场暴露「写了等于没写」，避免又拖到每回合反复提醒才发现。
+    try:
+        hooks_dir = os.path.join(root, "hooks")
+        if hooks_dir not in sys.path:
+            sys.path.insert(0, hooks_dir)
+        import monitor_guard as _mg
+        prefix = f"stop_done_{a.market}_{a.date}"
+        matched = _mg._session_markers(state_dir, prefix, stag)
+        if not matched:
+            print("🚨 复核失败：守卫按本会话标识找不到刚写的收尾标记，请检查标记名与目录",
+                  file=sys.stderr)
+            return 3
+        print(f"ℹ️ 复核通过：守卫能找到本会话收尾标记（{os.path.basename(matched[0])}），不再提醒收尾缺失")
+    except ImportError:
+        print("⚠️ 无法加载 monitor_guard，跳过判据复核（标记已写入 state/）", file=sys.stderr)
+
     acts = os.path.join(root, "actions", f"{a.date}-ET-actions.md" if a.market == "us"
                         else f"{a.date}-HKT-actions.md")
     if os.path.exists(acts):
@@ -111,9 +133,9 @@ def main(argv=None):
             from session_tag import session_matches
             found = re.finditer(r"🆔\s*会话\s*[：:]\s*([0-9a-zA-Z]+)", txt)
             if any(session_matches(m.group(1), stag) for m in found):
-                print(f"ℹ️ actions 文件里有本会话（{stag}）记录，本标记会被 monitor_guard 认作已收尾")
+                print(f"ℹ️ actions 文件里有本会话（{stag}）记录，按会话口径判定已收尾")
             else:
-                print(f"ℹ️ actions 文件里没有本会话（{stag}）标识 —— monitor_guard 会按「任意同日标记」宽松匹配")
+                print(f"ℹ️ actions 文件里没有本会话（{stag}）标识 —— 守卫会按「任意同日标记」宽松匹配")
         except Exception:
             pass
     return 0
