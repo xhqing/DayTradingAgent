@@ -94,7 +94,7 @@
 - `tool_result`（`background_stop`）→ `monitor_guard.py taskstop`（密采样停盯提醒）。
 - `agent_settled`（回合静止）→ `monitor_guard.py stop`（盯盘断链提醒以自定义消息注入并唤醒一轮；守卫内部已按「盯盘会话」门槛过滤）。
 
-另两个扩展：后台任务三件套 `background_run` / `background_list` / `background_stop` 由**全局扩展** `~/.pi/agent/extensions/background-tasks.ts` 提供（pi 无内建后台 bash；任务结束以 `[后台任务完成]` 通知消息唤醒 AI，日志在会话工作目录 `tmp/pi-bg/<sid8>-<id>.log`——全局扩展仍截前 8 位，并发会话可能混日志，见 TODO T188HKUS）；`.pi/extensions/ask-question.ts` 提供 `AskUserQuestion`（用户真实点选后合成 PostToolUse payload 触发 `live_auth_witness.py` 见证——实盘授权链在 pi 下同样不可伪造）。会话 id = `PI_SESSION_ID`；死会话判定查 pi transcript（`<agent_dir>/sessions/--<slug>--/*_<sid>.jsonl` + `PI_SESSION_FILE` 兜底）。
+另两个扩展：后台任务三件套 `background_run` / `background_list` / `background_stop` 由**全局扩展** `~/.pi/agent/extensions/background-tasks.ts` 提供（pi 无内建后台 bash；任务结束以 `[后台任务完成]` 通知消息唤醒 AI，日志在会话工作目录 `tmp/pi-bg/<stag>-<id>.log`；`stag` 为完整会话标识，2026-11-11 起全局扩展不再截前 8 位，见 Issue #77 / T188HKUS）；`.pi/extensions/ask-question.ts` 提供 `AskUserQuestion`（用户真实点选后合成 PostToolUse payload 触发 `live_auth_witness.py` 见证——实盘授权链在 pi 下同样不可伪造）。会话 id = `PI_SESSION_ID`；死会话判定查 pi transcript（`<agent_dir>/sessions/--<slug>--/*_<sid>.jsonl` + `PI_SESSION_FILE` 兜底）。
 
 **改 hook 的规矩**：只改 `hooks/*.py` 一处，pi 端自动生效；改完用 `node ~/.pi/agent/patch/ts-syntax-check/check.mjs` 复核扩展语法（若动了扩展）。完整映射表与验证状态见 `.pi/skills/trade/references/host-integration.md`。
 ## 账户资金类金额禁写进被跟踪的文件（2026-11-08 用户裁定，取代 2026-08-29 的豁免）
