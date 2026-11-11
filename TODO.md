@@ -16,7 +16,6 @@
 （2026-11-07 历史复核记录：两条原有条目降档——T183HKUS → 绿色「观察验证」、T172US → 黄色「统计验证」；红色条目的复核见红色节。）
 
 - [ ] **T189HKUS** **`mark_stop_done.py` 把收尾标记写进 `tmp/`，而 `monitor_guard.py` 从 `state/` 读，手工补写的标记检查器看不到**。2026-11-11 处理 T185HKUS 时逐行核对发现：`stop_summary.py` 自动写的收尾标记落在 `state/stop_done_<market>_<date>_<stag>.txt`，`monitor_guard._stop_done_reminder()` 也读 `state/`；但手工补写工具 `mark_stop_done.py` 仍用 `tmp/`（2026-11-03 把「删了会失效的状态」从 tmp 迁到 state 时漏改），且脚本自检只对照 actions 文本、不校验标记路径。**后果**：代理故障等场景下按 SKILL 手工补写标记后，守卫仍每回合提醒「停盯收尾缺失」、飞书漏发检查也可能误判。**动作**：把标记目录改为 `state/`，顺带把自检改成调 `monitor_guard` 同一套判据复核；改完用临时项目根实测一次。**边界**：只动手工补写工具，不改自动收尾链路。（记录：2026-11-11 13:24）
-- [ ] **T186HKUS** **`monitor_guard.py` 的「采样是否在跑」只看主仓库 `tmp/`，worktree 盯盘时误拦 snapshot/hot_list**。2026-11-10 美股盯盘实录：全天多次在段间窗口被拦「盘中调 snapshot，但密采样未在跑」，实际 worktree 采样 log 几十秒前刚写过；根因是 `monitor_segment_running()` 扫的是主仓库 `tmp/`、而采样写的是 worktree 的 `tmp/`（同一个 hook 里另一处 `sampling_log_age()` 已支持 worktree）。**动作**：把 `monitor_segment_running()` 的日志新鲜度判定改用 `sampling_log_age()`（已含 worktree 路径），保留「进程在跑」优先逻辑不变。**边界**：改的是护栏本身，改完要在多会话 + worktree 场景各验一次，确认不会把「真的断链」放过。（记录：2026-11-11 05:36）
 
 ## 🟡 黄色紧急度（文档措辞 / 格式漂移 / 卫生问题，有空再处理）
 
