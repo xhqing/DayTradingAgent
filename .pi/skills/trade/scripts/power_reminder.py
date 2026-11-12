@@ -30,6 +30,8 @@
 
 发送走同目录 `notify_feishu.py`（`--no-mark` 不污染停盯总结的漏发标记与存档，
 `--no-session-id` 因为定时通知不属于任何盯盘会话），不另写一套飞书发送逻辑。
+飞书的 open_id 是「应用维度」的，部署机上的飞书命令行工具可能绑定另一个应用，
+所以发送前会自动按本机绑定的应用校正接收人（见 `feishu_config_override()`）。
 
 用法：
     python3 power_reminder.py                           # 定时巡检（launchd 调用）
@@ -44,6 +46,7 @@ import fcntl
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 from datetime import datetime, time
@@ -147,6 +150,55 @@ def status_text(now):
             "请确认 macmini 上的定时任务仍在运行，并自行确认电源线两头都已插牢")
 
 
+def feishu_config_override():
+    """按本机 lark-cli 绑定的飞书应用校正接收人；不需要校正时返回 None。
+
+    为什么（2026-11-12 实发验证）：飞书的 open_id 是**应用维度**的，同一个人在不同应用下
+    open_id 不同。项目里同步的 `feishu.local.json` 写的是 MacBook 上 lark-cli 绑定应用下的
+    open_id；macmini 上的 lark-cli 绑定的是另一个应用，直接拿那个 open_id 发会被飞书拒
+    （错误码 99992361，提示去看「如何获取 open_id」文档）。所以定时任务在部署机发送前，
+    读 lark-cli 本机配置里当前应用已绑定用户的 open_id，与项目配置不一致时生成一份只含
+    接收人的小配置，通过 FEISHU_CONFIG 环境变量传给 notify_feishu.py。
+
+    边界：只读 `~/.lark-cli/config.json` 的 `apps[].users[].userOpenId`，不读、不打印、
+    不落盘 appSecret 等凭证；配置不存在 / 格式变化 / 没有绑定用户 / 与项目配置一致时，
+    一律返回 None、回退到项目默认的 feishu.local.json（不阻断发送）。这个字段格式是
+    本机实测（非 lark-cli 的公开承诺），升级后若变了会自动回退，届时按日志复核即可。
+    """
+    cli_path = os.path.expanduser("~/.lark-cli/config.json")
+    base_path = os.path.join(SCRIPT_DIR, "..", "feishu.local.json")
+    try:
+        with open(cli_path, encoding="utf-8") as fh:
+            cli = json.load(fh)
+        with open(base_path, encoding="utf-8") as fh:
+            base = json.load(fh)
+        local_uid = ""
+        for app in cli.get("apps") or []:
+            for user in (app.get("users") or []):
+                if isinstance(user, dict) and user.get("userOpenId"):
+                    local_uid = str(user["userOpenId"])
+                    break
+            if local_uid:
+                break
+        if not local_uid or local_uid == str(base.get("user_id") or ""):
+            return None
+        host = socket.gethostname().split(".")[0] or "local"
+        out_dir = state_dir()
+        os.makedirs(out_dir, exist_ok=True)
+        out_path = os.path.join(out_dir, f"feishu_power_reminder_{host}.json")
+        payload = {"user_id": local_uid,
+                   "identity": base.get("identity") or "bot",
+                   "enabled": True}
+        tmp = out_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False)
+            fh.write("\n")
+        os.replace(tmp, out_path)
+        return out_path
+    except Exception:
+        return None
+
+
 def send(et_date, window, sent_at_et, dry_run=False):
     """调 notify_feishu.py 发一条；返回 (是否成功, 输出文本)。"""
     cmd = [sys.executable, NOTIFY, "--text", MESSAGE, "--market", "us",
@@ -155,11 +207,18 @@ def send(et_date, window, sent_at_et, dry_run=False):
         cmd.append("--dry-run")
     if not os.path.isfile(NOTIFY):
         return False, f"⛔ 找不到飞书发送脚本：{NOTIFY}"
+    env = dict(os.environ)
+    override = feishu_config_override()
+    if override:
+        env["FEISHU_CONFIG"] = override
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=90, env=env)
     except Exception as exc:
         return False, f"⛔ 调用飞书发送脚本异常：{exc}"
     output = (res.stdout or "") + (res.stderr or "")
+    if override:
+        output = (f"[power-reminder] 已按本机飞书应用校正接收人"
+                  f"（{os.path.basename(override)}）\n" + output)
     if res.returncode != 0:
         return False, f"⛔ 飞书发送脚本退出码 {res.returncode}：{output.strip()[:300]}"
     if not dry_run:
