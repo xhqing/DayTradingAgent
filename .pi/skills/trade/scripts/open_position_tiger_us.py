@@ -645,6 +645,10 @@ def main():
             # 开仓响铃（2026-08-19 立，同港股版）：部分成交也是已建仓，同样响铃提醒
             U.ring_after_fill("US", symbol,
                               note=f"auto部分成交{part_filled_qty}股@{fill_price}")
+            # T191HKUS：成交即把初始止损钉进 state/，平仓 R 分母只认这一份
+            import stop_basis
+            stop_basis.record("US", symbol, fill_price, stop_loss,
+                              part_filled_qty, direction, result_base.get("order_id"))
             print(json.dumps(result_base, ensure_ascii=False))
             sys.exit(0)
         # 首个有意义被拒 reason 提到首层 error（2026-08-30 修 T122，同港股版）：原首层
@@ -725,6 +729,10 @@ def main():
     # 开仓响铃（2026-08-19 立，同港股版，TODO「auto 开仓成功后响铃提醒」）：成交确认后
     # 响一声；记录写 ring-log-auto.csv 与 signal 隔离（见 trade_utils_tiger.ring_after_fill）
     U.ring_after_fill("US", symbol, note=f"auto成交{result_base['quantity']}股@{fill_price}")
+    # T191HKUS：成交即把初始止损钉进 state/，平仓 R 分母只认这一份（移损不改基准）
+    import stop_basis
+    stop_basis.record("US", symbol, fill_price, stop_loss,
+                      result_base["quantity"], direction, result_base.get("order_id"))
     print(json.dumps(result_base, ensure_ascii=False))
 
 
