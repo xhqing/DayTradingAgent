@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 插电源提醒 · 定时发送 launchd 配置（2026-11-12 立）。
+
+     背景：原实现由 preflight.py 在每次盯盘启动时发一条飞书「插电源」提醒，多会话并行
+     盯盘会重复发同一条消息。现在改成与盯盘会话完全无关的一天一条定时任务。
+
+     为什么每 60 秒巡检、而不是 StartCalendarInterval 定点排程：
+     launchd 的 StartCalendarInterval 按**系统本地时区**排程；美东 09:30 对应北京时间
+     21:30（夏令时）或 22:30（冬令时），写死任何一个都会在切换后错位。故由 plist 每 60 秒
+     唤起 power_reminder.py，脚本用 zoneinfo 取真实美东时间，只在 09:30–09:35 的准点窗口
+     发送；09:35–12:00 是补发窗口（休眠 / 任务错过时当天补一条）。脚本在非窗口时段立即
+     退出，几乎不占用资源。当天发送成功后在本机与 macmini 同步的私有状态目录写标记
+     （并用文件锁防同机并发），不会重复发；本机 preflight 的 --status 读同一份标记。
+
+     部署位置：macmini（常开算力机）。本机 MacBook 合盖且没接电源时会休眠，休眠期间
+     launchd 不触发——而「忘了插电源」正是最需要提醒的场景，所以不放本机。
+
+     部署（自动适配本机路径，幂等）：
+       bash hooks/install_power_reminder.sh
+     卸载（只在用户明确要求时）：
+       bash hooks/install_power_reminder.sh --unload
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.daytrading.power-reminder</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/python3</string>
+        <string>/Users/xhq/Developer/trading-agent/.pi/skills/trade/scripts/power_reminder.py</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>60</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/daytrading-power-reminder.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/daytrading-power-reminder.err</string>
+</dict>
+</plist>

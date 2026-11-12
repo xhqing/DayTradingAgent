@@ -169,7 +169,7 @@ def main():
                     help="不在消息最前面加 session_id（默认会加，2026-10-21 用户立）")
     ap.add_argument("--no-mark", action="store_true",
                     help="不写 feishu_sent_<market>_<date>.txt 标记、也不写内容存档（2026-11-03 立）。"
-                         "供非停盯总结类提醒使用（如 preflight 的电源提醒）——否则会污染停盯总结的"
+                         "供非停盯总结类提醒使用（如定时电源提醒）——否则会污染停盯总结的"
                          "漏发检查标记、并覆盖同一交易日的总结存档")
     args = ap.parse_args()
 
@@ -235,7 +235,7 @@ def main():
         return 1
 
     # 发送成功：落标记（preflight 凭此检查漏发）+ 内容存档
-    # --no-mark（2026-11-03 立）：两者都不写——非停盯总结类提醒（如 preflight 电源提醒）
+    # --no-mark（2026-11-03 立）：两者都不写——非停盯总结类提醒（2026-11-12 起如定时电源提醒）
     # 不能写 feishu_sent_<market>_<date>.txt（会让停盯总结的漏发检查误判已发），
     # 也不能覆盖 tmp/feishu_sent/<market>_<date>.md（那是停盯总结的存档位置）。
     if args.no_mark:
