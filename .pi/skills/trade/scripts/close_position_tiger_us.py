@@ -233,10 +233,23 @@ def main():
             entry_src = "position_cost_price（开仓订单成交价缺失兜底，含费摊薄、R 分母略偏大）"
     except Exception:
         pass
-    if entry_price is not None and stp is not None:
-        aux = float(getattr(stp, "aux_price", 0) or 0)
-        if aux > 0:
-            stop_dist = abs(entry_price - aux)
+    # T191HKUS（2026-11-12）：R 分母固定用开仓时点的初始止损，移动止损不改基准。
+    # 活动止损单的 aux_price 只用于下面「交替逼近现价」的平仓循环，绝不再外泄给 R /
+    # 过程指标 / 连败结算——移损后它已经变小，拿它算会把 |R| 系统性放大，还会经连败闸
+    # 错拦实盘开仓。找不到初始基准就跳过结算并显式告警（宁可漏记，不可误记）。
+    import stop_basis
+    basis_stop, basis_src = stop_basis.resolve("US", symbol, entry_price)
+    if basis_stop and entry_price:
+        stop_dist = abs(entry_price - basis_stop)
+        result_base["r_basis"] = f"stop_initial（{basis_src}；开仓时点算死，移损不改）"
+    else:
+        stop_dist = None
+        result_base["r_basis"] = ("missing_initial_stop（未找到开仓初始止损：R / 过程指标 / "
+                                  "连败结算跳过，不用移损后的止损价凑数）")
+        result_base["warning"] = ((result_base.get("warning") + "；")
+                                  if result_base.get("warning") else "") + (
+            f"🚨 初始止损基准缺失（{basis_src}）：本次不结算 R 与连败，"
+            "请用 stop_basis.py set 从 actions 开仓条目补记后跑 update_losing_streak.py")
     if entry_src:
         result_base["entry_price_source"] = entry_src
 
@@ -331,6 +344,7 @@ def main():
         result_base["losing_streak"] = T.update_losing_streak(
             "US", symbol, direction, entry_price, stop_dist, quantity, fill_price,
             net_pnl=result_base.get("net_pnl_app"), close_order_id=fill_order_id)
+        stop_basis.clear("US", symbol)   # 本笔已结算，避免下一笔误用旧基准
         print(json.dumps(result_base, ensure_ascii=False))
         sys.exit(0)
     else:

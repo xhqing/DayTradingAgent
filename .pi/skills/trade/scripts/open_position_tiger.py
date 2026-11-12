@@ -895,6 +895,10 @@ def main():
             # 开仓响铃（2026-08-19 立）：部分成交也是已建仓，同样响铃提醒（note 注明）
             U.ring_after_fill("HK", symbol,
                               note=f"auto部分成交{part_filled_qty}股@{fill_price}")
+            # T191HKUS：成交即把初始止损钉进 state/，平仓 R 分母只认这一份
+            import stop_basis
+            stop_basis.record("HK", symbol, fill_price, stop_loss,
+                              part_filled_qty, direction, result_base.get("order_id"))
             print(json.dumps(result_base, ensure_ascii=False))
             sys.exit(0)
         # 首个有意义被拒 reason 提到首层 error（2026-08-30 修 T122）：原首层只有
@@ -976,6 +980,10 @@ def main():
     # = 工具强制（auto 模式用户若不盯屏幕感知不到开仓；记录写 ring-log-auto.csv 与
     # signal 隔离，见 U.ring_after_fill docstring）。
     U.ring_after_fill("HK", symbol, note=f"auto成交{result_base['quantity']}股@{fill_price}")
+    # T191HKUS：成交即把初始止损钉进 state/，平仓 R 分母只认这一份（移损不改基准）
+    import stop_basis
+    stop_basis.record("HK", symbol, fill_price, stop_loss,
+                      result_base["quantity"], direction, result_base.get("order_id"))
     print(json.dumps(result_base, ensure_ascii=False))
 
 
